@@ -58,10 +58,9 @@
   const monthStartISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`; };
   const byId = (arr, id) => arr.find(x => x.id === id);
   const canManage = () => ['admin','manager'].includes(S.profile?.role);
-  // Current database rows still store an exact stock position. The UI now treats
-  // location_name as the parent Location and bin_code as its child Bin.
-  // Any older area_name value is preserved as part of the displayed legacy bin
-  // so existing stock/history is never hidden by this update.
+  // Database rows still represent exact stock positions, but users only manage
+  // Locations. Bin Ref is free text entered when assigning/moving stock. Older
+  // area_name/bin_code values remain readable so existing stock is preserved.
   const effectiveBinCode = l => {
     if(!l) return '';
     const area=String(l.area_name||'').trim();
@@ -69,16 +68,14 @@
     if(area && bin) return `${area} / ${bin}`;
     return bin || area || '';
   };
-  const binLabel = l => { const b=effectiveBinCode(l); return b ? `Bin ${b}` : 'General / no bin'; };
-  const locationLabel = l => !l ? '—' : `${l.location_name}${effectiveBinCode(l) ? ` → ${binLabel(l)}` : ''}`;
+  const binLabel = l => { const b=effectiveBinCode(l); return b ? `Bin Ref ${b}` : 'No bin ref'; };
+  const locationLabel = l => !l ? '—' : `${l.location_name}${effectiveBinCode(l) ? ` → ${effectiveBinCode(l)}` : ''}`;
   const activeLocations = () => S.locations.filter(l=>l.active);
-  const assignableLocations = () => {
-    const rows=activeLocations();
-    return rows.filter(l=>effectiveBinCode(l) || !rows.some(x=>x.location_name===l.location_name && effectiveBinCode(x)));
-  };
   const locationNames = (rows=activeLocations()) => [...new Set(rows.map(l=>String(l.location_name||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
   const positionsForLocation = (name, rows=activeLocations()) => rows.filter(l=>l.location_name===name).sort((a,b)=>effectiveBinCode(a).localeCompare(effectiveBinCode(b)));
   const locationNameForId = id => byId(S.locations,id)?.location_name || '';
+  const binRefForId = id => effectiveBinCode(byId(S.locations,id));
+  const normalizeBin = v => String(v||'').trim();
   const itemTotal = itemId => S.balances.filter(b => b.item_id === itemId).reduce((a,b) => a + num(b.quantity), 0);
   const itemPositions = itemId => S.balances.filter(b => b.item_id === itemId && num(b.quantity) > 0).sort((a,b) => num(b.quantity)-num(a.quantity));
   const userName = id => id ? (byId(S.profiles,id)?.display_name || 'Unknown user') : 'Legacy import';
@@ -286,7 +283,7 @@
 
   function scanHtml() {
     return `<div class="scan-box">
-      <div class="card"><h2>Scan item QR</h2><p class="muted">Scan an existing item code. The app will show the exact location and bin where it is kept.</p>
+      <div class="card"><h2>Scan item QR</h2><p class="muted">Scan an existing item code. The app will show the exact location and Bin Ref where it is kept.</p>
         <div id="reader" class="scanner"></div>
         <div class="actions"><button class="btn secondary" id="stopScan">Stop camera</button><button class="btn ghost" data-go="items">Manual search instead</button></div>
       </div>
@@ -321,18 +318,11 @@
       const balances=positive.filter(b=>ids.has(b.location_id));
       const units=balances.reduce((a,b)=>a+num(b.quantity),0);
       const items=new Set(balances.map(b=>b.item_id));
-      const bins=positionsForLocation(name).filter(l=>effectiveBinCode(l)).length;
-      return `<div class="card"><div class="muted">${esc(name)}</div><div class="stat">${qty(units)}</div><div class="muted">${items.size} item${items.size===1?'':'s'} · ${bins} bin${bins===1?'':'s'}</div></div>`;
+      return `<div class="card"><div class="muted">Location</div><div class="item-title" style="margin:.2rem 0 .45rem">${esc(name)}</div><div class="stat">${qty(units)}</div><div class="muted">${items.size} item${items.size===1?'':'s'} · total units</div>${canManage()?`<div class="actions"><button class="btn ghost" data-rename-location="${esc(name)}">Rename</button><button class="btn danger" data-delete-location="${esc(name)}">Delete</button></div>`:''}</div>`;
     }).join('');
-    const rows=names.flatMap(name=>positionsForLocation(name).map(l=>{
-      const units=S.balances.filter(b=>b.location_id===l.id).reduce((a,b)=>a+num(b.quantity),0);
-      const itemCount=S.balances.filter(b=>b.location_id===l.id && num(b.quantity)>0).length;
-      return `<tr><td>${esc(name)}</td><td>${esc(binLabel(l))}</td><td>${itemCount}</td><td>${qty(units)}</td></tr>`;
-    })).join('');
-    return `<div class="toolbar">${canManage()?'<button class="btn" id="addLocationBtn">Add location</button><button class="btn secondary" id="addBinBtn">Add bin</button>':''}</div>
-      <div class="card"><h2>Locations & bins</h2><p class="muted">A location is the main storage place. Bins sit inside that location. Stock is assigned by choosing <strong>Location</strong> first, then <strong>Bin</strong>.</p></div>
-      <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Overall stock</div><div class="stat">${qty(overall)}</div></div>${locCards}</div>
-      <div class="card" style="margin-top:1rem"><h3>Bins within locations</h3><div class="table-wrap"><table><thead><tr><th>Location</th><th>Bin</th><th>Items</th><th>Total units</th></tr></thead><tbody>${rows||'<tr><td colspan="4">No locations yet.</td></tr>'}</tbody></table></div></div>`;
+    return `<div class="toolbar">${canManage()?'<button class="btn" id="addLocationBtn">Add location</button>':''}</div>
+      <div class="card"><h2>Locations</h2><p class="muted">Create the main places where stock is held. <strong>Bin Ref is not set up here.</strong> When you add, move or adjust an item, choose the Location and type its Bin Ref manually.</p></div>
+      <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Overall stock</div><div class="stat">${qty(overall)}</div></div>${locCards||'<div class="card">No active locations yet.</div>'}</div>`;
   }
 
   function completedMonthWindows(count=3) {
@@ -388,8 +378,8 @@
     }
     if(r.item) list=list.filter(t=>t.item_id===r.item);
     if(r.user) list=list.filter(t=>(t.user_id||'legacy')===r.user);
-    if(r.bin) list=list.filter(t=>t.from_location_id===r.bin);
-    else if(r.location) list=list.filter(t=>locationNameForId(t.from_location_id)===r.location);
+    if(r.location) list=list.filter(t=>locationNameForId(t.from_location_id)===r.location);
+    if(r.bin) list=list.filter(t=>binRefForId(t.from_location_id).toLowerCase()===r.bin.trim().toLowerCase());
     return list;
   }
 
@@ -403,8 +393,8 @@
     }
     if(r.item) list=list.filter(t=>t.item_id===r.item);
     if(r.user) list=list.filter(t=>(t.user_id||'legacy')===r.user);
-    if(r.bin) list=list.filter(t=>t.from_location_id===r.bin||t.to_location_id===r.bin);
-    else if(r.location) list=list.filter(t=>[t.from_location_id,t.to_location_id].some(id=>locationNameForId(id)===r.location));
+    if(r.location) list=list.filter(t=>[t.from_location_id,t.to_location_id].some(id=>locationNameForId(id)===r.location));
+    if(r.bin) list=list.filter(t=>[t.from_location_id,t.to_location_id].some(id=>binRefForId(id).toLowerCase()===r.bin.trim().toLowerCase()));
     return list;
   }
 
@@ -440,7 +430,7 @@
         <div><label>Item</label><select id="reportItem"><option value="">All items</option>${S.items.filter(i=>i.active).map(i=>`<option value="${i.id}" ${S.report.item===i.id?'selected':''}>${esc(i.name)}</option>`).join('')}</select></div>
         <div><label>User</label><select id="reportUser"><option value="">All users</option><option value="legacy" ${S.report.user==='legacy'?'selected':''}>Legacy import</option>${S.profiles.map(p=>`<option value="${p.id}" ${S.report.user===p.id?'selected':''}>${esc(p.display_name)}</option>`).join('')}</select></div>
         <div><label>Location</label><select id="reportLocation"><option value="">All locations</option>${locationNames().map(name=>`<option value="${esc(name)}" ${S.report.location===name?'selected':''}>${esc(name)}</option>`).join('')}</select></div>
-        <div><label>Bin</label><select id="reportBin" ${S.report.location?'':'disabled'}><option value="">All bins</option>${S.report.location?positionsForLocation(S.report.location).map(l=>`<option value="${l.id}" ${S.report.bin===l.id?'selected':''}>${esc(binLabel(l))}</option>`).join(''):''}</select></div>
+        <div><label>Bin Ref (optional)</label><input id="reportBin" value="${esc(S.report.bin)}" placeholder="e.g. B12"></div>
         <div class="customDates ${S.report.period==='custom'?'':'hidden'}"><label>From</label><input type="date" id="reportFrom" value="${esc(S.report.from)}"></div>
         <div class="customDates ${S.report.period==='custom'?'':'hidden'}"><label>To</label><input type="date" id="reportTo" value="${esc(S.report.to)}"></div>
       </div>
@@ -515,7 +505,8 @@
 
   function bindLocations() {
     const b=document.getElementById('addLocationBtn'); if(b) b.onclick=openAddLocation;
-    const bb=document.getElementById('addBinBtn'); if(bb) bb.onclick=openAddBin;
+    document.querySelectorAll('[data-rename-location]').forEach(btn=>btn.onclick=()=>openRenameLocation(btn.dataset.renameLocation));
+    document.querySelectorAll('[data-delete-location]').forEach(btn=>btn.onclick=()=>openDeleteLocation(btn.dataset.deleteLocation));
   }
 
   function bindOrders() {
@@ -527,7 +518,7 @@
     const ids=[['reportPeriod','period'],['reportItem','item'],['reportUser','user'],['reportFrom','from'],['reportTo','to']];
     ids.forEach(([id,key])=>{const el=document.getElementById(id); if(el) el.onchange=()=>{S.report[key]=el.value; render();};});
     const rl=document.getElementById('reportLocation'); if(rl) rl.onchange=()=>{S.report.location=rl.value;S.report.bin='';render();};
-    const rb=document.getElementById('reportBin'); if(rb) rb.onchange=()=>{S.report.bin=rb.value;render();};
+    const rb=document.getElementById('reportBin'); if(rb){rb.onchange=()=>{S.report.bin=rb.value.trim();render();};rb.onkeydown=e=>{if(e.key==='Enter'){S.report.bin=rb.value.trim();render();}};}
     document.getElementById('exportReport').onclick=exportUsageCSV;
     const ux=document.getElementById('exportReportExcel'); if(ux) ux.onclick=exportUsageExcel;
     const ea=document.getElementById('exportActivity'); if(ea) ea.onclick=exportActivityCSV;
@@ -631,7 +622,7 @@
       <div class="split"><div>
         ${photoUrl?`<img class="photo" src="${esc(photoUrl)}" alt="${esc(i.name)}">`:''}
         <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Overall stock</div><div class="stat">${qty(total)}</div></div><div class="card"><div class="muted">Reorder level</div><div class="stat">${qty(i.reorder_level)}</div></div></div>
-        <h3>Totals by location</h3>${locationTotals.size?[...locationTotals.entries()].map(([name,q])=>`<div class="location-chip"><strong>${esc(name)}</strong> · ${qty(q)}</div>`).join(''):'<span class="muted">No stock assigned.</span>'}<h3>Exact bins</h3>${pos.length?pos.map(b=>{const l=byId(S.locations,b.location_id);return `<div class="location-chip"><strong>${esc(l?.location_name||'Unknown')}</strong> → ${esc(binLabel(l))} · ${qty(b.quantity)}</div>`;}).join(''):'<div class="notice">No stock location currently has a positive quantity.</div>'}
+        <h3>Totals by location</h3>${locationTotals.size?[...locationTotals.entries()].map(([name,q])=>`<div class="location-chip"><strong>${esc(name)}</strong> · ${qty(q)}</div>`).join(''):'<span class="muted">No stock assigned.</span>'}<h3>Exact stock positions</h3>${pos.length?pos.map(b=>{const l=byId(S.locations,b.location_id);return `<div class="location-chip"><strong>${esc(l?.location_name||'Unknown')}</strong> → ${esc(effectiveBinCode(l)?`Bin Ref ${effectiveBinCode(l)}`:'No bin ref')} · ${qty(b.quantity)}</div>`;}).join(''):'<div class="notice">No stock location currently has a positive quantity.</div>'}
       </div><div>
         <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div>${i.is_chemical?'<div style="margin-top:.7rem"><span class="badge chemical">Chemical / hazardous item</span></div>':''}</div>
         <div class="actions"><button class="btn good" data-stock-action="ADD">Add stock</button><button class="btn warn" data-stock-action="USE">Use / remove</button><button class="btn" data-stock-action="MOVE">Move stock</button><button class="btn secondary" data-stock-action="ADJUST">Adjust</button></div>
@@ -646,43 +637,67 @@
     document.querySelectorAll('[data-open-doc]').forEach(b=>b.onclick=()=>openSafetyDocument(byId(S.safetyDocs,b.dataset.openDoc)));
   }
 
-  function locationNameOptions(rows, includeNone=false) {
+  function locationNameOptions(rows=activeLocations(), includeNone=false) {
     const opts=locationNames(rows).map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('');
     return `${includeNone?'<option value="">None</option>':''}${opts}`;
   }
 
-  function bindLocationBinPair(locationSelectId, binSelectId, rows, quantityByLocationId=null) {
-    const locSel=document.getElementById(locationSelectId), binSel=document.getElementById(binSelectId);
-    if(!locSel||!binSel)return;
+  function binSuggestionsForLocation(name, rows=activeLocations()) {
+    return [...new Set(positionsForLocation(name,rows).map(effectiveBinCode).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  }
+
+  function bindBinRefSuggestions(locationSelectId, inputId, datalistId, rows=activeLocations(), itemId=null, positiveOnly=false) {
+    const locSel=document.getElementById(locationSelectId), input=document.getElementById(inputId), list=document.getElementById(datalistId);
+    if(!locSel||!input||!list)return;
     const refresh=()=>{
-      const name=locSel.value;
-      const bins=positionsForLocation(name,rows);
-      binSel.disabled=!name||!bins.length;
-      binSel.innerHTML=bins.length?bins.map(l=>{
-        const available=quantityByLocationId?.get(l.id);
-        const suffix=available==null?'':` (${qty(available)} available)`;
-        return `<option value="${l.id}">${esc(binLabel(l))}${esc(suffix)}</option>`;
-      }).join(''):'<option value="">No bin available</option>';
+      let candidates=positionsForLocation(locSel.value,rows);
+      if(itemId && positiveOnly){
+        const positiveIds=new Set(itemPositions(itemId).map(b=>b.location_id));
+        candidates=candidates.filter(l=>positiveIds.has(l.id));
+      }
+      const refs=[...new Set(candidates.map(effectiveBinCode).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+      list.innerHTML=refs.map(r=>`<option value="${esc(r)}"></option>`).join('');
+      if(refs.length===1 && !input.value.trim()) input.value=refs[0];
     };
-    locSel.onchange=refresh; refresh();
+    locSel.onchange=()=>{input.value='';refresh();};
+    refresh();
+  }
+
+  function findPosition(locationName, binRef, rows=S.locations) {
+    const ref=normalizeBin(binRef).toLowerCase();
+    const candidates=rows.filter(l=>l.active && l.location_name===locationName);
+    return candidates.find(l=>effectiveBinCode(l).trim().toLowerCase()===ref) || null;
+  }
+
+  async function ensurePosition(locationName, binRef) {
+    const existing=findPosition(locationName,binRef);
+    if(existing) return existing.id;
+    const {data,error}=await sb.rpc('get_or_create_stock_position',{p_location_name:locationName,p_bin_ref:normalizeBin(binRef)});
+    if(error) throw error;
+    return data;
+  }
+
+  function sourcePosition(itemId, locationName, binRef) {
+    const p=findPosition(locationName,binRef);
+    if(!p) return null;
+    const b=S.balances.find(x=>x.item_id===itemId&&x.location_id===p.id);
+    return b&&num(b.quantity)>0?p:null;
   }
 
   function stockActionForm(item,type) {
     const pos=itemPositions(item.id);
     const positiveIds=new Set(pos.map(b=>b.location_id));
     const sourceRows=activeLocations().filter(l=>positiveIds.has(l.id));
-    const qtyMap=new Map(pos.map(b=>[b.location_id,b.quantity]));
     const allRows=activeLocations();
-    const destinationRows=assignableLocations();
     const title={ADD:'Add stock',USE:'Use / remove stock',MOVE:'Move stock',ADJUST:'Adjust stock'}[type];
-    const sourcePair=`<label>Location</label><select id="fromLocationName" required>${locationNameOptions(sourceRows)}</select><label>Bin</label><select id="fromLoc" required></select>`;
-    const destinationPair=`<label>Location</label><select id="toLocationName" required>${locationNameOptions(destinationRows)}</select><label>Bin</label><select id="toLoc" required></select>`;
-    const adjustPair=`<label>Location</label><select id="fromLocationName" required>${locationNameOptions(allRows)}</select><label>Bin</label><select id="fromLoc" required></select>`;
+    const sourcePair=`<label>Location</label><select id="fromLocationName" required>${locationNameOptions(sourceRows)}</select><label>Bin Ref</label><input id="fromBinRef" list="fromBinList" placeholder="Type bin ref, e.g. B12"><datalist id="fromBinList"></datalist>`;
+    const destinationPair=`<label>Location</label><select id="toLocationName" required>${locationNameOptions(allRows)}</select><label>Bin Ref (optional)</label><input id="toBinRef" list="toBinList" placeholder="Type bin ref, e.g. B12"><datalist id="toBinList"></datalist>`;
+    const adjustPair=`<label>Location</label><select id="fromLocationName" required>${locationNameOptions(allRows)}</select><label>Bin Ref (optional)</label><input id="fromBinRef" list="fromBinList" placeholder="Type bin ref, e.g. B12"><datalist id="fromBinList"></datalist>`;
     return `<header><div><h2>${title}</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header><form id="stockActionForm" data-type="${type}">
       ${type==='ADD'?`${destinationPair}<label>Quantity added</label><input id="actionQty" type="number" min="0.001" step="0.001" required>`:''}
       ${type==='USE'?`${sourcePair}<label>Quantity used / removed</label><input id="actionQty" type="number" min="0.001" step="0.001" required>`:''}
       ${type==='MOVE'?`<h3>Move from</h3>${sourcePair}<h3>Move to</h3>${destinationPair}<label>Quantity moved</label><input id="actionQty" type="number" min="0.001" step="0.001" required>`:''}
-      ${type==='ADJUST'?`${adjustPair}<label>Correct quantity in this bin</label><input id="newQty" type="number" min="0" step="0.001" required><label>Reason</label><select id="reason" required><option value="Stock count correction">Stock count correction</option><option value="Damaged">Damaged</option><option value="Lost">Lost</option><option value="Found">Found</option><option value="Data correction">Data correction</option><option value="Other">Other</option></select>`:''}
+      ${type==='ADJUST'?`${adjustPair}<label>Correct quantity at this location / bin ref</label><input id="newQty" type="number" min="0" step="0.001" required><label>Reason</label><select id="reason" required><option value="Stock count correction">Stock count correction</option><option value="Damaged">Damaged</option><option value="Lost">Lost</option><option value="Found">Found</option><option value="Data correction">Data correction</option><option value="Other">Other</option></select>`:''}
       ${type!=='ADJUST'?`<label>Reason / reference (optional)</label><input id="reason" placeholder="Delivery, job, damaged, etc.">`:''}
       <label>Notes (optional)</label><textarea id="notes" rows="2"></textarea>
       <div class="actions"><button class="btn" type="submit">Confirm ${title.toLowerCase()}</button></div></form>`;
@@ -690,54 +705,84 @@
 
   function openStockAction(item,type) {
     if((type==='USE'||type==='MOVE')&&!itemPositions(item.id).length){setNotice('There is no positive stock to remove or move.','error');closeModal();render();return;}
-    if(!activeLocations().length){setNotice('Add a location before recording stock.','error');closeModal();render();return;}
+    if(!locationNames().length){setNotice('Add a location before recording stock.','error');closeModal();render();return;}
     showModal(stockActionForm(item,type));
     const pos=itemPositions(item.id);
     const positiveIds=new Set(pos.map(b=>b.location_id));
     const sourceRows=activeLocations().filter(l=>positiveIds.has(l.id));
-    const qtyMap=new Map(pos.map(b=>[b.location_id,b.quantity]));
-    if(type==='USE'||type==='MOVE') bindLocationBinPair('fromLocationName','fromLoc',sourceRows,qtyMap);
-    if(type==='ADD'||type==='MOVE') bindLocationBinPair('toLocationName','toLoc',assignableLocations());
-    if(type==='ADJUST') bindLocationBinPair('fromLocationName','fromLoc',activeLocations());
+    if(type==='USE'||type==='MOVE') bindBinRefSuggestions('fromLocationName','fromBinRef','fromBinList',sourceRows,item.id,true);
+    if(type==='ADD'||type==='MOVE') bindBinRefSuggestions('toLocationName','toBinRef','toBinList',activeLocations());
+    if(type==='ADJUST') bindBinRefSuggestions('fromLocationName','fromBinRef','fromBinList',activeLocations(),item.id,false);
     const form=document.getElementById('stockActionForm');
     form.onsubmit=async e=>{
       e.preventDefault();
-      const from=document.getElementById('fromLoc')?.value||null,to=document.getElementById('toLoc')?.value||null;
-      if(type==='MOVE'&&from===to){setNotice('Choose a different destination bin.','error');return;}
-      const quantity=num(document.getElementById('actionQty')?.value), newQuantity=document.getElementById('newQty')?num(document.getElementById('newQty').value):null;
-      const reason=document.getElementById('reason')?.value||null,notes=document.getElementById('notes')?.value||null;
-      const {error}=await sb.rpc('apply_stock_transaction',{p_item_id:item.id,p_type:type,p_quantity:quantity,p_from_location_id:from,p_to_location_id:to,p_new_quantity:newQuantity,p_reason:reason,p_reference:null,p_notes:notes});
-      if(error){setNotice(parseError(error),'error');closeModal();render();return;}
-      await loadData(); closeModal(); setNotice(`${item.name}: ${type.toLowerCase()} recorded.`); render();
+      try{
+        let from=null,to=null;
+        if(type==='USE'||type==='MOVE'){
+          const fromName=document.getElementById('fromLocationName').value;
+          const fromRef=document.getElementById('fromBinRef').value;
+          const p=sourcePosition(item.id,fromName,fromRef);
+          if(!p){setNotice('No stock was found at that Location / Bin Ref. Check the bin reference and try again.','error');return;}
+          from=p.id;
+        }
+        if(type==='ADD'||type==='MOVE'){
+          const toName=document.getElementById('toLocationName').value;
+          const toRef=document.getElementById('toBinRef').value;
+          to=await ensurePosition(toName,toRef);
+        }
+        if(type==='ADJUST'){
+          const fromName=document.getElementById('fromLocationName').value;
+          const fromRef=document.getElementById('fromBinRef').value;
+          from=await ensurePosition(fromName,fromRef);
+        }
+        if(type==='MOVE'&&from===to){setNotice('Choose a different destination Location / Bin Ref.','error');return;}
+        const quantity=num(document.getElementById('actionQty')?.value), newQuantity=document.getElementById('newQty')?num(document.getElementById('newQty').value):null;
+        const reason=document.getElementById('reason')?.value||null,notes=document.getElementById('notes')?.value||null;
+        const {error}=await sb.rpc('apply_stock_transaction',{p_item_id:item.id,p_type:type,p_quantity:quantity,p_from_location_id:from,p_to_location_id:to,p_new_quantity:newQuantity,p_reason:reason,p_reference:null,p_notes:notes});
+        if(error) throw error;
+        await loadData(); closeModal(); setNotice(`${item.name}: ${type.toLowerCase()} recorded.`); render();
+      }catch(err){setNotice(parseError(err),'error');}
     };
   }
 
   function openAddLocation() {
-    showModal(`<header><h2>Add location</h2><button class="close" data-close>×</button></header><form id="locForm"><p class="muted">Create the main storage location first. Bins are added inside it separately.</p><label>Location name</label><input id="locName" placeholder="Workshop Store" required><label>Notes (optional)</label><textarea id="locNotes"></textarea><div class="actions"><button class="btn" type="submit">Save location</button></div></form>`);
+    showModal(`<header><h2>Add location</h2><button class="close" data-close>×</button></header><form id="locForm"><p class="muted">Add the main place where stock is kept. Bin Ref is typed on the item when stock is assigned.</p><label>Location name</label><input id="locName" placeholder="Workshop Store" required><label>Notes (optional)</label><textarea id="locNotes"></textarea><div class="actions"><button class="btn" type="submit">Save location</button></div></form>`);
     document.getElementById('locForm').onsubmit=async e=>{
       e.preventDefault();
       const name=document.getElementById('locName').value.trim();
-      if(locationNames().some(x=>x.toLowerCase()===name.toLowerCase())){setNotice('That location already exists. Add a bin inside it instead.','error');closeModal();render();return;}
-      const row={location_name:name,area_name:'',bin_code:'',notes:document.getElementById('locNotes').value.trim()||null};
-      const {error}=await sb.from('stock_locations').insert(row);
-      if(error){setNotice(parseError(error),'error');closeModal();render();return;}
-      await loadData({transactions:false,docs:false});closeModal();setNotice('Location added. Now add bins inside it when needed.');render();
+      if(!name)return;
+      if(locationNames().some(x=>x.toLowerCase()===name.toLowerCase())){setNotice('That location already exists.','error');return;}
+      const inactiveRoot=S.locations.find(l=>!l.active&&!effectiveBinCode(l)&&l.location_name.toLowerCase()===name.toLowerCase());
+      let error;
+      if(inactiveRoot) ({error}=await sb.from('stock_locations').update({active:true,notes:document.getElementById('locNotes').value.trim()||inactiveRoot.notes||null}).eq('id',inactiveRoot.id));
+      else ({error}=await sb.from('stock_locations').insert({location_name:name,area_name:'',bin_code:'',notes:document.getElementById('locNotes').value.trim()||null}));
+      if(error){setNotice(parseError(error),'error');return;}
+      await loadData({transactions:false,docs:false});closeModal();setNotice('Location added.');render();
     };
   }
 
-  function openAddBin() {
-    const names=locationNames();
-    if(!names.length){setNotice('Add a location first.','error');render();return;}
-    showModal(`<header><h2>Add bin</h2><button class="close" data-close>×</button></header><form id="binForm"><p class="muted">Choose the location this bin belongs to.</p><label>Location</label><select id="binLocation">${names.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('')}</select><label>Bin number / code</label><input id="binCode" placeholder="B12" required><label>Notes (optional)</label><textarea id="binNotes"></textarea><div class="actions"><button class="btn" type="submit">Add bin</button></div></form>`);
-    document.getElementById('binForm').onsubmit=async e=>{
+  function openRenameLocation(oldName) {
+    showModal(`<header><h2>Rename location</h2><button class="close" data-close>×</button></header><form id="renameLocationForm"><p class="muted">All stock positions at this location will use the new name. Quantities and transaction links are preserved.</p><label>Location name</label><input id="renameLocationName" value="${esc(oldName)}" required><div class="actions"><button class="btn" type="submit">Save new name</button></div></form>`);
+    document.getElementById('renameLocationForm').onsubmit=async e=>{
       e.preventDefault();
-      const name=document.getElementById('binLocation').value;
-      const code=document.getElementById('binCode').value.trim();
-      if(positionsForLocation(name).some(l=>effectiveBinCode(l).toLowerCase()===code.toLowerCase())){setNotice('That bin already exists in this location.','error');closeModal();render();return;}
-      const row={location_name:name,area_name:'',bin_code:code,notes:document.getElementById('binNotes').value.trim()||null};
-      const {error}=await sb.from('stock_locations').insert(row);
-      if(error){setNotice(parseError(error),'error');closeModal();render();return;}
-      await loadData({transactions:false,docs:false});closeModal();setNotice(`${name} → Bin ${code} added.`);render();
+      const name=document.getElementById('renameLocationName').value.trim();
+      if(!name)return;
+      if(name.toLowerCase()!==oldName.toLowerCase()&&locationNames().some(x=>x.toLowerCase()===name.toLowerCase())){setNotice('Another location already uses that name.','error');return;}
+      const {error}=await sb.from('stock_locations').update({location_name:name}).eq('location_name',oldName);
+      if(error){setNotice(parseError(error),'error');return;}
+      await loadData();closeModal();setNotice('Location renamed.');render();
+    };
+  }
+
+  function openDeleteLocation(name) {
+    const ids=new Set(S.locations.filter(l=>l.active&&l.location_name===name).map(l=>l.id));
+    const stock=S.balances.filter(b=>ids.has(b.location_id)).reduce((a,b)=>a+num(b.quantity),0);
+    if(stock>0){setNotice(`Cannot delete ${name}: ${qty(stock)} units are still held there. Move or use the stock first.`,'error');render();return;}
+    showModal(`<header><h2>Delete location</h2><button class="close" data-close>×</button></header><p>Delete <strong>${esc(name)}</strong> from the active location list?</p><p class="muted">Old transaction history is kept. This only removes the location from future stock selection.</p><div class="actions"><button class="btn danger" id="confirmDeleteLocation">Delete location</button><button class="btn ghost" data-close>Cancel</button></div>`);
+    document.getElementById('confirmDeleteLocation').onclick=async()=>{
+      const {error}=await sb.from('stock_locations').update({active:false}).eq('location_name',name);
+      if(error){setNotice(parseError(error),'error');return;}
+      await loadData({transactions:false,docs:false});closeModal();setNotice('Location deleted from the active list. History was preserved.');render();
     };
   }
 
@@ -751,7 +796,7 @@
       <div><label>Unit cost (£, optional)</label><input id="newCost" type="number" step="0.01" min="0" value="${esc(i?.unit_cost??'')}"></div>
       <div class="full"><label><input id="newChemical" type="checkbox" style="width:auto" ${i?.is_chemical?'checked':''}> Chemical / hazardous item (enable safety documents)</label></div>
       <div class="full"><label>Item photo (optional)</label><input id="newPhoto" type="file" accept="image/*" capture="environment"></div>
-      ${i?'':`<div><label>Opening stock (optional)</label><input id="openingQty" type="number" min="0" step="0.001" value="0"></div><div><label>Opening location</label><select id="openingLocationName"><option value="">None</option>${locationNames(assignableLocations()).map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div><div><label>Opening bin</label><select id="openingLoc" disabled><option value="">Choose location first</option></select></div>`}
+      ${i?'':`<div><label>Opening stock (optional)</label><input id="openingQty" type="number" min="0" step="0.001" value="0"></div><div><label>Opening location</label><select id="openingLocationName"><option value="">None</option>${locationNames().map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div><div><label>Opening Bin Ref (optional)</label><input id="openingBinRef" list="openingBinList" placeholder="e.g. B12"><datalist id="openingBinList"></datalist></div>`}
       </div><div class="actions"><button class="btn" type="submit">${i?'Save changes':'Create item'}</button></div></form>`;
   }
 
@@ -765,14 +810,7 @@
       let codeTouched=false,qrTouched=false;
       code.oninput=()=>{codeTouched=true;if(!qrTouched)qr.value=code.value};qr.oninput=()=>qrTouched=true;name.oninput=()=>{if(!codeTouched){code.value=name.value;if(!qrTouched)qr.value=name.value;}};
       const openingLocation=document.getElementById('openingLocationName');
-      if(openingLocation){
-        const refreshOpeningBin=()=>{
-          const bin=document.getElementById('openingLoc'), rows=positionsForLocation(openingLocation.value,assignableLocations());
-          bin.disabled=!openingLocation.value||!rows.length;
-          bin.innerHTML=rows.length?rows.map(l=>`<option value="${l.id}">${esc(binLabel(l))}</option>`).join(''):'<option value="">Choose location first</option>';
-        };
-        openingLocation.onchange=refreshOpeningBin; refreshOpeningBin();
-      }
+      if(openingLocation) bindBinRefSuggestions('openingLocationName','openingBinRef','openingBinList',activeLocations());
     }
     document.getElementById('itemForm').onsubmit=async e=>{
       e.preventDefault();
@@ -783,9 +821,9 @@
       const photo=document.getElementById('newPhoto').files[0];
       if(photo){try{await uploadItemPhoto(itemId,photo);}catch(err){setNotice(`Item saved, but photo upload failed: ${parseError(err)}`,'error');}}
       if(!existing){
-        const opening=num(document.getElementById('openingQty').value),loc=document.getElementById('openingLoc').value;
-        if(opening>0&&!loc){setNotice('Item created, but opening stock was not added because no location/bin was selected.','error');}
-        else if(opening>0){const {error}=await sb.rpc('apply_stock_transaction',{p_item_id:itemId,p_type:'ADD',p_quantity:opening,p_from_location_id:null,p_to_location_id:loc,p_new_quantity:null,p_reason:'Opening stock',p_reference:null,p_notes:null});if(error)setNotice(`Item created, but opening stock failed: ${parseError(error)}`,'error');}
+        const opening=num(document.getElementById('openingQty').value),locationName=document.getElementById('openingLocationName').value,binRef=document.getElementById('openingBinRef').value;
+        if(opening>0&&!locationName){setNotice('Item created, but opening stock was not added because no location was selected.','error');}
+        else if(opening>0){try{const loc=await ensurePosition(locationName,binRef);const {error}=await sb.rpc('apply_stock_transaction',{p_item_id:itemId,p_type:'ADD',p_quantity:opening,p_from_location_id:null,p_to_location_id:loc,p_new_quantity:null,p_reason:'Opening stock',p_reference:null,p_notes:null});if(error)throw error;}catch(err){setNotice(`Item created, but opening stock failed: ${parseError(err)}`,'error');}}
       }
       await loadData();closeModal();if(!S.notice||S.notice.type!=='error')setNotice(existing?'Item updated.':'New item created.');render();
     };
