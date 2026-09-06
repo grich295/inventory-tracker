@@ -310,7 +310,11 @@
   function scanHtml() {
     return `<div class="scan-box">
       <div class="card"><h2>Scan Stock QR</h2><p class="muted">Point the rear camera at the QR code on the bin or item label. Hold the code steady inside the scan area.</p>
-        <div id="reader" class="scanner"></div>
+        <div id="reader" class="scanner live-scanner">
+          <video id="qrVideo" playsinline muted autoplay></video>
+          <canvas id="qrCanvas" class="hidden"></canvas>
+          <div class="qr-guide" aria-hidden="true"></div>
+        </div>
         <div id="scanStatus" class="notice">Starting rear camera…</div>
         <div class="actions">
           <button class="btn secondary" id="stopScan">Stop camera</button>
@@ -610,9 +614,14 @@
         try {
           if(status) status.textContent='Reading QR from photo…';
           await stopScanner();
-          const reader=document.getElementById('reader');
-          if(reader) reader.innerHTML='';
-          S.scanner=new Html5Qrcode('reader', qrScannerOptions());
+          let decoder=document.getElementById('photoQrDecoder');
+          if(!decoder) {
+            decoder=document.createElement('div');
+            decoder.id='photoQrDecoder';
+            decoder.className='hidden';
+            document.body.appendChild(decoder);
+          }
+          S.scanner=new Html5Qrcode('photoQrDecoder', qrScannerOptions());
           const decoded=await S.scanner.scanFile(file,true);
           if(status) status.textContent='QR found.';
           findScanned(decoded);
@@ -637,65 +646,140 @@
   }
 
   async function startQrScanner() {
-    if(!window.Html5Qrcode) return;
     const status=document.getElementById('scanStatus');
+    const video=document.getElementById('qrVideo');
+    const canvas=document.getElementById('qrCanvas');
+
+    if(!video || !canvas || !navigator.mediaDevices?.getUserMedia) {
+      if(status) {
+        status.className='notice error';
+        status.textContent='Live camera scanning is not supported here. Use Scan QR from photo instead.';
+      }
+      return;
+    }
+
     try {
       if(status) {
         status.className='notice';
         status.textContent='Starting rear camera…';
       }
 
-      const cameras=await Html5Qrcode.getCameras().catch(()=>[]);
-      let camera={facingMode:'environment'};
+      const stream=await navigator.mediaDevices.getUserMedia({
+        audio:false,
+        video:{
+          facingMode:{ideal:'environment'},
+          width:{ideal:1920},
+          height:{ideal:1080},
+          focusMode:{ideal:'continuous'}
+        }
+      });
 
-      if(cameras && cameras.length) {
-        const rear=cameras.find(c=>/back|rear|environment/i.test(c.label||''));
-        const chosen=rear || cameras[cameras.length-1];
-        if(chosen && chosen.id) camera={deviceId:{exact:chosen.id}};
-      }
-
-      S.scanner=new Html5Qrcode('reader', qrScannerOptions());
-
-      const config={
-        fps:20,
-        disableFlip:true,
-        qrbox:(w,h)=>{
-          const size=Math.max(220,Math.min(360,Math.floor(Math.min(w,h)*0.82)));
-          return {width:size,height:size};
-        },
-        experimentalFeatures:{useBarCodeDetectorIfSupported:true}
-      };
-
-      await S.scanner.start(
-        camera,
-        config,
-        decoded=>{
-          if(status) {
-            status.className='notice success';
-            status.textContent='QR found.';
-          }
-          stopScanner();
-          findScanned(decoded);
-        },
-        ()=>{}
-      );
+      S.cameraStream=stream;
+      video.srcObject=stream;
+      await video.play();
 
       if(status) {
         status.className='notice';
-        status.textContent='Camera ready — hold the QR code steady and fill most of the scan box.';
+        status.textContent='Camera ready — hold the QR steady and bring it fairly close.';
       }
+
+      const ctx=canvas.getContext('2d',{willReadFrequently:true});
+      let lastScan=0;
+      let detector=null;
+
+      if('BarcodeDetector' in window) {
+        try {
+          const formats=await BarcodeDetector.getSupportedFormats();
+          if(formats.includes('qr_code')) detector=new BarcodeDetector({formats:['qr_code']});
+        } catch(_) {}
+      }
+
+      const scanFrame=async(ts)=>{
+        if(!S.cameraStream || !video.videoWidth || !video.videoHeight) {
+          S.scanFrame=requestAnimationFrame(scanFrame);
+          return;
+        }
+
+        if(ts-lastScan < 90) {
+          S.scanFrame=requestAnimationFrame(scanFrame);
+          return;
+        }
+        lastScan=ts;
+
+        try {
+          let decoded='';
+
+          // Try the browser's native QR detector first when available.
+          if(detector) {
+            const found=await detector.detect(video);
+            if(found?.length) decoded=String(found[0].rawValue||'').trim();
+          }
+
+          // Cross-browser fallback: read the centre of the video with jsQR.
+          if(!decoded && window.jsQR) {
+            const vw=video.videoWidth, vh=video.videoHeight;
+            const crop=Math.floor(Math.min(vw,vh)*0.88);
+            const sx=Math.floor((vw-crop)/2);
+            const sy=Math.floor((vh-crop)/2);
+            const out=Math.min(900,crop);
+
+            canvas.width=out;
+            canvas.height=out;
+            ctx.drawImage(video,sx,sy,crop,crop,0,0,out,out);
+            const image=ctx.getImageData(0,0,out,out);
+            const code=jsQR(image.data,image.width,image.height,{
+              inversionAttempts:'attemptBoth'
+            });
+            if(code?.data) decoded=String(code.data).trim();
+          }
+
+          if(decoded) {
+            if(status) {
+              status.className='notice success';
+              status.textContent='QR found.';
+            }
+            await stopScanner();
+            findScanned(decoded);
+            return;
+          }
+        } catch(_) {}
+
+        if(S.cameraStream) S.scanFrame=requestAnimationFrame(scanFrame);
+      };
+
+      S.scanFrame=requestAnimationFrame(scanFrame);
+
     } catch(e) {
-      const r=document.getElementById('reader');
-      if(r) r.innerHTML=`<div class="notice error">Camera could not start. You can still search manually. ${esc(parseError(e))}</div>`;
       if(status) {
         status.className='notice error';
-        status.textContent='Camera could not start.';
+        status.textContent='Camera could not start. Use Scan QR from photo or manual search.';
       }
     }
   }
 
   async function stopScanner() {
-    if(S.scanner) { try { if(S.scanner.isScanning) await S.scanner.stop(); await S.scanner.clear(); } catch(_){} S.scanner=null; }
+    if(S.scanFrame) {
+      cancelAnimationFrame(S.scanFrame);
+      S.scanFrame=null;
+    }
+
+    if(S.cameraStream) {
+      try { S.cameraStream.getTracks().forEach(t=>t.stop()); } catch(_) {}
+      S.cameraStream=null;
+    }
+
+    const video=document.getElementById('qrVideo');
+    if(video) {
+      try { video.pause(); video.srcObject=null; } catch(_) {}
+    }
+
+    if(S.scanner) {
+      try {
+        if(S.scanner.isScanning) await S.scanner.stop();
+        await S.scanner.clear();
+      } catch(_) {}
+      S.scanner=null;
+    }
   }
 
   function findScanned(value) {
