@@ -219,7 +219,7 @@
 
   function shellHtml(content) {
     const nav = [
-      ['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['reports','Reports'],['history','History']
+      ['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Suggested Orders'],['reports','Reports'],['history','History']
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users']);
     return `<div class="shell">
@@ -238,6 +238,7 @@
     if (S.page==='scan') return scanHtml();
     if (S.page==='items') return itemsHtml();
     if (S.page==='locations') return locationsHtml();
+    if (S.page==='orders') return ordersHtml();
     if (S.page==='reports') return reportsHtml();
     if (S.page==='history') return historyHtml();
     if (S.page==='users') return usersHtml();
@@ -317,6 +318,49 @@
       <div class="card" style="margin-top:1rem"><h3>Exact bins</h3><div class="table-wrap"><table><thead><tr><th>Location</th><th>Area</th><th>Bin</th><th>Items</th><th>Total units</th></tr></thead><tbody>${rows||'<tr><td colspan="5">No locations yet.</td></tr>'}</tbody></table></div></div>`;
   }
 
+  function completedMonthWindows(count=3) {
+    const now=new Date();
+    const out=[];
+    for(let back=count;back>=1;back--){
+      const start=new Date(now.getFullYear(),now.getMonth()-back,1);
+      const end=new Date(now.getFullYear(),now.getMonth()-back+1,1);
+      out.push({
+        start,end,
+        label:start.toLocaleDateString(undefined,{month:'short',year:'numeric'})
+      });
+    }
+    return out;
+  }
+
+  function suggestedOrderRows() {
+    const months=completedMonthWindows(3);
+    return S.items.filter(i=>i.active).map(i=>{
+      const monthly=months.map(w=>S.transactions
+        .filter(t=>t.transaction_type==='USE'&&t.item_id===i.id&&new Date(t.occurred_at)>=w.start&&new Date(t.occurred_at)<w.end)
+        .reduce((a,t)=>a+num(t.quantity),0));
+      const used3=monthly.reduce((a,v)=>a+v,0);
+      const avg=used3/3;
+      const current=itemTotal(i.id);
+      const suggested=Math.max(0,Math.ceil(Math.max(0,avg-current)-1e-9));
+      const coverage=avg>0?current/avg:null;
+      return {item:i,monthly,used3,avg,current,suggested,coverage};
+    }).sort((a,b)=>b.suggested-a.suggested||b.avg-a.avg||a.item.name.localeCompare(b.item.name));
+  }
+
+  function ordersHtml() {
+    const months=completedMonthWindows(3);
+    const all=suggestedOrderRows();
+    const needs=all.filter(r=>r.suggested>0);
+    const totalSuggested=needs.reduce((a,r)=>a+r.suggested,0);
+    const rows=all.map(r=>`<tr class="${r.suggested>0?'order-needed':'order-ok'}" data-item="${r.item.id}"><td>${esc(r.item.name)}</td><td>${qty(r.monthly[0])}</td><td>${qty(r.monthly[1])}</td><td>${qty(r.monthly[2])}</td><td>${qty(r.used3)}</td><td>${qty(r.avg)}</td><td>${qty(r.current)}</td><td><strong>${r.suggested>0?qty(r.suggested):'—'}</strong></td></tr>`).join('');
+    return `<div class="card"><h2>Suggested Orders</h2>
+      <p class="muted">Uses actual <strong>USE</strong> transactions from the previous 3 completed calendar months. Average monthly usage = 3-month usage ÷ 3. Suggested order = average monthly usage − current overall stock, rounded up to a whole unit. Moves between locations do not count as usage.</p>
+      <div class="actions"><button class="btn secondary" id="exportOrdersCsv">Download CSV</button><button class="btn" id="exportOrdersExcel">Download Excel</button></div>
+    </div>
+    <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Items needing order</div><div class="stat">${needs.length}</div></div><div class="card"><div class="muted">Total suggested units</div><div class="stat">${qty(totalSuggested)}</div></div><div class="card"><div class="muted">Usage period</div><div style="font-weight:800;margin-top:.45rem">${esc(months.map(m=>m.label).join(' · '))}</div></div></div>
+    <div class="card" style="margin-top:1rem"><h3>Order forecast</h3><p class="muted">Rows highlighted need stock ordering. Tap an item to open it.</p><div class="table-wrap"><table><thead><tr><th>Item</th><th>${esc(months[0].label)}</th><th>${esc(months[1].label)}</th><th>${esc(months[2].label)}</th><th>3-mo used</th><th>Avg / month</th><th>Current stock</th><th>Suggested order</th></tr></thead><tbody>${rows||'<tr><td colspan="8">No active items.</td></tr>'}</tbody></table></div></div>`;
+  }
+
   function reportTransactions() {
     const r=S.report;
     let list=S.transactions.filter(t=>t.transaction_type==='USE');
@@ -381,7 +425,7 @@
         <div class="customDates ${S.report.period==='custom'?'':'hidden'}"><label>From</label><input type="date" id="reportFrom" value="${esc(S.report.from)}"></div>
         <div class="customDates ${S.report.period==='custom'?'':'hidden'}"><label>To</label><input type="date" id="reportTo" value="${esc(S.report.to)}"></div>
       </div>
-      <div class="actions"><button class="btn secondary" id="exportReport">Export usage CSV</button><button class="btn ghost" id="exportActivity">Export activity CSV</button></div>
+      <div class="actions"><button class="btn secondary" id="exportReport">Usage CSV</button><button class="btn" id="exportReportExcel">Usage Excel</button><button class="btn ghost" id="exportActivity">Activity CSV</button><button class="btn ghost" id="exportActivityExcel">Activity Excel</button></div>
     </div>
     <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">${esc(reportName)} usage</div><div class="stat">${qty(totalUsage)}</div></div><div class="card"><div class="muted">Usage transactions</div><div class="stat">${list.length}</div></div><div class="card"><div class="muted">Different items used</div><div class="stat">${summary.length}</div></div><div class="card"><div class="muted">All stock actions</div><div class="stat">${activity.length}</div></div></div>
     <div class="split" style="margin-top:1rem"><div class="card"><h3>Usage by item</h3><div class="table-wrap"><table><thead><tr><th>Item</th><th>Used</th></tr></thead><tbody>${summary.map(x=>`<tr data-item="${x.id}"><td>${esc(x.name)}</td><td>${qty(x.q)}</td></tr>`).join('')||'<tr><td colspan="2">No usage in this period.</td></tr>'}</tbody></table></div></div><div class="card"><h3>12-month usage trend</h3><p class="muted">Choose an item in the filter to analyse whether usage is increasing or decreasing.</p><canvas id="trendChart" height="250"></canvas></div></div>
@@ -414,6 +458,7 @@
     if(S.page==='scan') bindScan();
     if(S.page==='items') bindItems();
     if(S.page==='locations') bindLocations();
+    if(S.page==='orders') bindOrders();
     if(S.page==='reports') bindReports();
     if(S.page==='users') bindUsers();
   }
@@ -453,11 +498,18 @@
     const b=document.getElementById('addLocationBtn'); if(b) b.onclick=openAddLocation;
   }
 
+  function bindOrders() {
+    const csv=document.getElementById('exportOrdersCsv'); if(csv) csv.onclick=exportOrdersCSV;
+    const xls=document.getElementById('exportOrdersExcel'); if(xls) xls.onclick=exportOrdersExcel;
+  }
+
   function bindReports() {
     const ids=[['reportPeriod','period'],['reportItem','item'],['reportUser','user'],['reportLocation','location'],['reportFrom','from'],['reportTo','to']];
     ids.forEach(([id,key])=>{const el=document.getElementById(id); if(el) el.onchange=()=>{S.report[key]=el.value; render();};});
     document.getElementById('exportReport').onclick=exportUsageCSV;
+    const ux=document.getElementById('exportReportExcel'); if(ux) ux.onclick=exportUsageExcel;
     const ea=document.getElementById('exportActivity'); if(ea) ea.onclick=exportActivityCSV;
+    const ax=document.getElementById('exportActivityExcel'); if(ax) ax.onclick=exportActivityExcel;
     drawTrendChart();
   }
 
@@ -475,20 +527,58 @@
     S.chart=new Chart(canvas,{type:'line',data:{labels,datasets:[{label:`Monthly usage · ${itemName(selected)}`,data:vals,tension:.25}]},options:{responsive:true,plugins:{legend:{display:true}},scales:{y:{beginAtZero:true}}}});
   }
 
-  function exportUsageCSV() {
-    const list=reportTransactions();
-    const rows=[['Date/time','Item','Quantity','User','Location','Reason','Legacy']];
-    list.forEach(t=>rows.push([t.occurred_at,itemName(t.item_id),t.quantity,userName(t.user_id),locName(t.from_location_id),t.reason||t.notes||'',t.legacy_import?'Yes':'No']));
-    const csv=rows.map(r=>r.map(v=>`"${String(v??'').replace(/"/g,'""')}"`).join(',')).join('\n');
-    const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'})); a.download=`inventory-usage-${todayISO()}.csv`; a.click(); URL.revokeObjectURL(a.href);
+  function downloadCSV(filename, rows) {
+    const csv='\ufeff'+rows.map(r=>r.map(v=>`"${String(v??'').replace(/"/g,'""')}"`).join(',')).join('\n');
+    const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+    const a=document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
 
-  function exportActivityCSV() {
+  function exportWorkbook(filename, sheets) {
+    if(!window.XLSX){setNotice('Excel export library did not load. Use CSV or refresh while online.','error');render();return;}
+    const wb=XLSX.utils.book_new();
+    for(const [name,rows] of sheets){
+      const ws=XLSX.utils.aoa_to_sheet(rows);
+      XLSX.utils.book_append_sheet(wb,ws,name.slice(0,31));
+    }
+    XLSX.writeFile(wb,filename);
+  }
+
+  function usageExportRows() {
+    const list=reportTransactions();
+    const rows=[['Date/time','Item','Quantity','User','Location','Reason','Legacy']];
+    list.forEach(t=>rows.push([t.occurred_at,itemName(t.item_id),num(t.quantity),userName(t.user_id),locName(t.from_location_id),t.reason||t.notes||'',t.legacy_import?'Yes':'No']));
+    return rows;
+  }
+
+  function activityExportRows() {
     const list=activityTransactions();
     const rows=[['Date/time','Item','Action','Quantity','User','From','To','Reason','Legacy']];
-    list.forEach(t=>rows.push([t.occurred_at,itemName(t.item_id),t.transaction_type,t.quantity,userName(t.user_id),locName(t.from_location_id),locName(t.to_location_id),t.reason||t.notes||'',t.legacy_import?'Yes':'No']));
-    const csv=rows.map(r=>r.map(v=>`"${String(v??'').replace(/"/g,'""')}"`).join(',')).join('\n');
-    const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'})); a.download=`inventory-activity-${todayISO()}.csv`; a.click(); URL.revokeObjectURL(a.href);
+    list.forEach(t=>rows.push([t.occurred_at,itemName(t.item_id),t.transaction_type,num(t.quantity),userName(t.user_id),locName(t.from_location_id),locName(t.to_location_id),t.reason||t.notes||'',t.legacy_import?'Yes':'No']));
+    return rows;
+  }
+
+  function exportUsageCSV() { downloadCSV(`inventory-usage-${todayISO()}.csv`,usageExportRows()); }
+  function exportActivityCSV() { downloadCSV(`inventory-activity-${todayISO()}.csv`,activityExportRows()); }
+  function exportUsageExcel() { exportWorkbook(`inventory-usage-${todayISO()}.xlsx`,[['Usage',usageExportRows()]]); }
+  function exportActivityExcel() { exportWorkbook(`inventory-activity-${todayISO()}.xlsx`,[['Activity',activityExportRows()]]); }
+
+  function orderExportRows(includeZero=false) {
+    const months=completedMonthWindows(3);
+    const list=suggestedOrderRows().filter(r=>includeZero||r.suggested>0);
+    const rows=[['Item','Item code',months[0].label,months[1].label,months[2].label,'3-month usage','Average monthly usage','Current overall stock','Suggested order']];
+    list.forEach(r=>rows.push([r.item.name,r.item.item_code,r.monthly[0],r.monthly[1],r.monthly[2],r.used3,Number(r.avg.toFixed(3)),r.current,r.suggested]));
+    return rows;
+  }
+
+  function exportOrdersCSV() {
+    downloadCSV(`suggested-orders-${todayISO()}.csv`,orderExportRows(false));
+  }
+
+  function exportOrdersExcel() {
+    const orderRows=orderExportRows(false);
+    const allRows=orderExportRows(true);
+    exportWorkbook(`suggested-orders-${todayISO()}.xlsx`,[['Suggested Orders',orderRows],['All Items Forecast',allRows]]);
   }
 
   function bindUsers() {
@@ -645,6 +735,10 @@
     const div=document.createElement('div');div.id='modalBackdrop';div.className='modal-backdrop';div.innerHTML=`<div class="modal">${html}</div>`;document.body.appendChild(div);div.onclick=e=>{if(e.target===div||e.target.closest('[data-close]'))closeModal();};
   }
   function closeModal(){document.getElementById('modalBackdrop')?.remove();}
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+  }
 
   bootstrap();
 })();
