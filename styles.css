@@ -21,3 +21,5 @@
 .risk-notice{background:#fff7ed;color:#9a3412}
 .ack-check{display:flex;gap:.65rem;align-items:flex-start;font-size:.95rem;line-height:1.45;margin-top:1rem}
 .ack-check input{width:auto;margin-top:.2rem;flex:0 0 auto}
+
+.scanner video{width:100%!important;min-height:300px;object-fit:cover}.scanner #qr-shaded-region{border-width:0!important}
