@@ -27,3 +27,5 @@
 .live-scanner{position:relative;overflow:hidden;min-height:320px;background:#000;border-radius:12px}
 .live-scanner video{display:block;width:100%!important;height:360px;object-fit:cover}
 .qr-guide{position:absolute;left:10%;right:10%;top:12%;bottom:12%;border:3px solid rgba(255,255,255,.9);border-radius:18px;box-shadow:0 0 0 999px rgba(0,0,0,.12);pointer-events:none}
+
+.notice.warn{border-color:#f59e0b;background:#fffbeb;color:#78350f}

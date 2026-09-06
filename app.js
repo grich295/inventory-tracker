@@ -41,6 +41,8 @@
     categories: [],
     itemSuppliers: [],
     purchaseOrders: [],
+    backupRunning: false,
+    backupStatus: '',
     orderTab: 'suggested',
     page: 'dashboard',
     search: '',
@@ -62,6 +64,14 @@
   const fmtDate = v => v ? new Date(v).toLocaleString() : '—';
   const fmtShortDate = v => v ? new Date(v).toLocaleDateString() : '—';
   const todayISO = () => new Date().toISOString().slice(0,10);
+  const backupStorageKey = 'inventoryTrackerLastBackupAt';
+  const lastBackupAt = () => localStorage.getItem(backupStorageKey) || '';
+  const backupDue = () => {
+    const v=lastBackupAt();
+    if(!v) return true;
+    const age=Date.now()-new Date(v).getTime();
+    return !Number.isFinite(age) || age >= 7*24*60*60*1000;
+  };
   const monthStartISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`; };
   const byId = (arr, id) => arr.find(x => x.id === id);
   const canManage = () => ['admin','manager'].includes(S.profile?.role);
@@ -262,9 +272,9 @@
     const nav = [
       ['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['reports','Reports'],['history','History']
     ];
-    if (S.profile?.role === 'admin') nav.push(['users','Users']);
+    if (S.profile?.role === 'admin') nav.push(['users','Users'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(S.profile?.role || 'staff')} · v6.0</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(S.profile?.role || 'staff')} · v6.3</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${content}</main>
     </div>`;
@@ -283,6 +293,7 @@
     if (S.page==='reports') return reportsHtml();
     if (S.page==='history') return historyHtml();
     if (S.page==='users') return usersHtml();
+    if (S.page==='backup') return backupHtml();
     return dashboardHtml();
   }
 
@@ -303,6 +314,7 @@
         <div class="card"><div class="muted">Used this month</div><div class="stat">${qty(usedMonth)}</div></div>
       </div>
       <div class="toolbar" style="margin-top:1rem"><button class="btn good" data-go="scan">Scan Stock QR</button><button class="btn" data-go="items">Manual search</button>${canManage()?'<button class="btn secondary" id="dashAddItem">Add new item</button>':''}</div>
+      ${canAdmin()&&backupDue()?`<div class="notice warn" style="margin-top:1rem"><strong>Admin backup due.</strong> ${lastBackupAt()?`Last backup: ${esc(fmtDate(lastBackupAt()))}.`:'No app backup has been recorded on this device yet.'} <button class="btn ghost" data-go="backup">Open Backup</button></div>`:''}
       ${low.length?`<div class="card"><h3>Low stock</h3><div class="item-list">${low.slice(0,8).map(itemRowHtml).join('')}</div></div>`:''}
       <div class="card" style="margin-top:1rem"><h3>Recent activity</h3>${transactionTable(recent)}</div>`;
   }
@@ -583,6 +595,195 @@
       <div class="card"><h2>Invite user</h2><p class="muted">Uses the optional Supabase Edge Function included with this project. The invited person sets their own password.</p><form id="inviteForm"><label>Name</label><input id="inviteName" required><label>Email</label><input id="inviteEmail" type="email" required><label>Role</label><select id="inviteRole"><option>staff</option><option>manager</option><option>admin</option></select><div class="actions"><button class="btn" type="submit">Send invite</button></div></form></div></div>`;
   }
 
+
+  function backupHtml() {
+    if(!canAdmin()) return '<div class="notice error">Admin access required.</div>';
+    const last=lastBackupAt();
+    const status=S.backupStatus
+      ? `<div class="notice ${S.backupRunning?'':'success'}">${esc(S.backupStatus)}</div>`
+      : '';
+    return `<div class="card">
+      <h2>Admin backup</h2>
+      <p class="muted">Creates a dated ZIP backup on this device. It includes the inventory database records and, by default, uploaded item photos and safety documents.</p>
+      <div class="notice"><strong>Not included:</strong> user passwords, Supabase database password, publishable/secret keys, or authentication secrets.</div>
+      <div class="grid cards" style="margin-top:1rem">
+        <div class="card"><div class="muted">Last backup on this device</div><div>${last?esc(fmtDate(last)):'Never'}</div></div>
+        <div class="card"><div class="muted">Reminder</div><div>${backupDue()?'Backup due':'Up to date'}</div></div>
+      </div>
+      <label class="ack-check" style="margin-top:1rem"><input id="backupFiles" type="checkbox" checked> Include item photos and safety-document files</label>
+      <div class="actions">
+        <button class="btn good" id="backupNow" ${S.backupRunning?'disabled':''}>${S.backupRunning?'Creating backup…':'Back up now'}</button>
+      </div>
+      ${status}
+      <p class="muted">Weekly is a sensible default for this tracker. The reminder is stored on the device that creates the backup.</p>
+    </div>`;
+  }
+
+  const backupTables = [
+    'items',
+    'stock_locations',
+    'stock_balances',
+    'transactions',
+    'profiles',
+    'inventory_categories',
+    'item_suppliers',
+    'purchase_orders',
+    'safety_documents',
+    'safety_acknowledgements',
+    'risk_rating_history'
+  ];
+
+  function csvFromObjects(rows) {
+    if(!rows?.length) return '\ufeff';
+    const keys=[...new Set(rows.flatMap(r=>Object.keys(r||{})))];
+    const quote=v=>{
+      if(v===null||v===undefined) return '""';
+      const x=typeof v==='object' ? JSON.stringify(v) : String(v);
+      return `"${x.replace(/"/g,'""')}"`;
+    };
+    return '\ufeff'+[
+      keys.map(quote).join(','),
+      ...rows.map(r=>keys.map(k=>quote(r?.[k])).join(','))
+    ].join('\n');
+  }
+
+  async function downloadStorageFile(bucket,path) {
+    if(!path) return null;
+    const {data,error}=await sb.storage.from(bucket).download(path);
+    if(error) throw error;
+    return data;
+  }
+
+  async function createAdminBackup(includeFiles=true) {
+    if(!canAdmin()) throw new Error('Admin access required');
+    if(!window.JSZip) throw new Error('Backup ZIP library did not load. Refresh while online and try again.');
+
+    const zip=new JSZip();
+    const dbFolder=zip.folder('database');
+    const fileFolder=zip.folder('files');
+    const manifest={
+      backup_format:'inventory-tracker-backup-v1',
+      created_at:new Date().toISOString(),
+      created_by:{id:S.profile?.id||null,name:S.profile?.display_name||null,role:S.profile?.role||null},
+      app_version:'6.3',
+      project_url:cfg.supabaseUrl,
+      tables:{},
+      uploaded_files:{requested:!!includeFiles,downloaded:0,failed:[]}
+    };
+
+    for(let i=0;i<backupTables.length;i++){
+      const table=backupTables[i];
+      S.backupStatus=`Backing up database ${i+1}/${backupTables.length}: ${table}`;
+      render();
+      const rows=await fetchAll(table,'*');
+      manifest.tables[table]=rows.length;
+      dbFolder.file(`${table}.json`,JSON.stringify(rows,null,2));
+      dbFolder.file(`${table}.csv`,csvFromObjects(rows));
+    }
+
+    if(includeFiles){
+      const items=JSON.parse(await dbFolder.file('items.json').async('string'));
+      const docs=JSON.parse(await dbFolder.file('safety_documents.json').async('string'));
+
+      const targets=[];
+      const seen=new Set();
+
+      for(const item of items){
+        const path=String(item.primary_photo_path||'').trim();
+        const key=`item-photos:${path}`;
+        if(path && !seen.has(key)){
+          seen.add(key);
+          targets.push({bucket:'item-photos',path,folder:'item-photos'});
+        }
+      }
+
+      for(const doc of docs){
+        const path=String(doc.storage_path||'').trim();
+        const key=`safety-documents:${path}`;
+        if(path && !seen.has(key)){
+          seen.add(key);
+          targets.push({bucket:'safety-documents',path,folder:'safety-documents'});
+        }
+      }
+
+      for(let i=0;i<targets.length;i++){
+        const t=targets[i];
+        S.backupStatus=`Downloading uploaded files ${i+1}/${targets.length}`;
+        render();
+        try{
+          const blob=await downloadStorageFile(t.bucket,t.path);
+          fileFolder.folder(t.folder).file(t.path,blob);
+          manifest.uploaded_files.downloaded++;
+        }catch(e){
+          manifest.uploaded_files.failed.push({
+            bucket:t.bucket,
+            path:t.path,
+            error:parseError(e)
+          });
+        }
+      }
+    }
+
+    zip.file('manifest.json',JSON.stringify(manifest,null,2));
+    zip.file('README.txt',
+`Inventory Tracker backup
+
+Created: ${manifest.created_at}
+Created by: ${manifest.created_by.name||'Unknown admin'}
+
+This ZIP contains database exports in both JSON and CSV format.
+Uploaded item photos and safety documents are included when requested and accessible.
+
+This backup does NOT contain passwords, Supabase secret keys, or database credentials.
+
+Keep this file somewhere secure.
+`);
+
+    S.backupStatus='Creating ZIP file…';
+    render();
+    const blob=await zip.generateAsync({
+      type:'blob',
+      compression:'DEFLATE',
+      compressionOptions:{level:6}
+    });
+
+    const stamp=new Date().toISOString().replace(/[:.]/g,'-');
+    const filename=`Inventory-Backup-${stamp}.zip`;
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),3000);
+
+    localStorage.setItem(backupStorageKey,new Date().toISOString());
+    return {filename,manifest};
+  }
+
+  function bindBackup() {
+    const btn=document.getElementById('backupNow');
+    if(!btn) return;
+    btn.onclick=async()=>{
+      if(S.backupRunning) return;
+      const includeFiles=document.getElementById('backupFiles')?.checked !== false;
+      S.backupRunning=true;
+      S.backupStatus='Starting backup…';
+      render();
+      try{
+        const result=await createAdminBackup(includeFiles);
+        S.backupStatus=`Backup downloaded: ${result.filename}${result.manifest.uploaded_files.failed.length?` · ${result.manifest.uploaded_files.failed.length} uploaded file(s) could not be downloaded and are listed in the manifest.`:''}`;
+      }catch(e){
+        S.backupStatus='';
+        setNotice(`Backup failed: ${parseError(e)}`,'error');
+      }finally{
+        S.backupRunning=false;
+        render();
+      }
+    };
+  }
+
   function bindPage() {
     document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>{S.page=b.dataset.go; render();});
     document.querySelectorAll('[data-item]').forEach(el=>el.onclick=()=>openItem(el.dataset.item));
@@ -595,6 +796,7 @@
     if(S.page==='orders') bindOrders();
     if(S.page==='reports') bindReports();
     if(S.page==='users') bindUsers();
+    if(S.page==='backup') bindBackup();
   }
 
   function bindScan() {
