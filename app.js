@@ -36,8 +36,15 @@
     balances: [],
     transactions: [],
     safetyDocs: [],
+    safetyAcks: [],
+    riskHistory: [],
+    categories: [],
+    itemSuppliers: [],
+    purchaseOrders: [],
+    orderTab: 'suggested',
     page: 'dashboard',
     search: '',
+    categoryFilter: '',
     selectedItemId: null,
     scanner: null,
     chart: null,
@@ -58,6 +65,11 @@
   const monthStartISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`; };
   const byId = (arr, id) => arr.find(x => x.id === id);
   const canManage = () => ['admin','manager'].includes(S.profile?.role);
+  const canAdmin = () => S.profile?.role === 'admin';
+  const riskRating = i => String(i?.risk_rating || 'NONE').toUpperCase();
+  const riskLabel = r => ({NONE:'None',GREEN:'Green · Low',AMBER:'Amber · Medium',RED:'Red · High'})[String(r||'NONE').toUpperCase()] || 'None';
+  const riskClass = r => `risk-${String(r||'NONE').toLowerCase()}`;
+  const riskIntervalDays = r => ({GREEN:365,AMBER:90,RED:30})[String(r||'NONE').toUpperCase()] || null;
   // Database rows still represent exact stock positions, but users only manage
   // Locations. Bin Ref is free text entered when assigning/moving stock. Older
   // area_name/bin_code values remain readable so existing stock is preserved.
@@ -78,6 +90,11 @@
   const normalizeBin = v => String(v||'').trim();
   const itemTotal = itemId => S.balances.filter(b => b.item_id === itemId).reduce((a,b) => a + num(b.quantity), 0);
   const itemPositions = itemId => S.balances.filter(b => b.item_id === itemId && num(b.quantity) > 0).sort((a,b) => num(b.quantity)-num(a.quantity));
+  const orderRemaining = o => Math.max(0, num(o.quantity_ordered) - num(o.quantity_received));
+  const openOrdersForItem = itemId => S.purchaseOrders.filter(o=>o.item_id===itemId && ['OPEN','PART_RECEIVED'].includes(o.status));
+  const itemOnOrder = itemId => openOrdersForItem(itemId).reduce((a,o)=>a+orderRemaining(o),0);
+  const suppliersForItem = itemId => S.itemSuppliers.filter(s=>s.item_id===itemId).sort((a,b)=>num(a.supplier_slot)-num(b.supplier_slot));
+  const preferredSupplier = itemId => suppliersForItem(itemId).find(s=>s.preferred) || suppliersForItem(itemId)[0] || null;
   const userName = id => id ? (byId(S.profiles,id)?.display_name || 'Unknown user') : 'Legacy import';
   const itemName = id => byId(S.items,id)?.name || 'Unknown item';
   const locName = id => locationLabel(byId(S.locations,id));
@@ -113,13 +130,20 @@
   }
 
   async function loadData({transactions=true, docs=true}={}) {
-    const [profiles, items, locations, balances] = await Promise.all([
+    const [profiles, items, locations, balances, itemSuppliers, purchaseOrders, categories, safetyAcks, riskHistory] = await Promise.all([
       fetchAll('profiles','*','display_name',true),
       fetchAll('items','*','name',true),
       fetchAll('stock_locations','*','location_name',true),
-      fetchAll('stock_balances','*')
+      fetchAll('stock_balances','*'),
+      fetchAll('item_suppliers','*','supplier_slot',true),
+      fetchAll('purchase_orders','*','ordered_at',false),
+      fetchAll('inventory_categories','*','sort_order',true),
+      fetchAll('safety_acknowledgements','*','acknowledged_at',false),
+      fetchAll('risk_rating_history','*','changed_at',false)
     ]);
     S.profiles = profiles; S.items = items; S.locations = locations; S.balances = balances;
+    S.itemSuppliers = itemSuppliers; S.purchaseOrders = purchaseOrders; S.categories = categories;
+    S.safetyAcks = safetyAcks; S.riskHistory = riskHistory;
     S.profile = byId(S.profiles, S.session?.user?.id) || S.profile;
     if (transactions) S.transactions = await fetchAll('transactions','*','occurred_at',false);
     if (docs) S.safetyDocs = await fetchAll('safety_documents','*','uploaded_at',false);
@@ -144,7 +168,7 @@
   function startRealtime() {
     if(S.liveChannel||!S.session)return;
     let c=sb.channel('inventory-live');
-    for(const table of ['stock_balances','transactions','items','stock_locations','safety_documents','profiles']){
+    for(const table of ['stock_balances','transactions','items','stock_locations','safety_documents','profiles','item_suppliers','purchase_orders','inventory_categories','safety_acknowledgements','risk_rating_history']){
       c=c.on('postgres_changes',{event:'*',schema:'public',table},queueLiveRefresh);
     }
     S.liveChannel=c.subscribe();
@@ -236,11 +260,11 @@
 
   function shellHtml(content) {
     const nav = [
-      ['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Suggested Orders'],['reports','Reports'],['history','History']
+      ['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['reports','Reports'],['history','History']
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(S.profile?.role || 'staff')} · v3.1</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(S.profile?.role || 'staff')} · v6.0</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${content}</main>
     </div>`;
@@ -268,45 +292,68 @@
     const low = active.filter(i => num(i.reorder_level)>0 && itemTotal(i.id)<=num(i.reorder_level));
     const mStart = new Date(); mStart.setDate(1); mStart.setHours(0,0,0,0);
     const usedMonth = S.transactions.filter(t=>t.transaction_type==='USE' && new Date(t.occurred_at)>=mStart).reduce((a,t)=>a+num(t.quantity),0);
+    const onOrderUnits = S.purchaseOrders.filter(o=>['OPEN','PART_RECEIVED'].includes(o.status)).reduce((a,o)=>a+orderRemaining(o),0);
     const recent = S.transactions.slice(0,8);
     return `
       <div class="grid cards">
         <div class="card"><div class="muted">Active items</div><div class="stat">${active.length}</div></div>
         <div class="card"><div class="muted">Units in stock</div><div class="stat">${qty(totalUnits)}</div></div>
         <div class="card"><div class="muted">Low-stock items</div><div class="stat">${low.length}</div></div>
+        <div class="card" data-go="orders"><div class="muted">Units on order</div><div class="stat">${qty(onOrderUnits)}</div></div>
         <div class="card"><div class="muted">Used this month</div><div class="stat">${qty(usedMonth)}</div></div>
       </div>
-      <div class="toolbar" style="margin-top:1rem"><button class="btn good" data-go="scan">Scan QR</button><button class="btn" data-go="items">Manual search</button>${canManage()?'<button class="btn secondary" id="dashAddItem">Add new item</button>':''}</div>
+      <div class="toolbar" style="margin-top:1rem"><button class="btn good" data-go="scan">Scan Stock QR</button><button class="btn" data-go="items">Manual search</button>${canManage()?'<button class="btn secondary" id="dashAddItem">Add new item</button>':''}</div>
       ${low.length?`<div class="card"><h3>Low stock</h3><div class="item-list">${low.slice(0,8).map(itemRowHtml).join('')}</div></div>`:''}
       <div class="card" style="margin-top:1rem"><h3>Recent activity</h3>${transactionTable(recent)}</div>`;
   }
 
   function scanHtml() {
     return `<div class="scan-box">
-      <div class="card"><h2>Scan item QR</h2><p class="muted">Scan an existing item code. The app will show the exact location and Bin Ref where it is kept.</p>
+      <div class="card"><h2>Scan Stock QR</h2><p class="muted">Scan the QR code on the bin or item label to open the stock item, view its location and Bin Ref, and update the quantity.</p>
         <div id="reader" class="scanner"></div>
         <div class="actions"><button class="btn secondary" id="stopScan">Stop camera</button><button class="btn ghost" data-go="items">Manual search instead</button></div>
       </div>
-      <div class="card" style="margin-top:1rem"><label>Or type/scan code</label><div class="toolbar"><input id="scanText" placeholder="Item or QR code"><button class="btn" id="scanFind">Find</button></div></div>
+      <div class="card" style="margin-top:1rem"><label>Or type/scan code</label><div class="toolbar"><input id="scanText" placeholder="Item or stock QR code"><button class="btn" id="scanFind">Find</button></div></div>
     </div>`;
   }
 
   function itemRowHtml(i) {
-    const total=itemTotal(i.id); const low=num(i.reorder_level)>0 && total<=num(i.reorder_level);
+    const total=itemTotal(i.id); const low=num(i.reorder_level)>0 && total<=num(i.reorder_level); const onOrder=itemOnOrder(i.id);
     const pos=itemPositions(i.id).slice(0,3).map(b=>`${esc(locationLabel(byId(S.locations,b.location_id)))} (${qty(b.quantity)})`).join(' · ');
-    return `<div class="item-row" data-item="${i.id}"><div><div class="item-title">${esc(i.name)}</div><div class="muted">${esc(i.item_code)}${i.category?' · '+esc(i.category):''}</div><div class="muted">${pos || 'No stock location set'}</div>${i.is_chemical?'<span class="badge chemical">Chemical</span> ':''}${low?'<span class="badge low">Low stock</span>':''}</div><div class="qty">${qty(total)}</div></div>`;
+    return `<div class="item-row" data-item="${i.id}"><div><div class="item-title">${esc(i.name)}</div><div class="muted">${esc(i.item_code)}${i.category?' · '+esc(i.category):''}</div><div class="muted">${pos || 'No stock location set'}</div>${riskRating(i)!=='NONE'?`<span class="badge risk ${riskClass(riskRating(i))}">${esc(riskLabel(riskRating(i)))}</span> `:''}${i.is_chemical?'<span class="badge chemical">Chemical</span> ':''}${low?'<span class="badge low">Low stock</span> ':''}${onOrder>0?`<span class="badge order">On order ${qty(onOrder)}</span>`:''}</div><div class="qty">${qty(total)}</div></div>`;
   }
 
-  function itemsHtml() {
+  function categoryNames() {
+    const configured=S.categories.filter(c=>c.active).map(c=>c.name);
+    const existing=S.items.map(i=>String(i.category||'').trim()).filter(Boolean);
+    return [...new Set([...configured,...existing])].sort((a,b)=>a.localeCompare(b));
+  }
+
+  function filteredItems() {
     const q=S.search.toLowerCase().trim();
-    const filtered=S.items.filter(i=>i.active).filter(i=>{
+    return S.items.filter(i=>i.active).filter(i=>{
+      if(S.categoryFilter && String(i.category||'')!==S.categoryFilter) return false;
       if(!q) return true;
       const positionText=itemPositions(i.id).map(b=>locationLabel(byId(S.locations,b.location_id))).join(' ');
       return [i.name,i.item_code,i.qr_value,i.category,positionText].join(' ').toLowerCase().includes(q);
     });
-    return `<div class="toolbar"><input id="itemSearch" value="${esc(S.search)}" placeholder="Search item, code, category, location or bin">${canManage()?'<button class="btn" id="addItemBtn">Add new item</button>':''}</div>
-      <div class="muted" style="margin-bottom:.6rem">${filtered.length} item${filtered.length===1?'':'s'}</div>
-      <div class="item-list">${filtered.map(itemRowHtml).join('') || '<div class="card">No matching items.</div>'}</div>`;
+  }
+
+  function itemsHtml() {
+    const filtered=filteredItems();
+    return `<div class="toolbar"><input id="itemSearch" value="${esc(S.search)}" placeholder="Search item, code, location or bin"><select id="categoryFilter"><option value="">All categories</option>${categoryNames().map(c=>`<option value="${esc(c)}" ${S.categoryFilter===c?'selected':''}>${esc(c)}</option>`).join('')}</select>${canManage()?'<button class="btn" id="addItemBtn">Add new item</button>':''}${canAdmin()?'<button class="btn ghost" id="manageCategoriesBtn">Categories</button>':''}</div>
+      <div id="itemCount" class="muted" style="margin-bottom:.6rem">${filtered.length} item${filtered.length===1?'':'s'}</div>
+      <div id="itemList" class="item-list">${filtered.map(itemRowHtml).join('') || '<div class="card">No matching items.</div>'}</div>`;
+  }
+
+  function refreshItemSearchResults() {
+    const filtered=filteredItems();
+    const count=document.getElementById('itemCount'), list=document.getElementById('itemList');
+    if(count) count.textContent=`${filtered.length} item${filtered.length===1?'':'s'}`;
+    if(list) {
+      list.innerHTML=filtered.map(itemRowHtml).join('') || '<div class="card">No matching items.</div>';
+      list.querySelectorAll('[data-item]').forEach(el=>el.onclick=()=>openItem(el.dataset.item));
+    }
   }
 
   function locationsHtml() {
@@ -348,10 +395,38 @@
       const used3=monthly.reduce((a,v)=>a+v,0);
       const avg=used3/3;
       const current=itemTotal(i.id);
-      const suggested=Math.max(0,Math.ceil(Math.max(0,avg-current)-1e-9));
-      const coverage=avg>0?current/avg:null;
-      return {item:i,monthly,used3,avg,current,suggested,coverage};
+      const onOrder=itemOnOrder(i.id);
+      const suggested=Math.max(0,Math.ceil(Math.max(0,avg-current-onOrder)-1e-9));
+      const coverage=avg>0?(current+onOrder)/avg:null;
+      return {item:i,monthly,used3,avg,current,onOrder,suggested,coverage,supplier:preferredSupplier(i.id)};
     }).sort((a,b)=>b.suggested-a.suggested||b.avg-a.avg||a.item.name.localeCompare(b.item.name));
+  }
+
+  function orderStatusLabel(v) {
+    return ({OPEN:'On order',PART_RECEIVED:'Part received',COMPLETED:'Completed',CANCELLED:'Cancelled'})[v] || v;
+  }
+
+  function purchaseOrderCard(o) {
+    const item=byId(S.items,o.item_id);
+    const remaining=orderRemaining(o);
+    const received=num(o.quantity_received);
+    const statusClass=o.status==='PART_RECEIVED'?'warn':o.status==='COMPLETED'?'good':o.status==='CANCELLED'?'muted':'order';
+    const expected=o.expected_date?fmtShortDate(o.expected_date):'—';
+    return `<div class="card order-card">
+      <div class="order-card-head"><div><div class="item-title">${esc(item?.name||'Unknown item')}</div><div class="muted">${esc(o.supplier_name||'Supplier not set')}${o.supplier_ref?` · Ref ${esc(o.supplier_ref)}`:''}</div></div><span class="badge ${statusClass}">${esc(orderStatusLabel(o.status))}</span></div>
+      <div class="order-metrics">
+        <div><span>Ordered</span><strong>${qty(o.quantity_ordered)}</strong></div>
+        <div><span>Received</span><strong>${qty(received)}</strong></div>
+        <div><span>Still on order</span><strong>${qty(remaining)}</strong></div>
+      </div>
+      <div class="muted">Order ref: ${esc(o.order_reference||'—')} · Ordered ${fmtShortDate(o.ordered_at)} · Expected ${expected}</div>
+      ${o.notes?`<div class="muted" style="margin-top:.35rem">${esc(o.notes)}</div>`:''}
+      <div class="actions">
+        ${['OPEN','PART_RECEIVED'].includes(o.status)?`<button class="btn good" data-receive-order="${o.id}">Receive delivery</button>`:''}
+        ${canManage()&&['OPEN','PART_RECEIVED'].includes(o.status)?`<button class="btn ghost" data-edit-order="${o.id}">Edit order</button><button class="btn danger" data-cancel-order="${o.id}">Close / cancel</button>`:''}
+        <button class="btn ghost" data-item="${o.item_id}">Open item</button>
+      </div>
+    </div>`;
   }
 
   function ordersHtml() {
@@ -359,13 +434,44 @@
     const all=suggestedOrderRows();
     const needs=all.filter(r=>r.suggested>0);
     const totalSuggested=needs.reduce((a,r)=>a+r.suggested,0);
-    const rows=all.map(r=>`<tr class="${r.suggested>0?'order-needed':'order-ok'}" data-item="${r.item.id}"><td>${esc(r.item.name)}</td><td>${qty(r.monthly[0])}</td><td>${qty(r.monthly[1])}</td><td>${qty(r.monthly[2])}</td><td>${qty(r.used3)}</td><td>${qty(r.avg)}</td><td>${qty(r.current)}</td><td><strong>${r.suggested>0?qty(r.suggested):'—'}</strong></td></tr>`).join('');
-    return `<div class="card"><h2>Suggested Orders</h2>
-      <p class="muted">Uses actual <strong>USE</strong> transactions from the previous 3 completed calendar months. Average monthly usage = 3-month usage ÷ 3. Suggested order = average monthly usage − current overall stock, rounded up to a whole unit. Moves between locations do not count as usage.</p>
+    const outstanding=S.purchaseOrders.filter(o=>['OPEN','PART_RECEIVED'].includes(o.status));
+    const outstandingUnits=outstanding.reduce((a,o)=>a+orderRemaining(o),0);
+    const history=S.purchaseOrders.filter(o=>['COMPLETED','CANCELLED'].includes(o.status));
+
+    const tabs=`<div class="order-tabs">
+      <button class="${S.orderTab==='suggested'?'active':''}" data-order-tab="suggested">Suggested</button>
+      <button class="${S.orderTab==='open'?'active':''}" data-order-tab="open">On Order <span class="count">${outstanding.length}</span></button>
+      <button class="${S.orderTab==='history'?'active':''}" data-order-tab="history">History</button>
+    </div>`;
+
+    if(S.orderTab==='open') {
+      return `<div class="card"><h2>Orders</h2><p class="muted">Everyone can see what has been ordered. Any active user can receive a delivery; only admins/managers can create, edit or close orders.</p>${tabs}</div>
+        <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Open orders</div><div class="stat">${outstanding.length}</div></div><div class="card"><div class="muted">Units still on order</div><div class="stat">${qty(outstandingUnits)}</div></div></div>
+        <div class="order-list" style="margin-top:1rem">${outstanding.map(purchaseOrderCard).join('')||'<div class="card">Nothing is currently on order.</div>'}</div>`;
+    }
+
+    if(S.orderTab==='history') {
+      const rows=history.map(o=>`<tr><td>${fmtShortDate(o.ordered_at)}</td><td>${esc(itemName(o.item_id))}</td><td>${esc(o.supplier_name||'—')}</td><td>${qty(o.quantity_ordered)}</td><td>${qty(o.quantity_received)}</td><td>${esc(orderStatusLabel(o.status))}</td><td>${esc(o.order_reference||'—')}</td></tr>`).join('');
+      return `<div class="card"><h2>Orders</h2>${tabs}</div>
+        <div class="card" style="margin-top:1rem"><h3>Completed / closed orders</h3><div class="table-wrap"><table><thead><tr><th>Ordered</th><th>Item</th><th>Supplier</th><th>Ordered qty</th><th>Received qty</th><th>Status</th><th>Order ref</th></tr></thead><tbody>${rows||'<tr><td colspan="7">No completed or cancelled orders yet.</td></tr>'}</tbody></table></div></div>`;
+    }
+
+    const rows=all.map(r=>`<tr class="${r.suggested>0?'order-needed':'order-ok'}">
+      <td data-item="${r.item.id}">${esc(r.item.name)}</td>
+      <td>${qty(r.monthly[0])}</td><td>${qty(r.monthly[1])}</td><td>${qty(r.monthly[2])}</td>
+      <td>${qty(r.avg)}</td><td>${qty(r.current)}</td><td>${r.onOrder>0?`<strong>${qty(r.onOrder)}</strong>`:'—'}</td>
+      <td><strong>${r.suggested>0?qty(r.suggested):'—'}</strong></td>
+      <td>${esc(r.supplier?.supplier_name||'—')}</td>
+      <td>${canManage()&&r.suggested>0?`<button class="btn small" data-create-order="${r.item.id}">Add to order</button>`:'—'}</td>
+    </tr>`).join('');
+
+    return `<div class="card"><h2>Orders</h2>
+      <p class="muted">Suggested quantities use actual <strong>USE</strong> transactions from the previous 3 completed months. Existing stock and anything already <strong>On Order</strong> are subtracted so the same item is not ordered twice.</p>
+      ${tabs}
       <div class="actions"><button class="btn secondary" id="exportOrdersCsv">Download CSV</button><button class="btn" id="exportOrdersExcel">Download Excel</button></div>
     </div>
-    <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Items needing order</div><div class="stat">${needs.length}</div></div><div class="card"><div class="muted">Total suggested units</div><div class="stat">${qty(totalSuggested)}</div></div><div class="card"><div class="muted">Usage period</div><div style="font-weight:800;margin-top:.45rem">${esc(months.map(m=>m.label).join(' · '))}</div></div></div>
-    <div class="card" style="margin-top:1rem"><h3>Order forecast</h3><p class="muted">Rows highlighted need stock ordering. Tap an item to open it.</p><div class="table-wrap"><table><thead><tr><th>Item</th><th>${esc(months[0].label)}</th><th>${esc(months[1].label)}</th><th>${esc(months[2].label)}</th><th>3-mo used</th><th>Avg / month</th><th>Current stock</th><th>Suggested order</th></tr></thead><tbody>${rows||'<tr><td colspan="8">No active items.</td></tr>'}</tbody></table></div></div>`;
+    <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Items needing order</div><div class="stat">${needs.length}</div></div><div class="card"><div class="muted">Suggested units</div><div class="stat">${qty(totalSuggested)}</div></div><div class="card"><div class="muted">Already on order</div><div class="stat">${qty(outstandingUnits)}</div></div><div class="card"><div class="muted">Usage period</div><div style="font-weight:800;margin-top:.45rem">${esc(months.map(m=>m.label).join(' · '))}</div></div></div>
+    <div class="card" style="margin-top:1rem"><h3>Suggested orders</h3><p class="muted">Tap an item to open it. Admins/managers can turn a suggestion into an open order.</p><div class="table-wrap"><table><thead><tr><th>Item</th><th>${esc(months[0].label)}</th><th>${esc(months[1].label)}</th><th>${esc(months[2].label)}</th><th>Avg / month</th><th>In stock</th><th>On order</th><th>Suggested</th><th>Supplier</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="10">No active items.</td></tr>'}</tbody></table></div></div>`;
   }
 
   function reportTransactions() {
@@ -424,6 +530,14 @@
       return `<tr data-item="${i.id}"><td>${esc(i.name)}</td><td>${qty(itemTotal(i.id))}</td><td>${esc(kept)}</td><td>${types.has('RISK_ASSESSMENT')?'✓':'—'}</td><td>${types.has('SSW')?'✓':'—'}</td><td>${types.has('SDS_MSDS')?'✓':'—'}</td><td>${types.has('COSHH')?'✓':'—'}</td><td>${esc(reviews[0]||'—')}</td></tr>`;
     }).join('');
 
+    const safetyRated=S.items.filter(i=>i.active&&riskRating(i)!=='NONE');
+    const safetyRows=safetyRated.map(i=>{
+      const docs=activeSafetyDocs(i.id);
+      const ackCount=S.safetyAcks.filter(a=>a.item_id===i.id).length;
+      return `<tr data-item="${i.id}"><td>${esc(i.name)}</td><td><span class="badge risk ${riskClass(riskRating(i))}">${esc(riskLabel(riskRating(i)))}</span></td><td>${docs.length}</td><td>${ackCount}</td><td>${esc(fmtDate(i.risk_rating_updated_at))}</td></tr>`;
+    }).join('');
+    const recentAcks=S.safetyAcks.slice(0,100).map(a=>`<tr><td>${fmtDate(a.acknowledged_at)}</td><td>${esc(userName(a.user_id))}</td><td>${esc(itemName(a.item_id))}</td><td><span class="badge risk ${riskClass(a.risk_rating)}">${esc(riskLabel(a.risk_rating))}</span></td><td>${esc(a.acknowledgement_reason||'—')}</td></tr>`).join('');
+
     return `<div class="card"><h2>Usage & activity reports</h2>
       <div class="form-grid">
         <div><label>Period</label><select id="reportPeriod"><option value="month" ${S.report.period==='month'?'selected':''}>This month</option><option value="all" ${S.report.period==='all'?'selected':''}>All time</option><option value="custom" ${S.report.period==='custom'?'selected':''}>Custom dates</option></select></div>
@@ -440,6 +554,7 @@
     <div class="split" style="margin-top:1rem"><div class="card"><h3>Usage by item</h3><div class="table-wrap"><table><thead><tr><th>Item</th><th>Used</th></tr></thead><tbody>${summary.map(x=>`<tr data-item="${x.id}"><td>${esc(x.name)}</td><td>${qty(x.q)}</td></tr>`).join('')||'<tr><td colspan="2">No usage in this period.</td></tr>'}</tbody></table></div></div><div class="card"><h3>12-month usage trend</h3><p class="muted">Choose an item in the filter to analyse whether usage is increasing or decreasing.</p><canvas id="trendChart" height="250"></canvas></div></div>
     <div class="card" style="margin-top:1rem"><h3>Who added, used, moved or adjusted stock</h3><div class="table-wrap"><table><thead><tr><th>User</th><th>Added</th><th>Used</th><th>Moved</th><th>Adjusted</th><th>Actions</th></tr></thead><tbody>${activityRows||'<tr><td colspan="6">No activity in this period.</td></tr>'}</tbody></table></div></div>
     <div class="card" style="margin-top:1rem"><h3>Detailed usage</h3>${transactionTable(list)}</div>
+    ${canAdmin()?`<div class="card" style="margin-top:1rem"><h3>Safety acknowledgement evidence</h3><p class="muted">Downloadable evidence of safety reminders acknowledged by users. This supports, but does not replace, main training and instruction.</p><div class="actions"><button class="btn secondary" id="exportSafetyCsv">Safety CSV</button><button class="btn" id="exportSafetyExcel">Safety Excel</button></div><div class="table-wrap" style="margin-top:.8rem"><table><thead><tr><th>Date/time</th><th>User</th><th>Item</th><th>Risk</th><th>Reason</th></tr></thead><tbody>${recentAcks||'<tr><td colspan="5">No acknowledgements recorded yet.</td></tr>'}</tbody></table></div></div><div class="card" style="margin-top:1rem"><h3>Risk-rated items</h3><div class="table-wrap"><table><thead><tr><th>Item</th><th>Risk</th><th>Safety docs</th><th>Acknowledgements</th><th>Rating last changed</th></tr></thead><tbody>${safetyRows||'<tr><td colspan="5">No items currently have a risk rating.</td></tr>'}</tbody></table></div></div>`:''}
     ${chemicals.length?`<div class="card" style="margin-top:1rem"><h3>Chemical register</h3><p class="muted">Current quantity, exact storage locations and whether key safety documents are on file.</p><div class="table-wrap"><table><thead><tr><th>Chemical</th><th>Stock</th><th>Where kept</th><th>Risk assessment</th><th>SSW</th><th>SDS/MSDS</th><th>COSHH</th><th>Next review</th></tr></thead><tbody>${chemicalRows}</tbody></table></div></div>`:''}`;
   }
 
@@ -499,8 +614,10 @@
 
   function bindItems() {
     const inp=document.getElementById('itemSearch');
-    inp.oninput=()=>{S.search=inp.value; clearTimeout(inp._t); inp._t=setTimeout(render,180);};
+    inp.oninput=()=>{S.search=inp.value; clearTimeout(inp._t); inp._t=setTimeout(refreshItemSearchResults,120);};
+    const cat=document.getElementById('categoryFilter'); if(cat) cat.onchange=()=>{S.categoryFilter=cat.value;refreshItemSearchResults();};
     const add=document.getElementById('addItemBtn'); if(add) add.onclick=openAddItem;
+    const manage=document.getElementById('manageCategoriesBtn'); if(manage) manage.onclick=openCategoryManager;
   }
 
   function bindLocations() {
@@ -512,6 +629,160 @@
   function bindOrders() {
     const csv=document.getElementById('exportOrdersCsv'); if(csv) csv.onclick=exportOrdersCSV;
     const xls=document.getElementById('exportOrdersExcel'); if(xls) xls.onclick=exportOrdersExcel;
+    document.querySelectorAll('[data-order-tab]').forEach(b=>b.onclick=()=>{S.orderTab=b.dataset.orderTab;render();});
+    document.querySelectorAll('[data-create-order]').forEach(b=>b.onclick=e=>{e.stopPropagation();openCreateOrder(b.dataset.createOrder);});
+    document.querySelectorAll('[data-receive-order]').forEach(b=>b.onclick=e=>{e.stopPropagation();openReceiveOrder(b.dataset.receiveOrder);});
+    document.querySelectorAll('[data-edit-order]').forEach(b=>b.onclick=e=>{e.stopPropagation();openEditOrder(b.dataset.editOrder);});
+    document.querySelectorAll('[data-cancel-order]').forEach(b=>b.onclick=e=>{e.stopPropagation();openCancelOrder(b.dataset.cancelOrder);});
+  }
+
+
+  function openCreateOrder(itemId) {
+    if(!canManage()){setNotice('Admin or manager access required to create orders.','error');render();return;}
+    const item=byId(S.items,itemId); if(!item)return;
+    const forecast=suggestedOrderRows().find(r=>r.item.id===itemId);
+    const suppliers=suppliersForItem(itemId);
+    const preferred=preferredSupplier(itemId);
+    const suggested=forecast?.suggested||1;
+    showModal(`<header><div><h2>Add to order</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header>
+      <form id="createOrderForm">
+        <div class="form-grid">
+          <div><label>Quantity ordered</label><input id="orderQty" type="number" min="0.001" step="0.001" value="${esc(suggested)}" required></div>
+          <div><label>Supplier</label><select id="orderSupplier"><option value="">Manual supplier</option>${suppliers.map(s=>`<option value="${s.id}" ${preferred?.id===s.id?'selected':''}>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</option>`).join('')}</select></div>
+          <div><label>Supplier name</label><input id="orderSupplierName" value="${esc(preferred?.supplier_name||'')}" required></div>
+          <div><label>Supplier part ref</label><input id="orderSupplierRef" value="${esc(preferred?.supplier_ref||'')}"></div>
+          <div><label>Order / PO reference</label><input id="orderRef" placeholder="e.g. PO-1024"></div>
+          <div><label>Expected delivery date</label><input id="orderExpected" type="date"></div>
+          <div class="full"><label>Notes (optional)</label><textarea id="orderNotes" rows="2"></textarea></div>
+        </div>
+        <div class="notice">Current stock: <strong>${qty(itemTotal(itemId))}</strong> · Already on order: <strong>${qty(itemOnOrder(itemId))}</strong> · Suggested now: <strong>${qty(suggested)}</strong></div>
+        <div class="actions"><button class="btn" type="submit">Mark as ordered</button></div>
+      </form>`);
+    const sel=document.getElementById('orderSupplier');
+    const name=document.getElementById('orderSupplierName');
+    const ref=document.getElementById('orderSupplierRef');
+    sel.onchange=()=>{
+      const s=byId(S.itemSuppliers,sel.value);
+      name.value=s?.supplier_name||'';
+      ref.value=s?.supplier_ref||'';
+      const exp=document.getElementById('orderExpected');
+      if(s?.lead_time_days!=null && !exp.value){
+        const d=new Date();d.setDate(d.getDate()+num(s.lead_time_days));exp.value=d.toISOString().slice(0,10);
+      }
+    };
+    if(preferred?.lead_time_days!=null){
+      const d=new Date();d.setDate(d.getDate()+num(preferred.lead_time_days));
+      document.getElementById('orderExpected').value=d.toISOString().slice(0,10);
+    }
+    document.getElementById('createOrderForm').onsubmit=async e=>{
+      e.preventDefault();
+      const supplier=byId(S.itemSuppliers,sel.value);
+      const row={
+        item_id:itemId,
+        supplier_id:supplier?.id||null,
+        supplier_name:name.value.trim(),
+        supplier_ref:ref.value.trim()||null,
+        quantity_ordered:num(document.getElementById('orderQty').value),
+        quantity_received:0,
+        order_reference:document.getElementById('orderRef').value.trim()||null,
+        expected_date:document.getElementById('orderExpected').value||null,
+        ordered_by:S.profile.id,
+        notes:document.getElementById('orderNotes').value.trim()||null,
+        status:'OPEN'
+      };
+      const {error}=await sb.from('purchase_orders').insert(row);
+      if(error){setNotice(parseError(error),'error');return;}
+      await loadData();closeModal();S.orderTab='open';setNotice(`${item.name}: marked as on order.`);render();
+    };
+  }
+
+  function openReceiveOrder(orderId) {
+    const order=byId(S.purchaseOrders,orderId); if(!order)return;
+    const item=byId(S.items,order.item_id); const remaining=orderRemaining(order);
+    if(remaining<=0){setNotice('This order has already been fully received.','error');render();return;}
+    if(!locationNames().length){setNotice('Add a location before receiving stock.','error');render();return;}
+    showModal(`<header><div><h2>Receive delivery</h2><div class="muted">${esc(item?.name||'Item')}</div></div><button class="close" data-close>×</button></header>
+      <form id="receiveOrderForm">
+        <div class="order-metrics">
+          <div><span>Ordered</span><strong>${qty(order.quantity_ordered)}</strong></div>
+          <div><span>Already received</span><strong>${qty(order.quantity_received)}</strong></div>
+          <div><span>Still on order</span><strong>${qty(remaining)}</strong></div>
+        </div>
+        <label>Received now</label><input id="receiveQty" type="number" min="0.001" max="${esc(remaining)}" step="0.001" value="${esc(remaining)}" required>
+        <label>Put into location</label><select id="receiveLocation" required>${locationNameOptions(activeLocations())}</select>
+        <label>Bin Ref (optional)</label><input id="receiveBin" list="receiveBinList" placeholder="e.g. B12"><datalist id="receiveBinList"></datalist>
+        <label>Notes (optional)</label><textarea id="receiveNotes" rows="2" placeholder="Short delivery, damaged box, etc."></textarea>
+        <div class="notice">If fewer than ${qty(remaining)} arrive, type the amount actually received. The balance will stay visible as <strong>Back order / Still on order</strong>.</div>
+        <div class="actions"><button class="btn good" type="submit">Confirm receipt</button></div>
+      </form>`);
+    bindBinRefSuggestions('receiveLocation','receiveBin','receiveBinList',activeLocations());
+    document.getElementById('receiveOrderForm').onsubmit=async e=>{
+      e.preventDefault();
+      try{
+        const amount=num(document.getElementById('receiveQty').value);
+        if(amount<=0||amount>remaining){setNotice(`Enter an amount between 0 and ${qty(remaining)}.`, 'error');return;}
+        const locationId=await ensurePosition(document.getElementById('receiveLocation').value,document.getElementById('receiveBin').value);
+        const {error}=await sb.rpc('receive_purchase_order',{
+          p_order_id:orderId,
+          p_quantity:amount,
+          p_to_location_id:locationId,
+          p_notes:document.getElementById('receiveNotes').value.trim()||null
+        });
+        if(error)throw error;
+        await loadData();closeModal();
+        const updated=byId(S.purchaseOrders,orderId);
+        setNotice(updated&&orderRemaining(updated)>0?`${item.name}: ${qty(amount)} received. ${qty(orderRemaining(updated))} still on order.`:`${item.name}: delivery completed.`);
+        render();
+      }catch(err){setNotice(parseError(err),'error');}
+    };
+  }
+
+  function openEditOrder(orderId) {
+    if(!canManage())return;
+    const o=byId(S.purchaseOrders,orderId); if(!o)return;
+    showModal(`<header><div><h2>Edit order</h2><div class="muted">${esc(itemName(o.item_id))}</div></div><button class="close" data-close>×</button></header>
+      <form id="editOrderForm">
+        <label>Total ordered quantity</label><input id="editOrderQty" type="number" min="${esc(o.quantity_received)}" step="0.001" value="${esc(o.quantity_ordered)}" required>
+        <label>Order / PO reference</label><input id="editOrderRef" value="${esc(o.order_reference||'')}">
+        <label>Expected delivery date</label><input id="editOrderExpected" type="date" value="${esc(o.expected_date||'')}">
+        <label>Notes</label><textarea id="editOrderNotes" rows="2">${esc(o.notes||'')}</textarea>
+        <div class="notice">Already received: <strong>${qty(o.quantity_received)}</strong>. Ordered quantity cannot be reduced below what has already arrived.</div>
+        <div class="actions"><button class="btn" type="submit">Save order</button></div>
+      </form>`);
+    document.getElementById('editOrderForm').onsubmit=async e=>{
+      e.preventDefault();
+      const ordered=num(document.getElementById('editOrderQty').value);
+      const received=num(o.quantity_received);
+      if(ordered<received){setNotice('Ordered quantity cannot be lower than the amount already received.','error');return;}
+      const status=ordered===received?'COMPLETED':received>0?'PART_RECEIVED':'OPEN';
+      const {error}=await sb.from('purchase_orders').update({
+        quantity_ordered:ordered,
+        order_reference:document.getElementById('editOrderRef').value.trim()||null,
+        expected_date:document.getElementById('editOrderExpected').value||null,
+        notes:document.getElementById('editOrderNotes').value.trim()||null,
+        status,
+        updated_at:new Date().toISOString()
+      }).eq('id',orderId);
+      if(error){setNotice(parseError(error),'error');return;}
+      await loadData();closeModal();setNotice('Order updated.');render();
+    };
+  }
+
+  function openCancelOrder(orderId) {
+    if(!canManage())return;
+    const o=byId(S.purchaseOrders,orderId); if(!o)return;
+    showModal(`<header><h2>Close / cancel order</h2><button class="close" data-close>×</button></header>
+      <p>Close the remaining <strong>${qty(orderRemaining(o))}</strong> for <strong>${esc(itemName(o.item_id))}</strong>?</p>
+      <p class="muted">Any quantity already received stays in stock. The outstanding balance will no longer count as On Order.</p>
+      <label>Reason (optional)</label><textarea id="cancelOrderReason" rows="2"></textarea>
+      <div class="actions"><button class="btn danger" id="confirmCancelOrder">Close order</button><button class="btn ghost" data-close>Keep open</button></div>`);
+    document.getElementById('confirmCancelOrder').onclick=async()=>{
+      const reason=document.getElementById('cancelOrderReason').value.trim();
+      const notes=[o.notes,reason?`Closed: ${reason}`:'Closed by admin'].filter(Boolean).join(' · ');
+      const {error}=await sb.from('purchase_orders').update({status:'CANCELLED',cancelled_at:new Date().toISOString(),cancelled_by:S.profile.id,notes,updated_at:new Date().toISOString()}).eq('id',orderId);
+      if(error){setNotice(parseError(error),'error');return;}
+      await loadData();closeModal();setNotice('Order closed.');render();
+    };
   }
 
   function bindReports() {
@@ -523,6 +794,8 @@
     const ux=document.getElementById('exportReportExcel'); if(ux) ux.onclick=exportUsageExcel;
     const ea=document.getElementById('exportActivity'); if(ea) ea.onclick=exportActivityCSV;
     const ax=document.getElementById('exportActivityExcel'); if(ax) ax.onclick=exportActivityExcel;
+    const sc=document.getElementById('exportSafetyCsv'); if(sc) sc.onclick=exportSafetyCSV;
+    const sx=document.getElementById('exportSafetyExcel'); if(sx) sx.onclick=exportSafetyExcel;
     drawTrendChart();
   }
 
@@ -576,11 +849,30 @@
   function exportUsageExcel() { exportWorkbook(`inventory-usage-${todayISO()}.xlsx`,[['Usage',usageExportRows()]]); }
   function exportActivityExcel() { exportWorkbook(`inventory-activity-${todayISO()}.xlsx`,[['Activity',activityExportRows()]]); }
 
+  function safetyAckExportRows() {
+    const rows=[['Date/time','User','Item','Risk rating','Reason for reminder','Documents acknowledged','Acknowledgement statement']];
+    S.safetyAcks.forEach(a=>{
+      const docs=Array.isArray(a.documents_snapshot)?a.documents_snapshot:[];
+      const docText=docs.map(d=>`${d.type||''}: ${d.title||''}${d.version?` v${d.version}`:''}${d.revision_date?` (${d.revision_date})`:''}`).join(' | ');
+      rows.push([a.acknowledged_at,userName(a.user_id),itemName(a.item_id),a.risk_rating||'NONE',a.acknowledgement_reason||'',docText,a.statement||'']);
+    });
+    return rows;
+  }
+
+  function riskHistoryExportRows() {
+    const rows=[['Date/time','Item','Old rating','New rating','Changed by','Reason']];
+    S.riskHistory.forEach(r=>rows.push([r.changed_at,itemName(r.item_id),r.old_rating||'NONE',r.new_rating||'NONE',userName(r.changed_by),r.reason||'']));
+    return rows;
+  }
+
+  function exportSafetyCSV() { downloadCSV(`safety-acknowledgements-${todayISO()}.csv`,safetyAckExportRows()); }
+  function exportSafetyExcel() { exportWorkbook(`safety-evidence-${todayISO()}.xlsx`,[['Acknowledgements',safetyAckExportRows()],['Risk Rating Changes',riskHistoryExportRows()]]); }
+
   function orderExportRows(includeZero=false) {
     const months=completedMonthWindows(3);
     const list=suggestedOrderRows().filter(r=>includeZero||r.suggested>0);
-    const rows=[['Item','Item code',months[0].label,months[1].label,months[2].label,'3-month usage','Average monthly usage','Current overall stock','Suggested order']];
-    list.forEach(r=>rows.push([r.item.name,r.item.item_code,r.monthly[0],r.monthly[1],r.monthly[2],r.used3,Number(r.avg.toFixed(3)),r.current,r.suggested]));
+    const rows=[['Item','Item code',months[0].label,months[1].label,months[2].label,'3-month usage','Average monthly usage','Current overall stock','On order','Suggested order','Preferred supplier','Supplier ref']];
+    list.forEach(r=>rows.push([r.item.name,r.item.item_code,r.monthly[0],r.monthly[1],r.monthly[2],r.used3,Number(r.avg.toFixed(3)),r.current,r.onOrder,r.suggested,r.supplier?.supplier_name||'',r.supplier?.supplier_ref||'']));
     return rows;
   }
 
@@ -608,31 +900,108 @@
     };
   }
 
+  function activeSafetyDocs(itemId) {
+    return S.safetyDocs.filter(d=>d.item_id===itemId&&d.active).sort((a,b)=>new Date(b.uploaded_at)-new Date(a.uploaded_at));
+  }
+
+  function latestSafetyAck(itemId, userId=S.profile?.id) {
+    return S.safetyAcks.filter(a=>a.item_id===itemId&&a.user_id===userId).sort((a,b)=>new Date(b.acknowledged_at)-new Date(a.acknowledged_at))[0] || null;
+  }
+
+  function lastUserUse(itemId, userId=S.profile?.id) {
+    return S.transactions.filter(t=>t.item_id===itemId&&t.user_id===userId&&t.transaction_type==='USE').sort((a,b)=>new Date(b.occurred_at)-new Date(a.occurred_at))[0] || null;
+  }
+
+  function safetyReminderStatus(item) {
+    const rating=riskRating(item);
+    const days=riskIntervalDays(rating);
+    if(!days) return {due:false,reason:'No safety acknowledgement required',days:null};
+    const ack=latestSafetyAck(item.id);
+    if(!ack) return {due:true,reason:'First acknowledgement for this risk-rated item',days};
+    const ackAt=new Date(ack.acknowledged_at);
+    const changedAt=new Date(item.risk_rating_updated_at||item.updated_at||0);
+    if(changedAt>ackAt) return {due:true,reason:'Risk rating changed since your last acknowledgement',days};
+    const docs=activeSafetyDocs(item.id);
+    const updatedDoc=docs.find(d=>new Date(d.uploaded_at)>ackAt);
+    if(updatedDoc) return {due:true,reason:'Safety document added or updated since your last acknowledgement',days};
+    const ageDays=(Date.now()-ackAt.getTime())/86400000;
+    if(ageDays>=days) return {due:true,reason:`Periodic ${days}-day safety reminder`,days};
+    const lastUse=lastUserUse(item.id);
+    if(lastUse){
+      const lastUseAt=new Date(lastUse.occurred_at);
+      const gapDays=(Date.now()-lastUseAt.getTime())/86400000;
+      if(gapDays>=days && ackAt<=lastUseAt) return {due:true,reason:`You have not recorded use of this item for ${days} days or more`,days};
+    }
+    return {due:false,reason:'Acknowledgement is current',days};
+  }
+
+  function safetyAckStatement() {
+    return 'I acknowledge this safety reminder and understand that this product or task may have associated risks. I have reviewed the linked safety information available to me. If I am unsure about any risk, control measure or instruction, I will stop and ask my manager for clarification before proceeding.';
+  }
+
+  function requestStockAction(item,type) {
+    if(type==='USE' && safetyReminderStatus(item).due) return openSafetyAcknowledgement(item,()=>openStockAction(item,type));
+    return openStockAction(item,type);
+  }
+
+  function openSafetyAcknowledgement(item,onContinue) {
+    const status=safetyReminderStatus(item);
+    const docs=activeSafetyDocs(item.id);
+    const statement=safetyAckStatement();
+    showModal(`<header><div><h2>Safety reminder</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header>
+      <div class="safety-panel ${riskClass(riskRating(item))}"><div><span class="badge risk ${riskClass(riskRating(item))}">${esc(riskLabel(riskRating(item)))}</span></div><p><strong>This product or task has associated risks.</strong> Review the linked safety information before proceeding.</p><p class="muted">This is a reminder supporting your main training and instruction. Reason shown now: ${esc(status.reason)}.</p></div>
+      <div class="card" style="margin-top:1rem"><h3>Linked safety documents</h3>${docs.length?docs.map(d=>`<div class="item-row"><div><strong>${esc(docTypeLabel(d.document_type))}</strong> · ${esc(d.title)}<div class="muted">Version ${esc(d.version||'—')} · Revision ${esc(d.revision_date||'—')}</div></div><button class="btn ghost" type="button" data-open-doc="${d.id}">Open</button></div>`).join(''):'<div class="notice">No safety documents are currently linked. Follow your main training/instructions and ask your manager if you are unsure.</div>'}</div>
+      <form id="safetyAckForm"><label class="ack-check"><input id="safetyAckCheck" type="checkbox" required> ${esc(statement)}</label><div class="actions"><button class="btn warn" type="submit">Acknowledge & continue</button><button class="btn ghost" type="button" id="safetyAckCancel">Cancel</button></div></form>`);
+    document.querySelectorAll('[data-open-doc]').forEach(b=>b.onclick=()=>openSafetyDocument(byId(S.safetyDocs,b.dataset.openDoc)));
+    document.getElementById('safetyAckCancel').onclick=()=>openItem(item.id);
+    document.getElementById('safetyAckForm').onsubmit=async e=>{
+      e.preventDefault();
+      const snapshot=docs.map(d=>({id:d.id,type:d.document_type,title:d.title,version:d.version||null,revision_date:d.revision_date||null,uploaded_at:d.uploaded_at}));
+      const row={item_id:item.id,user_id:S.profile.id,risk_rating:riskRating(item),statement,acknowledgement_reason:status.reason,documents_snapshot:snapshot};
+      const {error}=await sb.from('safety_acknowledgements').insert(row);
+      if(error){setNotice(parseError(error),'error');render();return;}
+      await loadData({transactions:false,docs:false});
+      closeModal();
+      onContinue();
+    };
+  }
+
   async function openItem(id) {
     const i=byId(S.items,id); if(!i) return;
     S.selectedItemId=id;
     const photoUrl=await signedUrl('item-photos',i.primary_photo_path,3600);
-    const docs=S.safetyDocs.filter(d=>d.item_id===id&&d.active);
+    const docs=activeSafetyDocs(id);
     const pos=itemPositions(id);
     const total=itemTotal(id);
+    const onOrder=itemOnOrder(id);
+    const suppliers=suppliersForItem(id);
+    const itemOrders=openOrdersForItem(id);
+    const safetyStatus=safetyReminderStatus(i);
     const locationTotals=new Map();
     for(const b of pos){const l=byId(S.locations,b.location_id);if(!l)continue;const key=l.location_name;locationTotals.set(key,(locationTotals.get(key)||0)+num(b.quantity));}
     const recent=S.transactions.filter(t=>t.item_id===id).slice(0,25);
     showModal(`<header><div><h2>${esc(i.name)}</h2><div class="muted">${esc(i.item_code)}</div></div><button class="close" data-close>×</button></header>
       <div class="split"><div>
-        ${photoUrl?`<img class="photo" src="${esc(photoUrl)}" alt="${esc(i.name)}">`:''}
-        <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Overall stock</div><div class="stat">${qty(total)}</div></div><div class="card"><div class="muted">Reorder level</div><div class="stat">${qty(i.reorder_level)}</div></div></div>
+        ${photoUrl?`<img class="photo zoomable" id="itemPhoto" src="${esc(photoUrl)}" alt="${esc(i.name)}" title="Tap to enlarge">`:''}
+        <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Overall stock</div><div class="stat">${qty(total)}</div></div><div class="card"><div class="muted">On order</div><div class="stat">${qty(onOrder)}</div></div><div class="card"><div class="muted">Reorder level</div><div class="stat">${qty(i.reorder_level)}</div></div></div>
         <h3>Totals by location</h3>${locationTotals.size?[...locationTotals.entries()].map(([name,q])=>`<div class="location-chip"><strong>${esc(name)}</strong> · ${qty(q)}</div>`).join(''):'<span class="muted">No stock assigned.</span>'}<h3>Exact stock positions</h3>${pos.length?pos.map(b=>{const l=byId(S.locations,b.location_id);return `<div class="location-chip"><strong>${esc(l?.location_name||'Unknown')}</strong> → ${esc(effectiveBinCode(l)?`Bin Ref ${effectiveBinCode(l)}`:'No bin ref')} · ${qty(b.quantity)}</div>`;}).join(''):'<div class="notice">No stock location currently has a positive quantity.</div>'}
       </div><div>
-        <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div>${i.is_chemical?'<div style="margin-top:.7rem"><span class="badge chemical">Chemical / hazardous item</span></div>':''}</div>
-        <div class="actions"><button class="btn good" data-stock-action="ADD">Add stock</button><button class="btn warn" data-stock-action="USE">Use / remove</button><button class="btn" data-stock-action="MOVE">Move stock</button><button class="btn secondary" data-stock-action="ADJUST">Adjust</button></div>
-        <div class="actions"><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()?'<button class="btn ghost" id="editItemBtn">Edit item</button>':''}</div>
+        <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div><div style="margin-top:.7rem"><strong>Risk rating</strong><br><span class="badge risk ${riskClass(riskRating(i))}">${esc(riskLabel(riskRating(i)))}</span></div>${onOrder>0?`<div style="margin-top:.7rem"><span class="badge order">ON ORDER ${qty(onOrder)}</span></div>`:''}${i.is_chemical?'<div style="margin-top:.7rem"><span class="badge chemical">Chemical / hazardous item</span></div>':''}${safetyStatus.due&&riskRating(i)!=='NONE'?`<div class="notice risk-notice">Safety reminder due before next recorded use.</div>`:''}</div>
+        <div class="actions quick-actions"><button class="btn good" data-stock-action="ADD">+ Add stock</button><button class="btn warn" data-stock-action="USE">− Use stock</button><button class="btn secondary" data-stock-action="ADJUST">Adjust count</button><button class="btn ghost" data-stock-action="MOVE">Move stock</button></div>
+        <div class="actions"><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()?'<button class="btn ghost" id="editItemBtn">Edit item</button><button class="btn ghost" id="suppliersBtn">Suppliers 1–3</button><button class="btn" id="orderItemBtn">Order item</button>':''}</div>
       </div></div>
-      ${i.is_chemical?`<div class="card" style="margin-top:1rem"><h3>Safety documents</h3><div id="docList">${docs.length?docs.map(d=>`<div class="item-row"><div><strong>${esc(docTypeLabel(d.document_type))}</strong> · ${esc(d.title)}<div class="muted">Version ${esc(d.version||'—')} · Revision ${esc(d.revision_date||'—')} · Review ${esc(d.review_date||'—')}</div></div><button class="btn ghost" data-open-doc="${d.id}">Open</button></div>`).join(''):'<p class="muted">No safety documents uploaded yet.</p>'}</div>${canManage()?'<button class="btn" id="uploadDocBtn">Upload safety document</button>':''}</div>`:''}
+      <div class="card" style="margin-top:1rem"><h3>Suppliers & orders</h3>
+        ${suppliers.length?suppliers.map(s=>`<div class="supplier-line"><strong>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</strong>${s.preferred?' <span class="badge">Preferred</span>':''}<div class="muted">Ref ${esc(s.supplier_ref||'—')} · Pack ${qty(s.pack_size||1)} · Lead ${s.lead_time_days==null?'—':esc(s.lead_time_days)+' days'} · ${s.unit_price==null?'Price —':money(s.unit_price)}</div></div>`).join(''):'<p class="muted">No suppliers saved yet.</p>'}
+        ${itemOrders.length?`<div style="margin-top:.7rem"><strong>Currently on order</strong>${itemOrders.map(o=>`<div class="muted">${qty(orderRemaining(o))} from ${esc(o.supplier_name)}${o.expected_date?` · expected ${fmtShortDate(o.expected_date)}`:''}</div>`).join('')}</div>`:''}
+      </div>
+      ${(docs.length||riskRating(i)!=='NONE'||canManage())?`<div class="card" style="margin-top:1rem"><h3>Safety documents</h3><div id="docList">${docs.length?docs.map(d=>`<div class="item-row"><div><strong>${esc(docTypeLabel(d.document_type))}</strong> · ${esc(d.title)}<div class="muted">Version ${esc(d.version||'—')} · Revision ${esc(d.revision_date||'—')} · Review ${esc(d.review_date||'—')}</div></div><button class="btn ghost" data-open-doc="${d.id}">Open</button></div>`).join(''):'<p class="muted">No safety documents uploaded yet.</p>'}</div>${canManage()?'<button class="btn" id="uploadDocBtn">Upload safety document</button>':''}</div>`:''}
       <div class="card" style="margin-top:1rem"><h3>Recent item history</h3>${transactionTable(recent)}</div>`);
-    document.querySelectorAll('[data-stock-action]').forEach(b=>b.onclick=()=>openStockAction(i,b.dataset.stockAction));
+    document.querySelectorAll('[data-stock-action]').forEach(b=>b.onclick=()=>requestStockAction(i,b.dataset.stockAction));
     document.getElementById('printQrBtn').onclick=()=>printQr(i);
+    const photo=document.getElementById('itemPhoto'); if(photo) photo.onclick=()=>photo.classList.toggle('photo-large');
     const edit=document.getElementById('editItemBtn'); if(edit) edit.onclick=()=>openEditItem(i);
+    const suppliersBtn=document.getElementById('suppliersBtn'); if(suppliersBtn) suppliersBtn.onclick=()=>openSupplierEditor(i);
+    const orderItemBtn=document.getElementById('orderItemBtn'); if(orderItemBtn) orderItemBtn.onclick=()=>openCreateOrder(i.id);
     const up=document.getElementById('uploadDocBtn'); if(up) up.onclick=()=>openSafetyUpload(i);
     document.querySelectorAll('[data-open-doc]').forEach(b=>b.onclick=()=>openSafetyDocument(byId(S.safetyDocs,b.dataset.openDoc)));
   }
@@ -786,15 +1155,75 @@
     };
   }
 
+
+  function openSupplierEditor(item) {
+    if(!canManage())return;
+    const existing=suppliersForItem(item.id);
+    const preferred=existing.find(s=>s.preferred)?.supplier_slot || existing[0]?.supplier_slot || 1;
+    const section=slot=>{
+      const s=existing.find(x=>num(x.supplier_slot)===slot);
+      return `<div class="supplier-editor card">
+        <div class="supplier-editor-title"><h3>Supplier ${slot}</h3><label class="preferred-radio"><input type="radio" name="preferredSupplier" value="${slot}" ${preferred===slot?'checked':''}> Preferred</label></div>
+        <div class="form-grid">
+          <div><label>Supplier name</label><input id="supplierName${slot}" value="${esc(s?.supplier_name||'')}" placeholder="Leave blank if unused"></div>
+          <div><label>Supplier part/reference</label><input id="supplierRef${slot}" value="${esc(s?.supplier_ref||'')}"></div>
+          <div><label>Price (£, optional)</label><input id="supplierPrice${slot}" type="number" min="0" step="0.01" value="${esc(s?.unit_price??'')}"></div>
+          <div><label>Pack size</label><input id="supplierPack${slot}" type="number" min="0.001" step="0.001" value="${esc(s?.pack_size??1)}"></div>
+          <div><label>Lead time (days)</label><input id="supplierLead${slot}" type="number" min="0" step="1" value="${esc(s?.lead_time_days??'')}"></div>
+          <div><label>Notes</label><input id="supplierNotes${slot}" value="${esc(s?.notes||'')}"></div>
+        </div>
+      </div>`;
+    };
+    showModal(`<header><div><h2>Suppliers 1–3</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header>
+      <form id="supplierForm"><p class="muted">Save up to three suppliers for this item. The preferred supplier is shown first on Suggested Orders.</p>
+      ${section(1)}${section(2)}${section(3)}
+      <div class="actions"><button class="btn" type="submit">Save suppliers</button></div></form>`);
+    document.getElementById('supplierForm').onsubmit=async e=>{
+      e.preventDefault();
+      const pref=num(document.querySelector('input[name="preferredSupplier"]:checked')?.value||1);
+      try{
+        for(let slot=1;slot<=3;slot++){
+          const name=document.getElementById(`supplierName${slot}`).value.trim();
+          const old=existing.find(x=>num(x.supplier_slot)===slot);
+          if(!name){
+            if(old){const {error}=await sb.from('item_suppliers').delete().eq('id',old.id);if(error)throw error;}
+            continue;
+          }
+          const row={
+            item_id:item.id,
+            supplier_slot:slot,
+            supplier_name:name,
+            supplier_ref:document.getElementById(`supplierRef${slot}`).value.trim()||null,
+            unit_price:document.getElementById(`supplierPrice${slot}`).value===''?null:num(document.getElementById(`supplierPrice${slot}`).value),
+            pack_size:num(document.getElementById(`supplierPack${slot}`).value)||1,
+            lead_time_days:document.getElementById(`supplierLead${slot}`).value===''?null:Math.round(num(document.getElementById(`supplierLead${slot}`).value)),
+            notes:document.getElementById(`supplierNotes${slot}`).value.trim()||null,
+            preferred:slot===pref,
+            updated_at:new Date().toISOString()
+          };
+          const {error}=await sb.from('item_suppliers').upsert(row,{onConflict:'item_id,supplier_slot'});
+          if(error)throw error;
+        }
+        await loadData({transactions:false,docs:false});closeModal();setNotice('Suppliers updated.');render();
+      }catch(err){setNotice(parseError(err),'error');}
+    };
+  }
+
   function itemFormHtml(i=null) {
+    const categories=categoryNames();
+    const currentCategory=String(i?.category||'');
+    if(currentCategory && !categories.includes(currentCategory)) categories.push(currentCategory);
+    categories.sort((a,b)=>a.localeCompare(b));
+    const currentRisk=riskRating(i);
     return `<header><h2>${i?'Edit item':'Add new item'}</h2><button class="close" data-close>×</button></header><form id="itemForm"><div class="form-grid">
       <div><label>Item name</label><input id="newName" value="${esc(i?.name||'')}" required></div>
       <div><label>Item code</label><input id="newCode" value="${esc(i?.item_code||'')}" required></div>
       <div><label>QR value</label><input id="newQr" value="${esc(i?.qr_value||'')}" placeholder="Defaults to item code"><button class="btn ghost" id="generateQr" type="button" style="margin-top:.35rem">Generate code</button></div>
-      <div><label>Category</label><input id="newCategory" value="${esc(i?.category||'')}"></div>
+      <div><label>Category</label><select id="newCategory"><option value="">Uncategorised</option>${categories.map(c=>`<option value="${esc(c)}" ${currentCategory===c?'selected':''}>${esc(c)}</option>`).join('')}</select></div>
       <div><label>Reorder level</label><input id="newReorder" type="number" step="0.001" min="0" value="${esc(i?.reorder_level??0)}"></div>
       <div><label>Unit cost (£, optional)</label><input id="newCost" type="number" step="0.01" min="0" value="${esc(i?.unit_cost??'')}"></div>
-      <div class="full"><label><input id="newChemical" type="checkbox" style="width:auto" ${i?.is_chemical?'checked':''}> Chemical / hazardous item (enable safety documents)</label></div>
+      <div class="full"><label><input id="newChemical" type="checkbox" style="width:auto" ${i?.is_chemical?'checked':''}> Chemical / hazardous item</label></div>
+      ${canAdmin()?`<div><label>Risk rating</label><select id="newRiskRating"><option value="NONE" ${currentRisk==='NONE'?'selected':''}>None (default)</option><option value="GREEN" ${currentRisk==='GREEN'?'selected':''}>Green · Low risk</option><option value="AMBER" ${currentRisk==='AMBER'?'selected':''}>Amber · Medium risk</option><option value="RED" ${currentRisk==='RED'?'selected':''}>Red · High risk</option></select></div><div><label>Risk rating change reason (optional)</label><input id="riskChangeReason" placeholder="Why the rating changed"></div>`:`<div><label>Risk rating</label><div><span class="badge risk ${riskClass(currentRisk)}">${esc(riskLabel(currentRisk))}</span></div><div class="muted">Only an admin can change this.</div></div>`}
       <div class="full"><label>Item photo (optional)</label><input id="newPhoto" type="file" accept="image/*" capture="environment"></div>
       ${i?'':`<div><label>Opening stock (optional)</label><input id="openingQty" type="number" min="0" step="0.001" value="0"></div><div><label>Opening location</label><select id="openingLocationName"><option value="">None</option>${locationNames().map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div><div><label>Opening Bin Ref (optional)</label><input id="openingBinRef" list="openingBinList" placeholder="e.g. B12"><datalist id="openingBinList"></datalist></div>`}
       </div><div class="actions"><button class="btn" type="submit">${i?'Save changes':'Create item'}</button></div></form>`;
@@ -814,10 +1243,18 @@
     }
     document.getElementById('itemForm').onsubmit=async e=>{
       e.preventDefault();
-      const row={name:name.value.trim(),item_code:code.value.trim(),qr_value:(qr.value.trim()||code.value.trim()),category:document.getElementById('newCategory').value.trim()||null,reorder_level:num(document.getElementById('newReorder').value),unit_cost:document.getElementById('newCost').value===''?null:num(document.getElementById('newCost').value),is_chemical:document.getElementById('newChemical').checked};
+      const row={name:name.value.trim(),item_code:code.value.trim(),qr_value:(qr.value.trim()||code.value.trim()),category:document.getElementById('newCategory').value||null,reorder_level:num(document.getElementById('newReorder').value),unit_cost:document.getElementById('newCost').value===''?null:num(document.getElementById('newCost').value),is_chemical:document.getElementById('newChemical').checked};
       let itemId=existing?.id;
       if(existing){const {error}=await sb.from('items').update(row).eq('id',existing.id);if(error){setNotice(parseError(error),'error');closeModal();render();return;}}
       else {row.created_by=S.profile.id;const {data,error}=await sb.from('items').insert(row).select('id').single();if(error){setNotice(parseError(error),'error');closeModal();render();return;}itemId=data.id;}
+      if(canAdmin()){
+        const selectedRisk=document.getElementById('newRiskRating')?.value||'NONE';
+        const oldRisk=existing?riskRating(existing):'NONE';
+        if(selectedRisk!==oldRisk){
+          const {error}=await sb.rpc('set_item_risk_rating',{p_item_id:itemId,p_rating:selectedRisk,p_reason:document.getElementById('riskChangeReason')?.value.trim()||null});
+          if(error){setNotice(`Item saved, but risk rating update failed: ${parseError(error)}`,'error');}
+        }
+      }
       const photo=document.getElementById('newPhoto').files[0];
       if(photo){try{await uploadItemPhoto(itemId,photo);}catch(err){setNotice(`Item saved, but photo upload failed: ${parseError(err)}`,'error');}}
       if(!existing){
@@ -826,6 +1263,26 @@
         else if(opening>0){try{const loc=await ensurePosition(locationName,binRef);const {error}=await sb.rpc('apply_stock_transaction',{p_item_id:itemId,p_type:'ADD',p_quantity:opening,p_from_location_id:null,p_to_location_id:loc,p_new_quantity:null,p_reason:'Opening stock',p_reference:null,p_notes:null});if(error)throw error;}catch(err){setNotice(`Item created, but opening stock failed: ${parseError(err)}`,'error');}}
       }
       await loadData();closeModal();if(!S.notice||S.notice.type!=='error')setNotice(existing?'Item updated.':'New item created.');render();
+    };
+  }
+
+  function openCategoryManager() {
+    if(!canAdmin())return;
+    const active=S.categories.filter(c=>c.active);
+    showModal(`<header><h2>Categories</h2><button class="close" data-close>×</button></header><p class="muted">Categories appear in the item form and as a filter on manual search.</p><div class="item-list">${active.map(c=>`<div class="item-row"><div><strong>${esc(c.name)}</strong></div><button class="btn danger" data-hide-category="${c.id}">Hide</button></div>`).join('')||'<div class="notice">No categories configured.</div>'}</div><form id="addCategoryForm" style="margin-top:1rem"><label>Add category</label><div class="toolbar"><input id="newCategoryName" placeholder="e.g. PPE" required><button class="btn" type="submit">Add</button></div></form>`);
+    document.querySelectorAll('[data-hide-category]').forEach(b=>b.onclick=async()=>{
+      const {error}=await sb.from('inventory_categories').update({active:false}).eq('id',b.dataset.hideCategory);
+      if(error){setNotice(parseError(error),'error');render();return;}
+      await loadData({transactions:false,docs:false});openCategoryManager();
+    });
+    document.getElementById('addCategoryForm').onsubmit=async e=>{
+      e.preventDefault();const name=document.getElementById('newCategoryName').value.trim();if(!name)return;
+      const existing=S.categories.find(c=>c.name.toLowerCase()===name.toLowerCase());
+      let error;
+      if(existing)({error}=await sb.from('inventory_categories').update({active:true}).eq('id',existing.id));
+      else ({error}=await sb.from('inventory_categories').insert({name,sort_order:100}));
+      if(error){setNotice(parseError(error),'error');render();return;}
+      await loadData({transactions:false,docs:false});openCategoryManager();
     };
   }
 
