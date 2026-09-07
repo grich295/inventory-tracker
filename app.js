@@ -41,6 +41,14 @@
     categories: [],
     itemSuppliers: [],
     purchaseOrders: [],
+    userPrefs: [],
+    safetyGroups: [],
+    safetyGroupItems: [],
+    safetyGroupDocs: [],
+    safetyGroupAcks: [],
+    stocktakeSettings: null,
+    stocktakeTasks: [],
+    stocktakeItems: [],
     backupRunning: false,
     backupStatus: '',
     orderTab: 'suggested',
@@ -48,6 +56,10 @@
     search: '',
     categoryFilter: '',
     selectedItemId: null,
+    showArchived: false,
+    legacyItemFilter: '',
+    legacyFrom: '',
+    legacyTo: '',
     scanner: null,
     chart: null,
     liveChannel: null,
@@ -76,6 +88,19 @@
   const byId = (arr, id) => arr.find(x => x.id === id);
   const canManage = () => ['admin','manager'].includes(S.profile?.role);
   const canAdmin = () => S.profile?.role === 'admin';
+  const roleLabel = r => ({admin:'Admin',manager:'Manager',staff:'User'})[String(r||'staff')] || 'User';
+  const countsAsUsage = t => t?.transaction_type==='USE' && !t?.exclude_from_usage && (!t?.legacy_import || !t?.legacy_classification || t.legacy_classification==='USE');
+  const itemPref = itemId => S.userPrefs.find(x=>x.item_id===itemId&&x.user_id===S.profile?.id) || null;
+  const safetyGroupLink = itemId => S.safetyGroupItems.find(x=>x.item_id===itemId) || null;
+  const safetyGroupForItem = itemId => { const l=safetyGroupLink(itemId); return l ? byId(S.safetyGroups,l.group_id) : null; };
+  const effectiveSafetyRisk = item => safetyGroupForItem(item?.id)?.risk_rating || riskRating(item);
+  const riskAssessed = item => !!item?.risk_assessed_at || !!safetyGroupForItem(item?.id);
+  const assessmentLabel = item => {
+    const g=safetyGroupForItem(item?.id);
+    if(g) return `${riskLabel(g.risk_rating)} ✓`;
+    if(!item?.risk_assessed_at) return 'Not assessed';
+    return `${riskLabel(riskRating(item)).replace(' · Low','').replace(' · Medium','').replace(' · High','')} ✓`;
+  };
   const riskRating = i => String(i?.risk_rating || 'NONE').toUpperCase();
   const riskLabel = r => ({NONE:'None',GREEN:'Green · Low',AMBER:'Amber · Medium',RED:'Red · High'})[String(r||'NONE').toUpperCase()] || 'None';
   const riskClass = r => `risk-${String(r||'NONE').toLowerCase()}`;
@@ -105,6 +130,7 @@
   const itemOnOrder = itemId => openOrdersForItem(itemId).reduce((a,o)=>a+orderRemaining(o),0);
   const suppliersForItem = itemId => S.itemSuppliers.filter(s=>s.item_id===itemId).sort((a,b)=>num(a.supplier_slot)-num(b.supplier_slot));
   const preferredSupplier = itemId => suppliersForItem(itemId).find(s=>s.preferred) || suppliersForItem(itemId)[0] || null;
+  const globalSupplierNames = () => [...new Set([...S.itemSuppliers.map(s=>s.supplier_name),...S.purchaseOrders.map(o=>o.supplier_name)].map(x=>String(x||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
   const userName = id => id ? (byId(S.profiles,id)?.display_name || 'Unknown user') : 'Legacy import';
   const itemName = id => byId(S.items,id)?.name || 'Unknown item';
   const locName = id => locationLabel(byId(S.locations,id));
@@ -140,7 +166,7 @@
   }
 
   async function loadData({transactions=true, docs=true}={}) {
-    const [profiles, items, locations, balances, itemSuppliers, purchaseOrders, categories, safetyAcks, riskHistory] = await Promise.all([
+    const [profiles, items, locations, balances, itemSuppliers, purchaseOrders, categories, safetyAcks, riskHistory, userPrefs, safetyGroups, safetyGroupItems, safetyGroupDocs, safetyGroupAcks, stocktakeSettingsRows, stocktakeTasks, stocktakeItems] = await Promise.all([
       fetchAll('profiles','*','display_name',true),
       fetchAll('items','*','name',true),
       fetchAll('stock_locations','*','location_name',true),
@@ -149,11 +175,21 @@
       fetchAll('purchase_orders','*','ordered_at',false),
       fetchAll('inventory_categories','*','sort_order',true),
       fetchAll('safety_acknowledgements','*','acknowledged_at',false),
-      fetchAll('risk_rating_history','*','changed_at',false)
+      fetchAll('risk_rating_history','*','changed_at',false),
+      fetchAll('user_item_preferences','*','last_viewed_at',false),
+      fetchAll('safety_groups','*','name',true),
+      fetchAll('safety_group_items','*'),
+      fetchAll('safety_group_documents','*','uploaded_at',false),
+      fetchAll('safety_group_acknowledgements','*','acknowledged_at',false),
+      fetchAll('stocktake_settings','*'),
+      fetchAll('stocktake_tasks','*','created_at',false),
+      fetchAll('stocktake_task_items','*')
     ]);
     S.profiles = profiles; S.items = items; S.locations = locations; S.balances = balances;
     S.itemSuppliers = itemSuppliers; S.purchaseOrders = purchaseOrders; S.categories = categories;
-    S.safetyAcks = safetyAcks; S.riskHistory = riskHistory;
+    S.safetyAcks = safetyAcks; S.riskHistory = riskHistory; S.userPrefs=userPrefs;
+    S.safetyGroups=safetyGroups; S.safetyGroupItems=safetyGroupItems; S.safetyGroupDocs=safetyGroupDocs; S.safetyGroupAcks=safetyGroupAcks;
+    S.stocktakeSettings=stocktakeSettingsRows[0]||null; S.stocktakeTasks=stocktakeTasks; S.stocktakeItems=stocktakeItems;
     S.profile = byId(S.profiles, S.session?.user?.id) || S.profile;
     if (transactions) S.transactions = await fetchAll('transactions','*','occurred_at',false);
     if (docs) S.safetyDocs = await fetchAll('safety_documents','*','uploaded_at',false);
@@ -170,6 +206,7 @@
       if(!S.session)return;
       try{
         await loadData();
+        if(S.profile?.active===false){await sb.auth.signOut();return;}
         if(S.page!=='scan' && !document.getElementById('modalBackdrop')) render();
       }catch(e){console.warn('Live refresh failed',e);}
     },350);
@@ -178,7 +215,7 @@
   function startRealtime() {
     if(S.liveChannel||!S.session)return;
     let c=sb.channel('inventory-live');
-    for(const table of ['stock_balances','transactions','items','stock_locations','safety_documents','profiles','item_suppliers','purchase_orders','inventory_categories','safety_acknowledgements','risk_rating_history']){
+    for(const table of ['stock_balances','transactions','items','stock_locations','safety_documents','profiles','item_suppliers','purchase_orders','inventory_categories','safety_acknowledgements','risk_rating_history','user_item_preferences','safety_groups','safety_group_items','safety_group_documents','safety_group_acknowledgements','stocktake_tasks','stocktake_task_items']){
       c=c.on('postgres_changes',{event:'*',schema:'public',table},queueLiveRefresh);
     }
     S.liveChannel=c.subscribe();
@@ -191,7 +228,12 @@
     const qs = window.location.search;
     S.passwordMode = hash.includes('type=recovery') || hash.includes('type=invite') || qs.includes('type=recovery') || qs.includes('type=invite');
     if (S.session) {
-      try { await loadData(); startRealtime(); } catch (e) { setNotice(parseError(e),'error'); }
+      try {
+        await loadData();
+        if(S.profile?.active===false){ await sb.auth.signOut(); return; }
+        try{ await sb.rpc('ensure_stocktake_task',{p_force:false}); await loadData({transactions:false,docs:false}); }catch(_){}
+        startRealtime();
+      } catch (e) { setNotice(parseError(e),'error'); }
     }
     render();
   }
@@ -200,7 +242,12 @@
     S.session = session;
     if (event === 'PASSWORD_RECOVERY') S.passwordMode = true;
     if (session) {
-      try { await loadData(); startRealtime(); } catch (e) { S.notice = {message:parseError(e),type:'error'}; }
+      try {
+        await loadData();
+        if(S.profile?.active===false){ await sb.auth.signOut(); return; }
+        try{ await sb.rpc('ensure_stocktake_task',{p_force:false}); await loadData({transactions:false,docs:false}); }catch(_){}
+        startRealtime();
+      } catch (e) { S.notice = {message:parseError(e),type:'error'}; }
     } else {
       stopRealtime();
       S.profile = null; S.profiles=[]; S.items=[]; S.locations=[]; S.balances=[]; S.transactions=[];
@@ -270,11 +317,11 @@
 
   function shellHtml(content) {
     const nav = [
-      ['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['reports','Reports'],['history','History']
+      ['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['stocktake','Stocktake'],['reports','Reports'],['history','History']
     ];
-    if (S.profile?.role === 'admin') nav.push(['users','Users'],['backup','Backup']);
+    if (S.profile?.role === 'admin') nav.push(['users','Users'],['safety','Safety'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(S.profile?.role || 'staff')} · v6.3</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.0</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${content}</main>
     </div>`;
@@ -290,9 +337,12 @@
     if (S.page==='items') return itemsHtml();
     if (S.page==='locations') return locationsHtml();
     if (S.page==='orders') return ordersHtml();
+    if (S.page==='stocktake') return stocktakeHtml();
     if (S.page==='reports') return reportsHtml();
     if (S.page==='history') return historyHtml();
     if (S.page==='users') return usersHtml();
+    if (S.page==='safety') return safetyGroupsHtml();
+    if (S.page==='legacy') return legacyReviewHtml();
     if (S.page==='backup') return backupHtml();
     return dashboardHtml();
   }
@@ -302,7 +352,7 @@
     const totalUnits = S.balances.reduce((a,b)=>a+num(b.quantity),0);
     const low = active.filter(i => num(i.reorder_level)>0 && itemTotal(i.id)<=num(i.reorder_level));
     const mStart = new Date(); mStart.setDate(1); mStart.setHours(0,0,0,0);
-    const usedMonth = S.transactions.filter(t=>t.transaction_type==='USE' && new Date(t.occurred_at)>=mStart).reduce((a,t)=>a+num(t.quantity),0);
+    const usedMonth = S.transactions.filter(t=>countsAsUsage(t) && new Date(t.occurred_at)>=mStart).reduce((a,t)=>a+num(t.quantity),0);
     const onOrderUnits = S.purchaseOrders.filter(o=>['OPEN','PART_RECEIVED'].includes(o.status)).reduce((a,o)=>a+orderRemaining(o),0);
     const recent = S.transactions.slice(0,8);
     return `
@@ -314,6 +364,8 @@
         <div class="card"><div class="muted">Used this month</div><div class="stat">${qty(usedMonth)}</div></div>
       </div>
       <div class="toolbar" style="margin-top:1rem"><button class="btn good" data-go="scan">Scan Stock QR</button><button class="btn" data-go="items">Manual search</button>${canManage()?'<button class="btn secondary" id="dashAddItem">Add new item</button>':''}</div>
+      ${assignedOpenStocktake()?`<div class="notice warn" style="margin-top:1rem"><strong>Stocktake ${assignedOpenStocktake().status==='OVERDUE'?'overdue':'due'}.</strong> About ${stocktakeItemsFor(assignedOpenStocktake().id).length} items have been assigned to you. <button class="btn ghost" data-go="stocktake">Open Stocktake</button></div>`:''}
+      ${dashboardPersonalHtml()}
       ${canAdmin()&&backupDue()?`<div class="notice warn" style="margin-top:1rem"><strong>Admin backup due.</strong> ${lastBackupAt()?`Last backup: ${esc(fmtDate(lastBackupAt()))}.`:'No app backup has been recorded on this device yet.'} <button class="btn ghost" data-go="backup">Open Backup</button></div>`:''}
       ${low.length?`<div class="card"><h3>Low stock</h3><div class="item-list">${low.slice(0,8).map(itemRowHtml).join('')}</div></div>`:''}
       <div class="card" style="margin-top:1rem"><h3>Recent activity</h3>${transactionTable(recent)}</div>`;
@@ -342,7 +394,11 @@
   function itemRowHtml(i) {
     const total=itemTotal(i.id); const low=num(i.reorder_level)>0 && total<=num(i.reorder_level); const onOrder=itemOnOrder(i.id);
     const pos=itemPositions(i.id).slice(0,3).map(b=>`${esc(locationLabel(byId(S.locations,b.location_id)))} (${qty(b.quantity)})`).join(' · ');
-    return `<div class="item-row" data-item="${i.id}"><div><div class="item-title">${esc(i.name)}</div><div class="muted">${esc(i.item_code)}${i.category?' · '+esc(i.category):''}</div><div class="muted">${pos || 'No stock location set'}</div>${riskRating(i)!=='NONE'?`<span class="badge risk ${riskClass(riskRating(i))}">${esc(riskLabel(riskRating(i)))}</span> `:''}${i.is_chemical?'<span class="badge chemical">Chemical</span> ':''}${low?'<span class="badge low">Low stock</span> ':''}${onOrder>0?`<span class="badge order">On order ${qty(onOrder)}</span>`:''}</div><div class="qty">${qty(total)}</div></div>`;
+    const group=safetyGroupForItem(i.id);
+    const risk=group?.risk_rating || riskRating(i);
+    const assessed=riskAssessed(i);
+    const badge=assessed?`<span class="badge risk ${riskClass(risk)}">${esc(assessmentLabel(i))}</span>`:`<span class="badge muted">Not assessed</span>`;
+    return `<div class="item-row inventory-item-row ${i.active?'':'archived-row'}" data-item="${i.id}">${i.primary_photo_path?`<img class="item-thumb" data-photo-path="${esc(i.primary_photo_path)}" alt="">`:`<div class="item-thumb placeholder">📦</div>`}<div class="item-main"><div class="item-title">${esc(i.name)}${i.active?'':' <span class="badge muted">Archived</span>'}</div><div class="muted">${esc(i.item_code)}${i.category?' · '+esc(i.category):''}</div><div class="muted">${pos || 'No stock location set'}</div>${badge} ${group?`<span class="badge">${esc(group.name)}</span> `:''}${i.is_chemical?'<span class="badge chemical">Chemical</span> ':''}${low&&i.active?'<span class="badge low">Low stock</span> ':''}${onOrder>0?`<span class="badge order">On order ${qty(onOrder)}</span>`:''}</div><div class="qty">${qty(total)}</div></div>`;
   }
 
   function categoryNames() {
@@ -353,7 +409,7 @@
 
   function filteredItems() {
     const q=S.search.toLowerCase().trim();
-    return S.items.filter(i=>i.active).filter(i=>{
+    return S.items.filter(i=>S.showArchived?!i.active:i.active).filter(i=>{
       if(S.categoryFilter && String(i.category||'')!==S.categoryFilter) return false;
       if(!q) return true;
       const positionText=itemPositions(i.id).map(b=>locationLabel(byId(S.locations,b.location_id))).join(' ');
@@ -363,7 +419,7 @@
 
   function itemsHtml() {
     const filtered=filteredItems();
-    return `<div class="toolbar"><input id="itemSearch" value="${esc(S.search)}" placeholder="Search item, code, location or bin"><select id="categoryFilter"><option value="">All categories</option>${categoryNames().map(c=>`<option value="${esc(c)}" ${S.categoryFilter===c?'selected':''}>${esc(c)}</option>`).join('')}</select>${canManage()?'<button class="btn" id="addItemBtn">Add new item</button>':''}${canAdmin()?'<button class="btn ghost" id="manageCategoriesBtn">Categories</button>':''}</div>
+    return `<div class="toolbar"><input id="itemSearch" value="${esc(S.search)}" placeholder="Search item, code, location or bin"><select id="categoryFilter"><option value="">All categories</option>${categoryNames().map(c=>`<option value="${esc(c)}" ${S.categoryFilter===c?'selected':''}>${esc(c)}</option>`).join('')}</select>${canManage()?'<button class="btn" id="addItemBtn">Add new item</button>':''}${canAdmin()?`<button class="btn ghost" id="toggleArchivedBtn">${S.showArchived?'Active items':'Archived items'}</button><button class="btn ghost" id="manageCategoriesBtn">Categories</button>`:''}</div>
       <div id="itemCount" class="muted" style="margin-bottom:.6rem">${filtered.length} item${filtered.length===1?'':'s'}</div>
       <div id="itemList" class="item-list">${filtered.map(itemRowHtml).join('') || '<div class="card">No matching items.</div>'}</div>`;
   }
@@ -375,6 +431,7 @@
     if(list) {
       list.innerHTML=filtered.map(itemRowHtml).join('') || '<div class="card">No matching items.</div>';
       list.querySelectorAll('[data-item]').forEach(el=>el.onclick=()=>openItem(el.dataset.item));
+      hydrateItemThumbnails(list);
     }
   }
 
@@ -412,7 +469,7 @@
     const months=completedMonthWindows(3);
     return S.items.filter(i=>i.active).map(i=>{
       const monthly=months.map(w=>S.transactions
-        .filter(t=>t.transaction_type==='USE'&&t.item_id===i.id&&new Date(t.occurred_at)>=w.start&&new Date(t.occurred_at)<w.end)
+        .filter(t=>countsAsUsage(t)&&t.item_id===i.id&&new Date(t.occurred_at)>=w.start&&new Date(t.occurred_at)<w.end)
         .reduce((a,t)=>a+num(t.quantity),0));
       const used3=monthly.reduce((a,v)=>a+v,0);
       const avg=used3/3;
@@ -498,7 +555,7 @@
 
   function reportTransactions() {
     const r=S.report;
-    let list=S.transactions.filter(t=>t.transaction_type==='USE');
+    let list=S.transactions.filter(countsAsUsage);
     if(r.period==='month') { const from=new Date(monthStartISO()+'T00:00:00'); list=list.filter(t=>new Date(t.occurred_at)>=from); }
     if(r.period==='custom') {
       if(r.from) { const from=new Date(r.from+'T00:00:00'); list=list.filter(t=>new Date(t.occurred_at)>=from); }
@@ -552,13 +609,13 @@
       return `<tr data-item="${i.id}"><td>${esc(i.name)}</td><td>${qty(itemTotal(i.id))}</td><td>${esc(kept)}</td><td>${types.has('RISK_ASSESSMENT')?'✓':'—'}</td><td>${types.has('SSW')?'✓':'—'}</td><td>${types.has('SDS_MSDS')?'✓':'—'}</td><td>${types.has('COSHH')?'✓':'—'}</td><td>${esc(reviews[0]||'—')}</td></tr>`;
     }).join('');
 
-    const safetyRated=S.items.filter(i=>i.active&&riskRating(i)!=='NONE');
+    const safetyRated=S.items.filter(i=>i.active&&riskAssessed(i));
     const safetyRows=safetyRated.map(i=>{
-      const docs=activeSafetyDocs(i.id);
-      const ackCount=S.safetyAcks.filter(a=>a.item_id===i.id).length;
-      return `<tr data-item="${i.id}"><td>${esc(i.name)}</td><td><span class="badge risk ${riskClass(riskRating(i))}">${esc(riskLabel(riskRating(i)))}</span></td><td>${docs.length}</td><td>${ackCount}</td><td>${esc(fmtDate(i.risk_rating_updated_at))}</td></tr>`;
+      const group=safetyGroupForItem(i.id);const rating=group?.risk_rating||riskRating(i);const docs=allSafetyDocsForItem(i.id);
+      const ackCount=group?S.safetyGroupAcks.filter(a=>a.group_id===group.id).length:S.safetyAcks.filter(a=>a.item_id===i.id).length;
+      return `<tr data-item="${i.id}"><td>${esc(i.name)}</td><td><span class="badge risk ${riskClass(rating)}">${esc(assessmentLabel(i))}</span>${group?`<div class="muted">${esc(group.name)}</div>`:''}</td><td>${docs.length}</td><td>${ackCount}</td><td>${esc(fmtDate(group?.updated_at||i.risk_assessed_at||i.risk_rating_updated_at))}</td></tr>`;
     }).join('');
-    const recentAcks=S.safetyAcks.slice(0,100).map(a=>`<tr><td>${fmtDate(a.acknowledged_at)}</td><td>${esc(userName(a.user_id))}</td><td>${esc(itemName(a.item_id))}</td><td><span class="badge risk ${riskClass(a.risk_rating)}">${esc(riskLabel(a.risk_rating))}</span></td><td>${esc(a.acknowledgement_reason||'—')}</td></tr>`).join('');
+    const recentAcks=[...S.safetyAcks.map(a=>({...a,_label:itemName(a.item_id)})),...S.safetyGroupAcks.map(a=>({...a,_label:byId(S.safetyGroups,a.group_id)?.name||'Unknown Safety Group'}))].sort((a,b)=>new Date(b.acknowledged_at)-new Date(a.acknowledged_at)).slice(0,100).map(a=>`<tr><td>${fmtDate(a.acknowledged_at)}</td><td>${esc(userName(a.user_id))}</td><td>${esc(a._label)}</td><td><span class="badge risk ${riskClass(a.risk_rating)}">${esc(riskLabel(a.risk_rating))}</span></td><td>${esc(a.acknowledgement_reason||'—')}</td></tr>`).join('');
 
     return `<div class="card"><h2>Usage & activity reports</h2>
       <div class="form-grid">
@@ -576,7 +633,7 @@
     <div class="split" style="margin-top:1rem"><div class="card"><h3>Usage by item</h3><div class="table-wrap"><table><thead><tr><th>Item</th><th>Used</th></tr></thead><tbody>${summary.map(x=>`<tr data-item="${x.id}"><td>${esc(x.name)}</td><td>${qty(x.q)}</td></tr>`).join('')||'<tr><td colspan="2">No usage in this period.</td></tr>'}</tbody></table></div></div><div class="card"><h3>12-month usage trend</h3><p class="muted">Choose an item in the filter to analyse whether usage is increasing or decreasing.</p><canvas id="trendChart" height="250"></canvas></div></div>
     <div class="card" style="margin-top:1rem"><h3>Who added, used, moved or adjusted stock</h3><div class="table-wrap"><table><thead><tr><th>User</th><th>Added</th><th>Used</th><th>Moved</th><th>Adjusted</th><th>Actions</th></tr></thead><tbody>${activityRows||'<tr><td colspan="6">No activity in this period.</td></tr>'}</tbody></table></div></div>
     <div class="card" style="margin-top:1rem"><h3>Detailed usage</h3>${transactionTable(list)}</div>
-    ${canAdmin()?`<div class="card" style="margin-top:1rem"><h3>Safety acknowledgement evidence</h3><p class="muted">Downloadable evidence of safety reminders acknowledged by users. This supports, but does not replace, main training and instruction.</p><div class="actions"><button class="btn secondary" id="exportSafetyCsv">Safety CSV</button><button class="btn" id="exportSafetyExcel">Safety Excel</button></div><div class="table-wrap" style="margin-top:.8rem"><table><thead><tr><th>Date/time</th><th>User</th><th>Item</th><th>Risk</th><th>Reason</th></tr></thead><tbody>${recentAcks||'<tr><td colspan="5">No acknowledgements recorded yet.</td></tr>'}</tbody></table></div></div><div class="card" style="margin-top:1rem"><h3>Risk-rated items</h3><div class="table-wrap"><table><thead><tr><th>Item</th><th>Risk</th><th>Safety docs</th><th>Acknowledgements</th><th>Rating last changed</th></tr></thead><tbody>${safetyRows||'<tr><td colspan="5">No items currently have a risk rating.</td></tr>'}</tbody></table></div></div>`:''}
+    ${canAdmin()?`<div class="card" style="margin-top:1rem"><h3>Safety acknowledgement evidence</h3><p class="muted">Downloadable evidence of safety reminders acknowledged by users. This supports, but does not replace, main training and instruction.</p><div class="actions"><button class="btn secondary" id="exportSafetyCsv">Safety CSV</button><button class="btn" id="exportSafetyExcel">Safety Excel</button></div><div class="table-wrap" style="margin-top:.8rem"><table><thead><tr><th>Date/time</th><th>User</th><th>Item</th><th>Risk</th><th>Reason</th></tr></thead><tbody>${recentAcks||'<tr><td colspan="5">No acknowledgements recorded yet.</td></tr>'}</tbody></table></div></div><div class="card" style="margin-top:1rem"><h3>Risk-assessed items</h3><div class="table-wrap"><table><thead><tr><th>Item</th><th>Risk</th><th>Safety docs</th><th>Acknowledgements</th><th>Rating last changed</th></tr></thead><tbody>${safetyRows||'<tr><td colspan="5">No items have been assessed yet.</td></tr>'}</tbody></table></div></div>`:''}
     ${chemicals.length?`<div class="card" style="margin-top:1rem"><h3>Chemical register</h3><p class="muted">Current quantity, exact storage locations and whether key safety documents are on file.</p><div class="table-wrap"><table><thead><tr><th>Chemical</th><th>Stock</th><th>Where kept</th><th>Risk assessment</th><th>SSW</th><th>SDS/MSDS</th><th>COSHH</th><th>Next review</th></tr></thead><tbody>${chemicalRows}</tbody></table></div></div>`:''}`;
   }
 
@@ -590,9 +647,214 @@
   }
 
   function usersHtml() {
-    if(S.profile?.role!=='admin') return '<div class="notice error">Admin access required.</div>';
-    return `<div class="split"><div class="card"><h2>Users</h2><p class="muted">Each person has their own login, password and audit history.</p><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Change role</th></tr></thead><tbody>${S.profiles.map(p=>`<tr><td>${esc(p.display_name)}</td><td>${esc(p.role)}</td><td><select data-role-user="${p.id}" ${p.id===S.profile.id?'disabled':''}><option ${p.role==='staff'?'selected':''}>staff</option><option ${p.role==='manager'?'selected':''}>manager</option><option ${p.role==='admin'?'selected':''}>admin</option></select></td></tr>`).join('')}</tbody></table></div></div>
-      <div class="card"><h2>Invite user</h2><p class="muted">Uses the optional Supabase Edge Function included with this project. The invited person sets their own password.</p><form id="inviteForm"><label>Name</label><input id="inviteName" required><label>Email</label><input id="inviteEmail" type="email" required><label>Role</label><select id="inviteRole"><option>staff</option><option>manager</option><option>admin</option></select><div class="actions"><button class="btn" type="submit">Send invite</button></div></form></div></div>`;
+    if(!canAdmin()) return '<div class="notice error">Admin access required.</div>';
+    const rows=S.profiles.map(p=>`<tr><td>${esc(p.display_name)}<div class="muted">${esc(p.email||'')}</div></td><td>${esc(roleLabel(p.role))}</td><td>${p.active===false?'<span class="badge muted">Disabled</span>':'<span class="badge good">Active</span>'}</td><td><select data-role-user="${p.id}" ${p.id===S.profile.id?'disabled':''}><option value="staff" ${p.role==='staff'?'selected':''}>User</option><option value="manager" ${p.role==='manager'?'selected':''}>Manager</option><option value="admin" ${p.role==='admin'?'selected':''}>Admin</option></select></td><td>${p.id===S.profile.id?'—':p.active===false?`<button class="btn good small" data-user-enable="${p.id}">Re-enable</button>`:`<button class="btn danger small" data-user-disable="${p.id}">Disable</button>`}</td></tr>`).join('');
+    return `<div class="split"><div class="card"><h2>Users</h2><p class="muted">Disable users instead of deleting them so their stock history remains intact.</p><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Status</th><th>Change role</th><th>Access</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+      <div class="card"><h2>Invite user</h2><p class="muted">The invited person receives an email and chooses their own password. The Edge Function must be deployed once from Supabase on your laptop.</p><form id="inviteForm"><label>Name</label><input id="inviteName" required><label>Email</label><input id="inviteEmail" type="email" required><label>Role</label><select id="inviteRole"><option value="staff">User</option><option value="manager">Manager</option><option value="admin">Admin</option></select><div class="actions"><button class="btn" type="submit">Send invite</button></div></form></div></div>`;
+  }
+
+
+  async function hydrateItemThumbnails(root=document) {
+    const imgs=[...root.querySelectorAll?.('img.item-thumb[data-photo-path]')||[]].filter(x=>!x.getAttribute('src'));
+    if(!imgs.length) return;
+    const paths=[...new Set(imgs.map(x=>x.dataset.photoPath).filter(Boolean))];
+    try{
+      const {data,error}=await sb.storage.from('item-photos').createSignedUrls(paths,900);
+      if(error) return;
+      const map=new Map((data||[]).map(x=>[x.path,x.signedUrl]));
+      imgs.forEach(img=>{const u=map.get(img.dataset.photoPath);if(u)img.src=u;});
+    }catch(_){}
+  }
+
+  async function touchRecentItem(itemId) {
+    if(!S.profile?.id) return;
+    const now=new Date().toISOString();
+    const current=itemPref(itemId);
+    let error;
+    if(current){
+      ({error}=await sb.from('user_item_preferences').update({last_viewed_at:now,view_count:num(current.view_count)+1}).eq('user_id',S.profile.id).eq('item_id',itemId));
+      current.last_viewed_at=now; current.view_count=num(current.view_count)+1;
+    }else{
+      const row={user_id:S.profile.id,item_id:itemId,favourite:false,last_viewed_at:now,view_count:1};
+      ({error}=await sb.from('user_item_preferences').insert(row));
+      if(!error)S.userPrefs.push(row);
+    }
+    if(error) console.warn('Recent item update failed',error);
+  }
+
+  async function toggleFavourite(itemId) {
+    const current=itemPref(itemId);
+    const value=!current?.favourite;
+    const now=new Date().toISOString();
+    let error;
+    if(current){({error}=await sb.from('user_item_preferences').update({favourite:value,last_viewed_at:now}).eq('user_id',S.profile.id).eq('item_id',itemId));}
+    else {({error}=await sb.from('user_item_preferences').insert({user_id:S.profile.id,item_id:itemId,favourite:value,last_viewed_at:now,view_count:1}));}
+    if(error){setNotice(parseError(error),'error');render();return;}
+    await loadData({transactions:false,docs:false});
+    openItem(itemId);
+  }
+
+  function companyPopularItems(limit=6) {
+    const totals=new Map();
+    S.transactions.filter(countsAsUsage).forEach(t=>totals.set(t.item_id,(totals.get(t.item_id)||0)+num(t.quantity)));
+    return [...totals.entries()].map(([id,q])=>({item:byId(S.items,id),q})).filter(x=>x.item?.active).sort((a,b)=>b.q-a.q).slice(0,limit);
+  }
+
+  function dashboardPersonalHtml() {
+    if(!S.profile) return '';
+    const fav=S.userPrefs.filter(x=>x.user_id===S.profile.id&&x.favourite).map(x=>byId(S.items,x.item_id)).filter(i=>i?.active).slice(0,6);
+    const recent=S.userPrefs.filter(x=>x.user_id===S.profile.id&&x.last_viewed_at).sort((a,b)=>new Date(b.last_viewed_at)-new Date(a.last_viewed_at)).map(x=>byId(S.items,x.item_id)).filter(i=>i?.active&&!fav.some(f=>f.id===i.id)).slice(0,6);
+    const popular=companyPopularItems(6);
+    const cards=(items,metric='')=>items.length?`<div class="quick-grid">${items.map(x=>{const i=x.item||x;return `<button class="quick-item" data-item="${i.id}">${i.primary_photo_path?`<img class="item-thumb" data-photo-path="${esc(i.primary_photo_path)}" alt="">`:''}<span><strong>${esc(i.name)}</strong><small>${metric&&x.q!=null?`${qty(x.q)} used overall · `:''}${qty(itemTotal(i.id))} in stock</small></span></button>`;}).join('')}</div>`:'<p class="muted">Nothing here yet.</p>';
+    return `<div class="personal-grid" style="margin-top:1rem"><div class="card"><h3>My Favourites</h3>${cards(fav)}</div><div class="card"><h3>My Recent Items</h3>${cards(recent)}</div><div class="card"><h3>Company Popular</h3>${cards(popular,'used')}</div></div>`;
+  }
+
+  async function archiveItem(item) {
+    if(!canAdmin())return;
+    const stock=itemTotal(item.id);
+    const reason=prompt(`Archive ${item.name}?${stock>0?` WARNING: ${qty(stock)} units are still in stock.`:''}\n\nOptional reason:`, 'No longer stocked');
+    if(reason===null)return;
+    const {error}=await sb.from('items').update({active:false,archived_at:new Date().toISOString(),archived_by:S.profile.id,archive_reason:reason||null,updated_at:new Date().toISOString()}).eq('id',item.id);
+    if(error){setNotice(parseError(error),'error');render();return;}
+    await loadData();closeModal();setNotice('Item archived. History has been kept.');render();
+  }
+
+  async function restoreItem(item) {
+    if(!canAdmin())return;
+    const {error}=await sb.from('items').update({active:true,archived_at:null,archived_by:null,archive_reason:null,updated_at:new Date().toISOString()}).eq('id',item.id);
+    if(error){setNotice(parseError(error),'error');render();return;}
+    await loadData();closeModal();setNotice('Item restored.');render();
+  }
+
+  function assignedOpenStocktake() {
+    return S.stocktakeTasks.find(t=>t.assigned_user_id===S.profile?.id&&['OPEN','OVERDUE'].includes(t.status)) || null;
+  }
+  function stocktakeItemsFor(taskId){return S.stocktakeItems.filter(x=>x.task_id===taskId);}
+
+  function stocktakeHtml() {
+    const task=assignedOpenStocktake();
+    const myHistory=S.stocktakeTasks.filter(t=>t.assigned_user_id===S.profile?.id&&t.status==='COMPLETED').slice(0,10);
+    const taskBlock=task?`<div class="card"><h2>${task.status==='OVERDUE'?'Overdue':'Assigned'} stocktake</h2><p class="muted">Due ${fmtDate(task.due_at)}. Count the actual quantity in each location/bin. Differences create audited stock adjustments when you complete the task.</p><div class="table-wrap"><table><thead><tr><th>Item</th><th>Location / Bin</th><th>Expected</th><th>Counted</th></tr></thead><tbody>${stocktakeItemsFor(task.id).map(x=>`<tr><td>${esc(itemName(x.item_id))}</td><td>${esc(locName(x.location_id))}</td><td>${qty(x.expected_quantity)}</td><td><input class="stocktake-count" data-stocktake-item="${x.id}" type="number" min="0" step="0.001" value="${x.counted_quantity??''}" placeholder="Count"></td></tr>`).join('')}</tbody></table></div><div class="actions"><button class="btn good" id="completeStocktake">Complete stocktake</button></div></div>`:`<div class="card"><h2>Stocktake</h2><p>No stocktake is currently assigned to you.</p><p class="muted">The tracker creates the next random task automatically when the configured interval is due.</p></div>`;
+    const admin=canAdmin()?`<div class="card" style="margin-top:1rem"><h3>Admin stocktake settings</h3><form id="stocktakeSettingsForm" class="form-grid"><div><label>Enabled</label><select id="stocktakeEnabled"><option value="true" ${S.stocktakeSettings?.enabled!==false?'selected':''}>Yes</option><option value="false" ${S.stocktakeSettings?.enabled===false?'selected':''}>No</option></select></div><div><label>Interval (days)</label><input id="stocktakeInterval" type="number" min="1" max="365" value="${S.stocktakeSettings?.interval_days||14}"></div><div><label>Items per task</label><input id="stocktakeCount" type="number" min="1" max="100" value="${S.stocktakeSettings?.item_count||12}"></div><div><label>Due within (days)</label><input id="stocktakeDueDays" type="number" min="1" max="60" value="${S.stocktakeSettings?.due_days||7}"></div><div class="full"><div class="muted">Next automatic task: ${fmtDate(S.stocktakeSettings?.next_task_at)}</div><div class="actions"><button class="btn" type="submit">Save stocktake settings</button><button class="btn ghost" type="button" id="generateStocktakeNow">Create next stocktake now</button></div></div></form><h3>Open / overdue tasks</h3>${S.stocktakeTasks.filter(t=>['OPEN','OVERDUE'].includes(t.status)).map(t=>`<div class="item-row"><div><strong>${esc(userName(t.assigned_user_id))}</strong><div class="muted">${stocktakeItemsFor(t.id).length} items · due ${fmtShortDate(t.due_at)} · ${esc(t.status)}</div></div><div><select data-reassign-task="${t.id}">${S.profiles.filter(p=>p.active!==false).map(p=>`<option value="${p.id}" ${p.id===t.assigned_user_id?'selected':''}>${esc(p.display_name)}</option>`).join('')}</select></div></div>`).join('')||'<p class="muted">No open tasks.</p>'}</div>`:'';
+    return `${taskBlock}<div class="card" style="margin-top:1rem"><h3>My completed stocktakes</h3>${myHistory.length?myHistory.map(t=>`<div class="muted">${fmtDate(t.completed_at)} · ${stocktakeItemsFor(t.id).length} items</div>`).join(''):'<p class="muted">No completed stocktakes yet.</p>'}</div>${admin}`;
+  }
+
+  function bindStocktake() {
+    const complete=document.getElementById('completeStocktake');
+    if(complete) complete.onclick=async()=>{
+      const task=assignedOpenStocktake(); if(!task)return;
+      const rows=stocktakeItemsFor(task.id);
+      const values=new Map([...document.querySelectorAll('[data-stocktake-item]')].map(x=>[x.dataset.stocktakeItem,x.value]));
+      if(rows.some(r=>values.get(r.id)==='')){setNotice('Enter a counted quantity for every stocktake item.','error');render();return;}
+      complete.disabled=true;
+      try{
+        for(const row of rows){
+          const counted=num(values.get(row.id));
+          const current=num(S.balances.find(b=>b.item_id===row.item_id&&b.location_id===row.location_id)?.quantity);
+          let txId=null;
+          if(Math.abs(counted-current)>1e-9){
+            const {data,error}=await sb.rpc('apply_stock_transaction',{p_item_id:row.item_id,p_type:'ADJUST',p_quantity:0,p_from_location_id:row.location_id,p_to_location_id:null,p_new_quantity:counted,p_reason:'Stocktake correction',p_reference:task.id,p_notes:'Random scheduled stocktake'});
+            if(error)throw error; txId=data;
+          }
+          const {error}=await sb.from('stocktake_task_items').update({counted_quantity:counted,discrepancy:counted-num(row.expected_quantity),adjusted_transaction_id:txId,completed_at:new Date().toISOString()}).eq('id',row.id);
+          if(error)throw error;
+        }
+        const {error}=await sb.from('stocktake_tasks').update({status:'COMPLETED',completed_at:new Date().toISOString(),completed_by:S.profile.id}).eq('id',task.id);
+        if(error)throw error;
+        await loadData();setNotice('Stocktake completed. Any differences were recorded as audited adjustments.');render();
+      }catch(e){setNotice(parseError(e),'error');render();}
+    };
+    document.querySelectorAll('[data-reassign-task]').forEach(sel=>sel.onchange=async()=>{
+      const {error}=await sb.from('stocktake_tasks').update({assigned_user_id:sel.value}).eq('id',sel.dataset.reassignTask);
+      if(error){setNotice(parseError(error),'error');render();return;}await loadData({transactions:false,docs:false});setNotice('Stocktake reassigned.');render();
+    });
+    const settings=document.getElementById('stocktakeSettingsForm'); if(settings)settings.onsubmit=async e=>{
+      e.preventDefault();const row={enabled:document.getElementById('stocktakeEnabled').value==='true',interval_days:Math.round(num(document.getElementById('stocktakeInterval').value)),item_count:Math.round(num(document.getElementById('stocktakeCount').value)),due_days:Math.round(num(document.getElementById('stocktakeDueDays').value)),updated_at:new Date().toISOString()};
+      const {error}=await sb.from('stocktake_settings').update(row).eq('singleton',true);if(error){setNotice(parseError(error),'error');render();return;}await loadData({transactions:false,docs:false});setNotice('Stocktake settings saved.');render();
+    };
+    const generate=document.getElementById('generateStocktakeNow'); if(generate)generate.onclick=async()=>{
+      try{let {error}=await sb.from('stocktake_settings').update({next_task_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq('singleton',true);if(error)throw error;({error}=await sb.rpc('ensure_stocktake_task',{p_force:true}));if(error)throw error;await loadData({transactions:false,docs:false});setNotice('Stocktake task created if no other task is open.');render();}catch(e){setNotice(parseError(e),'error');render();}
+    };
+  }
+
+  function legacyFilteredRows() {
+    let rows=S.transactions.filter(t=>t.legacy_import);
+    if(S.legacyItemFilter)rows=rows.filter(t=>t.item_id===S.legacyItemFilter);
+    if(S.legacyFrom)rows=rows.filter(t=>new Date(t.occurred_at)>=new Date(S.legacyFrom+'T00:00:00'));
+    if(S.legacyTo)rows=rows.filter(t=>new Date(t.occurred_at)<=new Date(S.legacyTo+'T23:59:59'));
+    return rows;
+  }
+
+  function legacyReviewHtml() {
+    if(!canAdmin())return '<div class="notice error">Admin access required.</div>';
+    const rows=legacyFilteredRows();
+    const included=rows.filter(countsAsUsage).reduce((a,t)=>a+num(t.quantity),0);
+    return `<div class="card"><h2>Legacy Review</h2><p class="muted">Reclassify old InStock decreases without changing the historic stock balances. Only records classified as <strong>Use</strong> count toward usage trends and Suggested Orders.</p><div class="form-grid"><div><label>Item</label><select id="legacyItem"><option value="">All legacy items</option>${S.items.map(i=>`<option value="${i.id}" ${S.legacyItemFilter===i.id?'selected':''}>${esc(i.name)}</option>`).join('')}</select></div><div><label>From</label><input id="legacyFrom" type="date" value="${esc(S.legacyFrom)}"></div><div><label>To</label><input id="legacyTo" type="date" value="${esc(S.legacyTo)}"></div></div><div class="notice">Filtered records: ${rows.length} · Currently counted as usage: ${qty(included)}</div><div class="toolbar"><select id="legacyClassification"><option value="USE">Use / consumption</option><option value="ADJUSTMENT">Stock adjustment</option><option value="DAMAGE_LOSS">Damage / loss</option><option value="TRANSFER">Transfer / move</option><option value="EXCLUDE">Exclude from usage</option></select><button class="btn" id="applyLegacyReview">Apply to selected</button></div></div><div class="card" style="margin-top:1rem"><div class="table-wrap"><table><thead><tr><th><input id="legacySelectAll" type="checkbox"></th><th>Date</th><th>Item</th><th>Qty</th><th>Current treatment</th><th>Reviewed by</th></tr></thead><tbody>${rows.slice(0,300).map(t=>`<tr><td><input type="checkbox" data-legacy-row="${t.id}"></td><td>${fmtDate(t.occurred_at)}</td><td>${esc(itemName(t.item_id))}</td><td>${qty(t.quantity)}</td><td>${esc(t.legacy_classification||'Use (unreviewed)')}${t.exclude_from_usage?' · Excluded':''}</td><td>${t.legacy_reviewed_by?esc(userName(t.legacy_reviewed_by)):'—'}</td></tr>`).join('')||'<tr><td colspan="6">No matching legacy records.</td></tr>'}</tbody></table></div>${rows.length>300?'<p class="muted">Showing newest 300 filtered records. Narrow the filters to review older records.</p>':''}</div>`;
+  }
+
+  function bindLegacyReview() {
+    const item=document.getElementById('legacyItem'); if(item)item.onchange=()=>{S.legacyItemFilter=item.value;render();};
+    const from=document.getElementById('legacyFrom'); if(from)from.onchange=()=>{S.legacyFrom=from.value;render();};
+    const to=document.getElementById('legacyTo'); if(to)to.onchange=()=>{S.legacyTo=to.value;render();};
+    const all=document.getElementById('legacySelectAll'); if(all)all.onchange=()=>document.querySelectorAll('[data-legacy-row]').forEach(x=>x.checked=all.checked);
+    const apply=document.getElementById('applyLegacyReview'); if(apply)apply.onclick=async()=>{
+      const ids=[...document.querySelectorAll('[data-legacy-row]:checked')].map(x=>x.dataset.legacyRow);if(!ids.length){setNotice('Select at least one legacy record.','error');render();return;}
+      const classification=document.getElementById('legacyClassification').value;
+      const {data,error}=await sb.rpc('review_legacy_transactions',{p_ids:ids,p_classification:classification});
+      if(error){setNotice(parseError(error),'error');render();return;}await loadData();setNotice(`${data||ids.length} legacy record(s) reviewed.`);render();
+    };
+  }
+
+  function safetyGroupsHtml() {
+    if(!canAdmin())return '<div class="notice error">Admin access required.</div>';
+    const rows=S.safetyGroups.filter(g=>g.active).map(g=>{
+      const linked=S.safetyGroupItems.filter(x=>x.group_id===g.id).length,docs=activeGroupSafetyDocs(g.id).length,acks=S.safetyGroupAcks.filter(x=>x.group_id===g.id).length;
+      return `<div class="card"><div class="item-title">${esc(g.name)}</div><div><span class="badge risk ${riskClass(g.risk_rating)}">${esc(riskLabel(g.risk_rating))}</span></div><p class="muted">${esc(g.description||'No description')}</p><div class="muted">${linked} linked item(s) · ${docs} document(s) · ${acks} acknowledgement(s) · reminder ${g.acknowledgement_days||riskIntervalDays(g.risk_rating)||'off'}${g.acknowledgement_days||riskIntervalDays(g.risk_rating)?' days':''}</div><div class="actions"><button class="btn ghost" data-edit-safety-group="${g.id}">Edit</button><button class="btn" data-group-docs="${g.id}">Documents</button><button class="btn secondary" data-group-items="${g.id}">Link items</button></div></div>`;
+    }).join('');
+    return `<div class="toolbar"><button class="btn" id="addSafetyGroup">Add Safety Group</button></div><div class="card"><h2>Shared Safety Groups</h2><p class="muted">Upload an RA/SSW once and link it to many related items. Acknowledgement is against the shared group, so users are not repeatedly signing off every individual bulb or fitting.</p></div><div class="grid cards" style="margin-top:1rem">${rows||'<div class="card">No Safety Groups yet.</div>'}</div>`;
+  }
+
+  function bindSafetyGroups() {
+    const add=document.getElementById('addSafetyGroup');if(add)add.onclick=()=>openSafetyGroupEditor();
+    document.querySelectorAll('[data-edit-safety-group]').forEach(b=>b.onclick=()=>openSafetyGroupEditor(byId(S.safetyGroups,b.dataset.editSafetyGroup)));
+    document.querySelectorAll('[data-group-docs]').forEach(b=>b.onclick=()=>openSafetyGroupDocuments(byId(S.safetyGroups,b.dataset.groupDocs)));
+    document.querySelectorAll('[data-group-items]').forEach(b=>b.onclick=()=>openSafetyGroupAssignments(byId(S.safetyGroups,b.dataset.groupItems)));
+  }
+
+  function openSafetyGroupAssignments(group) {
+    const linked=new Set(S.safetyGroupItems.filter(x=>x.group_id===group.id).map(x=>x.item_id));
+    const categories=categoryNames();
+    showModal(`<header><div><h2>Link items to Safety Group</h2><div class="muted">${esc(group.name)}</div></div><button class="close" data-close>×</button></header><p class="muted">Tick all items covered by the same shared RA/SSW. An item can belong to one shared Safety Group; selecting it here moves it from any previous group.</p><div class="toolbar"><input id="groupItemSearch" placeholder="Search items"><select id="groupItemCategory"><option value="">All categories</option>${categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select></div><form id="groupItemsForm"><div id="groupItemsList" class="item-list">${S.items.filter(i=>i.active).map(i=>`<label class="item-row group-item-choice" data-group-item-name="${esc([i.name,i.item_code,i.category].join(' ').toLowerCase())}" data-group-item-category="${esc(i.category||'')}"><div><strong>${esc(i.name)}</strong><div class="muted">${esc(i.item_code)}${i.category?` · ${esc(i.category)}`:''}</div></div><input type="checkbox" data-group-item-check="${i.id}" ${linked.has(i.id)?'checked':''} style="width:auto"></label>`).join('')}</div><div class="actions"><button class="btn" type="submit">Save linked items</button></div></form>`);
+    const search=document.getElementById('groupItemSearch'),cat=document.getElementById('groupItemCategory');
+    const filter=()=>{const q=search.value.toLowerCase().trim(),c=cat.value;document.querySelectorAll('.group-item-choice').forEach(row=>{row.style.display=(!q||row.dataset.groupItemName.includes(q))&&(!c||row.dataset.groupItemCategory===c)?'grid':'none';});};
+    search.oninput=filter;cat.onchange=filter;
+    document.getElementById('groupItemsForm').onsubmit=async e=>{
+      e.preventDefault();const selected=[...document.querySelectorAll('[data-group-item-check]:checked')].map(x=>x.dataset.groupItemCheck);
+      try{
+        let {error}=await sb.from('safety_group_items').delete().eq('group_id',group.id);if(error)throw error;
+        for(const itemId of selected){({error}=await sb.from('safety_group_items').upsert({item_id:itemId,group_id:group.id,linked_by:S.profile.id,linked_at:new Date().toISOString()},{onConflict:'item_id'}));if(error)throw error;}
+        await loadData({transactions:false,docs:false});closeModal();setNotice(`${selected.length} item(s) linked to ${group.name}.`);render();
+      }catch(e){setNotice(parseError(e),'error');render();}
+    };
+  }
+
+  function openSafetyGroupEditor(group=null) {
+    const rating=group?.risk_rating||'NONE';
+    showModal(`<header><h2>${group?'Edit':'Add'} Safety Group</h2><button class="close" data-close>×</button></header><form id="safetyGroupForm"><label>Name</label><input id="safetyGroupName" value="${esc(group?.name||'')}" placeholder="Electrical Fitting / Lamp Replacement" required><label>Description</label><textarea id="safetyGroupDescription">${esc(group?.description||'')}</textarea><div class="form-grid"><div><label>Risk rating</label><select id="safetyGroupRisk"><option value="NONE" ${rating==='NONE'?'selected':''}>None</option><option value="GREEN" ${rating==='GREEN'?'selected':''}>Green</option><option value="AMBER" ${rating==='AMBER'?'selected':''}>Amber</option><option value="RED" ${rating==='RED'?'selected':''}>Red</option></select></div><div><label>Acknowledgement interval (days)</label><input id="safetyGroupDays" type="number" min="1" value="${esc(group?.acknowledgement_days||'')}" placeholder="Leave blank for rating default"></div></div><div class="actions"><button class="btn" type="submit">Save Safety Group</button></div></form>`);
+    document.getElementById('safetyGroupForm').onsubmit=async e=>{
+      e.preventDefault();const row={name:document.getElementById('safetyGroupName').value.trim(),description:document.getElementById('safetyGroupDescription').value.trim()||null,risk_rating:document.getElementById('safetyGroupRisk').value,acknowledgement_days:document.getElementById('safetyGroupDays').value?Math.round(num(document.getElementById('safetyGroupDays').value)):null,updated_at:new Date().toISOString()};let error;
+      if(group)({error}=await sb.from('safety_groups').update(row).eq('id',group.id));else{row.created_by=S.profile.id;({error}=await sb.from('safety_groups').insert(row));}
+      if(error){setNotice(parseError(error),'error');render();return;}await loadData({transactions:false,docs:false});closeModal();setNotice('Safety Group saved.');render();
+    };
+  }
+
+  function openSafetyGroupDocuments(group) {
+    const docs=activeGroupSafetyDocs(group.id);
+    showModal(`<header><div><h2>Shared safety documents</h2><div class="muted">${esc(group.name)}</div></div><button class="close" data-close>×</button></header><div class="item-list">${docs.map(d=>`<div class="item-row"><div><strong>${esc(docTypeLabel(d.document_type))}</strong> · ${esc(d.title)}<div class="muted">Version ${esc(d.version||'—')} · Revision ${esc(d.revision_date||'—')} · Review ${esc(d.review_date||'—')}</div></div><button class="btn ghost" data-group-open-doc="${d.id}">Open</button></div>`).join('')||'<p class="muted">No shared documents uploaded yet.</p>'}</div><form id="groupDocForm" style="margin-top:1rem"><h3>Upload document</h3><div class="form-grid"><div><label>Type</label><select id="groupDocType"><option value="RISK_ASSESSMENT">Risk Assessment</option><option value="SSW">SSW / Safe System of Work</option><option value="SDS_MSDS">SDS / MSDS</option><option value="COSHH">COSHH Assessment</option><option value="MANUFACTURER">Manufacturer Instructions</option><option value="OTHER">Other</option></select></div><div><label>Title</label><input id="groupDocTitle" required></div><div><label>Version</label><input id="groupDocVersion"></div><div><label>Revision date</label><input id="groupDocRevision" type="date"></div><div><label>Review date</label><input id="groupDocReview" type="date"></div><div><label>File</label><input id="groupDocFile" type="file" accept=".pdf,.doc,.docx,image/*" required></div></div><div class="actions"><button class="btn" type="submit">Upload shared document</button></div></form>`);
+    document.querySelectorAll('[data-group-open-doc]').forEach(b=>b.onclick=()=>openSafetyDocument(byId(S.safetyGroupDocs,b.dataset.groupOpenDoc)));
+    document.getElementById('groupDocForm').onsubmit=async e=>{
+      e.preventDefault();const f=document.getElementById('groupDocFile').files[0];if(!f)return;const path=`groups/${group.id}/${Date.now()}-${slug(f.name)}`;let {error}=await sb.storage.from('safety-documents').upload(path,f,{contentType:f.type});if(error){setNotice(parseError(error),'error');render();return;}const row={group_id:group.id,document_type:document.getElementById('groupDocType').value,title:document.getElementById('groupDocTitle').value.trim(),version:document.getElementById('groupDocVersion').value.trim()||null,revision_date:document.getElementById('groupDocRevision').value||null,review_date:document.getElementById('groupDocReview').value||null,storage_path:path,uploaded_by:S.profile.id};({error}=await sb.from('safety_group_documents').insert(row));if(error){setNotice(parseError(error),'error');render();return;}await loadData({transactions:false,docs:false});openSafetyGroupDocuments(byId(S.safetyGroups,group.id));
+    };
   }
 
 
@@ -630,7 +892,15 @@
     'purchase_orders',
     'safety_documents',
     'safety_acknowledgements',
-    'risk_rating_history'
+    'risk_rating_history',
+    'user_item_preferences',
+    'safety_groups',
+    'safety_group_items',
+    'safety_group_documents',
+    'safety_group_acknowledgements',
+    'stocktake_settings',
+    'stocktake_tasks',
+    'stocktake_task_items'
   ];
 
   function csvFromObjects(rows) {
@@ -684,6 +954,7 @@
     if(includeFiles){
       const items=JSON.parse(await dbFolder.file('items.json').async('string'));
       const docs=JSON.parse(await dbFolder.file('safety_documents.json').async('string'));
+      const groupDocs=JSON.parse(await dbFolder.file('safety_group_documents.json').async('string'));
 
       const targets=[];
       const seen=new Set();
@@ -697,7 +968,7 @@
         }
       }
 
-      for(const doc of docs){
+      for(const doc of [...docs,...groupDocs]){
         const path=String(doc.storage_path||'').trim();
         const key=`safety-documents:${path}`;
         if(path && !seen.has(key)){
@@ -794,9 +1065,13 @@ Keep this file somewhere secure.
     if(S.page==='items') bindItems();
     if(S.page==='locations') bindLocations();
     if(S.page==='orders') bindOrders();
+    if(S.page==='stocktake') bindStocktake();
     if(S.page==='reports') bindReports();
     if(S.page==='users') bindUsers();
+    if(S.page==='safety') bindSafetyGroups();
+    if(S.page==='legacy') bindLegacyReview();
     if(S.page==='backup') bindBackup();
+    hydrateItemThumbnails(document);
   }
 
   function bindScan() {
@@ -997,7 +1272,9 @@ Keep this file somewhere secure.
     inp.oninput=()=>{S.search=inp.value; clearTimeout(inp._t); inp._t=setTimeout(refreshItemSearchResults,120);};
     const cat=document.getElementById('categoryFilter'); if(cat) cat.onchange=()=>{S.categoryFilter=cat.value;refreshItemSearchResults();};
     const add=document.getElementById('addItemBtn'); if(add) add.onclick=openAddItem;
+    const archived=document.getElementById('toggleArchivedBtn'); if(archived) archived.onclick=()=>{S.showArchived=!S.showArchived;S.search='';render();};
     const manage=document.getElementById('manageCategoriesBtn'); if(manage) manage.onclick=openCategoryManager;
+    hydrateItemThumbnails(document);
   }
 
   function bindLocations() {
@@ -1029,7 +1306,7 @@ Keep this file somewhere secure.
         <div class="form-grid">
           <div><label>Quantity ordered</label><input id="orderQty" type="number" min="0.001" step="0.001" value="${esc(suggested)}" required></div>
           <div><label>Supplier</label><select id="orderSupplier"><option value="">Manual supplier</option>${suppliers.map(s=>`<option value="${s.id}" ${preferred?.id===s.id?'selected':''}>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</option>`).join('')}</select></div>
-          <div><label>Supplier name</label><input id="orderSupplierName" value="${esc(preferred?.supplier_name||'')}" required></div>
+          <div><label>Supplier name</label><input id="orderSupplierName" list="globalSupplierNames" value="${esc(preferred?.supplier_name||'')}" required><datalist id="globalSupplierNames">${globalSupplierNames().map(n=>`<option value="${esc(n)}"></option>`).join('')}</datalist></div>
           <div><label>Supplier part ref</label><input id="orderSupplierRef" value="${esc(preferred?.supplier_ref||'')}"></div>
           <div><label>Order / PO reference</label><input id="orderRef" placeholder="e.g. PO-1024"></div>
           <div><label>Expected delivery date</label><input id="orderExpected" type="date"></div>
@@ -1187,7 +1464,7 @@ Keep this file somewhere secure.
     for(let k=11;k>=0;k--) {
       const d=new Date(now.getFullYear(),now.getMonth()-k,1); const y=d.getFullYear(),m=d.getMonth();
       labels.push(d.toLocaleDateString(undefined,{month:'short',year:'2-digit'}));
-      vals.push(S.transactions.filter(t=>t.transaction_type==='USE'&&t.item_id===selected&&new Date(t.occurred_at).getFullYear()===y&&new Date(t.occurred_at).getMonth()===m).reduce((a,t)=>a+num(t.quantity),0));
+      vals.push(S.transactions.filter(t=>countsAsUsage(t)&&t.item_id===selected&&new Date(t.occurred_at).getFullYear()===y&&new Date(t.occurred_at).getMonth()===m).reduce((a,t)=>a+num(t.quantity),0));
     }
     if(S.chart) { try{S.chart.destroy();}catch(_){} }
     S.chart=new Chart(canvas,{type:'line',data:{labels,datasets:[{label:`Monthly usage · ${itemName(selected)}`,data:vals,tension:.25}]},options:{responsive:true,plugins:{legend:{display:true}},scales:{y:{beginAtZero:true}}}});
@@ -1212,15 +1489,15 @@ Keep this file somewhere secure.
 
   function usageExportRows() {
     const list=reportTransactions();
-    const rows=[['Date/time','Item','Quantity','User','Location','Reason','Legacy']];
-    list.forEach(t=>rows.push([t.occurred_at,itemName(t.item_id),num(t.quantity),userName(t.user_id),locName(t.from_location_id),t.reason||t.notes||'',t.legacy_import?'Yes':'No']));
+    const rows=[['Date/time','Item','Quantity','User','Location','Reason','Legacy','Legacy classification','Excluded from usage']];
+    list.forEach(t=>rows.push([t.occurred_at,itemName(t.item_id),num(t.quantity),userName(t.user_id),locName(t.from_location_id),t.reason||t.notes||'',t.legacy_import?'Yes':'No',t.legacy_classification||'',t.exclude_from_usage?'Yes':'No']));
     return rows;
   }
 
   function activityExportRows() {
     const list=activityTransactions();
-    const rows=[['Date/time','Item','Action','Quantity','User','From','To','Reason','Legacy']];
-    list.forEach(t=>rows.push([t.occurred_at,itemName(t.item_id),t.transaction_type,num(t.quantity),userName(t.user_id),locName(t.from_location_id),locName(t.to_location_id),t.reason||t.notes||'',t.legacy_import?'Yes':'No']));
+    const rows=[['Date/time','Item','Action','Quantity','User','From','To','Reason','Legacy','Legacy classification','Excluded from usage']];
+    list.forEach(t=>rows.push([t.occurred_at,itemName(t.item_id),t.transaction_type,num(t.quantity),userName(t.user_id),locName(t.from_location_id),locName(t.to_location_id),t.reason||t.notes||'',t.legacy_import?'Yes':'No',t.legacy_classification||'',t.exclude_from_usage?'Yes':'No']));
     return rows;
   }
 
@@ -1230,12 +1507,18 @@ Keep this file somewhere secure.
   function exportActivityExcel() { exportWorkbook(`inventory-activity-${todayISO()}.xlsx`,[['Activity',activityExportRows()]]); }
 
   function safetyAckExportRows() {
-    const rows=[['Date/time','User','Item','Risk rating','Reason for reminder','Documents acknowledged','Acknowledgement statement']];
+    const rows=[['Date/time','User','Scope','Item / Safety Group','Risk rating','Reason for reminder','Documents acknowledged','Acknowledgement statement']];
     S.safetyAcks.forEach(a=>{
       const docs=Array.isArray(a.documents_snapshot)?a.documents_snapshot:[];
       const docText=docs.map(d=>`${d.type||''}: ${d.title||''}${d.version?` v${d.version}`:''}${d.revision_date?` (${d.revision_date})`:''}`).join(' | ');
-      rows.push([a.acknowledged_at,userName(a.user_id),itemName(a.item_id),a.risk_rating||'NONE',a.acknowledgement_reason||'',docText,a.statement||'']);
+      rows.push([a.acknowledged_at,userName(a.user_id),'Item',itemName(a.item_id),a.risk_rating||'NONE',a.acknowledgement_reason||'',docText,a.statement||'']);
     });
+    S.safetyGroupAcks.forEach(a=>{
+      const docs=Array.isArray(a.documents_snapshot)?a.documents_snapshot:[];
+      const docText=docs.map(d=>`${d.type||''}: ${d.title||''}${d.version?` v${d.version}`:''}${d.revision_date?` (${d.revision_date})`:''}`).join(' | ');
+      rows.push([a.acknowledged_at,userName(a.user_id),'Safety Group',byId(S.safetyGroups,a.group_id)?.name||'Unknown group',a.risk_rating||'NONE',a.acknowledgement_reason||'',docText,a.statement||'']);
+    });
+    rows.splice(1,rows.length-1,...rows.slice(1).sort((a,b)=>new Date(b[0])-new Date(a[0])));
     return rows;
   }
 
@@ -1267,16 +1550,27 @@ Keep this file somewhere secure.
   }
 
   function bindUsers() {
+    const invoke=async body=>{
+      const {data,error}=await sb.functions.invoke('invite-user',{body});
+      if(error||data?.error) throw new Error(parseError(error||data?.error));
+      return data;
+    };
     document.querySelectorAll('[data-role-user]').forEach(sel=>sel.onchange=async()=>{
-      const {error}=await sb.from('profiles').update({role:sel.value}).eq('id',sel.dataset.roleUser);
-      if(error){setNotice(parseError(error),'error');render();return;} await loadData({transactions:false,docs:false});setNotice('User role updated.');render();
+      try{ await invoke({action:'set_role',user_id:sel.dataset.roleUser,role:sel.value}); await loadData({transactions:false,docs:false});setNotice('User role updated.');render(); }
+      catch(e){setNotice(parseError(e),'error');await loadData({transactions:false,docs:false});render();}
+    });
+    document.querySelectorAll('[data-user-disable]').forEach(b=>b.onclick=async()=>{
+      if(!confirm('Disable this user? They will no longer be able to sign in, but all history will be kept.'))return;
+      try{await invoke({action:'disable',user_id:b.dataset.userDisable});await loadData({transactions:false,docs:false});setNotice('User disabled.');render();}catch(e){setNotice(parseError(e),'error');render();}
+    });
+    document.querySelectorAll('[data-user-enable]').forEach(b=>b.onclick=async()=>{
+      try{await invoke({action:'enable',user_id:b.dataset.userEnable});await loadData({transactions:false,docs:false});setNotice('User re-enabled.');render();}catch(e){setNotice(parseError(e),'error');render();}
     });
     const f=document.getElementById('inviteForm'); if(f) f.onsubmit=async e=>{
       e.preventDefault();
-      const body={display_name:document.getElementById('inviteName').value.trim(),email:document.getElementById('inviteEmail').value.trim(),role:document.getElementById('inviteRole').value};
-      const {data,error}=await sb.functions.invoke('invite-user',{body});
-      if(error || data?.error){setNotice(parseError(error||data.error),'error');render();return;}
-      setNotice('Invitation sent. The user can choose their own password.'); await loadData({transactions:false,docs:false}); render();
+      const body={action:'invite',display_name:document.getElementById('inviteName').value.trim(),email:document.getElementById('inviteEmail').value.trim(),role:document.getElementById('inviteRole').value,redirect_to:location.origin+location.pathname};
+      try{await invoke(body);setNotice('Invitation sent. The user can choose their own password.');await loadData({transactions:false,docs:false});render();}
+      catch(e){setNotice(`Invite failed: ${parseError(e)}. If this is the first invite, deploy the included invite-user Edge Function from your laptop.`, 'error');render();}
     };
   }
 
@@ -1284,7 +1578,21 @@ Keep this file somewhere secure.
     return S.safetyDocs.filter(d=>d.item_id===itemId&&d.active).sort((a,b)=>new Date(b.uploaded_at)-new Date(a.uploaded_at));
   }
 
+  function activeGroupSafetyDocs(groupId) {
+    return S.safetyGroupDocs.filter(d=>d.group_id===groupId&&d.active).sort((a,b)=>new Date(b.uploaded_at)-new Date(a.uploaded_at));
+  }
+
+  function allSafetyDocsForItem(itemId) {
+    const group=safetyGroupForItem(itemId);
+    return [
+      ...activeSafetyDocs(itemId).map(d=>({...d,_scope:'item'})),
+      ...(group?activeGroupSafetyDocs(group.id).map(d=>({...d,_scope:'group'})):[])
+    ];
+  }
+
   function latestSafetyAck(itemId, userId=S.profile?.id) {
+    const group=safetyGroupForItem(itemId);
+    if(group) return S.safetyGroupAcks.filter(a=>a.group_id===group.id&&a.user_id===userId).sort((a,b)=>new Date(b.acknowledged_at)-new Date(a.acknowledged_at))[0] || null;
     return S.safetyAcks.filter(a=>a.item_id===itemId&&a.user_id===userId).sort((a,b)=>new Date(b.acknowledged_at)-new Date(a.acknowledged_at))[0] || null;
   }
 
@@ -1292,27 +1600,33 @@ Keep this file somewhere secure.
     return S.transactions.filter(t=>t.item_id===itemId&&t.user_id===userId&&t.transaction_type==='USE').sort((a,b)=>new Date(b.occurred_at)-new Date(a.occurred_at))[0] || null;
   }
 
+  function lastUserGroupUse(groupId,userId=S.profile?.id) {
+    const ids=new Set(S.safetyGroupItems.filter(x=>x.group_id===groupId).map(x=>x.item_id));
+    return S.transactions.filter(t=>ids.has(t.item_id)&&t.user_id===userId&&t.transaction_type==='USE').sort((a,b)=>new Date(b.occurred_at)-new Date(a.occurred_at))[0] || null;
+  }
+
   function safetyReminderStatus(item) {
-    const rating=riskRating(item);
-    const days=riskIntervalDays(rating);
-    if(!days) return {due:false,reason:'No safety acknowledgement required',days:null};
+    const group=safetyGroupForItem(item.id);
+    const rating=group?.risk_rating || riskRating(item);
+    const days=group?.acknowledgement_days || riskIntervalDays(rating);
+    if(!days || rating==='NONE') return {due:false,reason:'No safety acknowledgement required',days:null,group,rating};
     const ack=latestSafetyAck(item.id);
-    if(!ack) return {due:true,reason:'First acknowledgement for this risk-rated item',days};
+    if(!ack) return {due:true,reason:group?'First acknowledgement for this safety group':'First acknowledgement for this risk-rated item',days,group,rating};
     const ackAt=new Date(ack.acknowledged_at);
-    const changedAt=new Date(item.risk_rating_updated_at||item.updated_at||0);
-    if(changedAt>ackAt) return {due:true,reason:'Risk rating changed since your last acknowledgement',days};
-    const docs=activeSafetyDocs(item.id);
+    const changedAt=new Date(group?.updated_at || item.risk_rating_updated_at||item.updated_at||0);
+    if(changedAt>ackAt) return {due:true,reason:group?'Safety group changed since your last acknowledgement':'Risk rating changed since your last acknowledgement',days,group,rating};
+    const docs=allSafetyDocsForItem(item.id);
     const updatedDoc=docs.find(d=>new Date(d.uploaded_at)>ackAt);
-    if(updatedDoc) return {due:true,reason:'Safety document added or updated since your last acknowledgement',days};
+    if(updatedDoc) return {due:true,reason:'Safety document added or updated since your last acknowledgement',days,group,rating};
     const ageDays=(Date.now()-ackAt.getTime())/86400000;
-    if(ageDays>=days) return {due:true,reason:`Periodic ${days}-day safety reminder`,days};
-    const lastUse=lastUserUse(item.id);
+    if(ageDays>=days) return {due:true,reason:`Periodic ${days}-day safety reminder`,days,group,rating};
+    const lastUse=group?lastUserGroupUse(group.id):lastUserUse(item.id);
     if(lastUse){
       const lastUseAt=new Date(lastUse.occurred_at);
       const gapDays=(Date.now()-lastUseAt.getTime())/86400000;
-      if(gapDays>=days && ackAt<=lastUseAt) return {due:true,reason:`You have not recorded use of this item for ${days} days or more`,days};
+      if(gapDays>=days && ackAt<=lastUseAt) return {due:true,reason:`You have not recorded this ${group?'type of task/product':'item'} for ${days} days or more`,days,group,rating};
     }
-    return {due:false,reason:'Acknowledgement is current',days};
+    return {due:false,reason:'Acknowledgement is current',days,group,rating};
   }
 
   function safetyAckStatement() {
@@ -1326,19 +1640,28 @@ Keep this file somewhere secure.
 
   function openSafetyAcknowledgement(item,onContinue) {
     const status=safetyReminderStatus(item);
-    const docs=activeSafetyDocs(item.id);
+    const docs=allSafetyDocsForItem(item.id);
     const statement=safetyAckStatement();
-    showModal(`<header><div><h2>Safety reminder</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header>
-      <div class="safety-panel ${riskClass(riskRating(item))}"><div><span class="badge risk ${riskClass(riskRating(item))}">${esc(riskLabel(riskRating(item)))}</span></div><p><strong>This product or task has associated risks.</strong> Review the linked safety information before proceeding.</p><p class="muted">This is a reminder supporting your main training and instruction. Reason shown now: ${esc(status.reason)}.</p></div>
-      <div class="card" style="margin-top:1rem"><h3>Linked safety documents</h3>${docs.length?docs.map(d=>`<div class="item-row"><div><strong>${esc(docTypeLabel(d.document_type))}</strong> · ${esc(d.title)}<div class="muted">Version ${esc(d.version||'—')} · Revision ${esc(d.revision_date||'—')}</div></div><button class="btn ghost" type="button" data-open-doc="${d.id}">Open</button></div>`).join(''):'<div class="notice">No safety documents are currently linked. Follow your main training/instructions and ask your manager if you are unsure.</div>'}</div>
+    const group=status.group;
+    showModal(`<header><div><h2>Safety reminder</h2><div class="muted">${esc(group?group.name:item.name)}</div></div><button class="close" data-close>×</button></header>
+      <div class="safety-panel ${riskClass(status.rating)}"><div><span class="badge risk ${riskClass(status.rating)}">${esc(riskLabel(status.rating))}</span></div><p><strong>This product or task has associated risks.</strong> Review the linked safety information before proceeding.</p><p class="muted">This is a reminder supporting your main training and instruction. Reason shown now: ${esc(status.reason)}.</p></div>
+      <div class="card" style="margin-top:1rem"><h3>Linked safety documents</h3>${docs.length?docs.map(d=>`<div class="item-row"><div><strong>${esc(docTypeLabel(d.document_type))}</strong> · ${esc(d.title)} <span class="badge">${d._scope==='group'?'Shared':'Item'}</span><div class="muted">Version ${esc(d.version||'—')} · Revision ${esc(d.revision_date||'—')}</div></div><button class="btn ghost" type="button" data-open-safety-doc="${d._scope}:${d.id}">Open</button></div>`).join(''):'<div class="notice">No safety documents are currently linked. Follow your main training/instructions and ask your manager if you are unsure.</div>'}</div>
       <form id="safetyAckForm"><label class="ack-check"><input id="safetyAckCheck" type="checkbox" required> ${esc(statement)}</label><div class="actions"><button class="btn warn" type="submit">Acknowledge & continue</button><button class="btn ghost" type="button" id="safetyAckCancel">Cancel</button></div></form>`);
-    document.querySelectorAll('[data-open-doc]').forEach(b=>b.onclick=()=>openSafetyDocument(byId(S.safetyDocs,b.dataset.openDoc)));
+    document.querySelectorAll('[data-open-safety-doc]').forEach(b=>b.onclick=()=>{
+      const [scope,id]=b.dataset.openSafetyDoc.split(':');
+      const d=scope==='group'?byId(S.safetyGroupDocs,id):byId(S.safetyDocs,id);
+      openSafetyDocument(d);
+    });
     document.getElementById('safetyAckCancel').onclick=()=>openItem(item.id);
     document.getElementById('safetyAckForm').onsubmit=async e=>{
       e.preventDefault();
-      const snapshot=docs.map(d=>({id:d.id,type:d.document_type,title:d.title,version:d.version||null,revision_date:d.revision_date||null,uploaded_at:d.uploaded_at}));
-      const row={item_id:item.id,user_id:S.profile.id,risk_rating:riskRating(item),statement,acknowledgement_reason:status.reason,documents_snapshot:snapshot};
-      const {error}=await sb.from('safety_acknowledgements').insert(row);
+      const snapshot=docs.map(d=>({id:d.id,scope:d._scope,type:d.document_type,title:d.title,version:d.version||null,revision_date:d.revision_date||null,uploaded_at:d.uploaded_at}));
+      let error;
+      if(group){
+        ({error}=await sb.from('safety_group_acknowledgements').insert({group_id:group.id,user_id:S.profile.id,risk_rating:status.rating,statement,acknowledgement_reason:status.reason,documents_snapshot:snapshot}));
+      }else{
+        ({error}=await sb.from('safety_acknowledgements').insert({item_id:item.id,user_id:S.profile.id,risk_rating:status.rating,statement,acknowledgement_reason:status.reason,documents_snapshot:snapshot}));
+      }
       if(error){setNotice(parseError(error),'error');render();return;}
       await loadData({transactions:false,docs:false});
       closeModal();
@@ -1349,41 +1672,54 @@ Keep this file somewhere secure.
   async function openItem(id) {
     const i=byId(S.items,id); if(!i) return;
     S.selectedItemId=id;
+    touchRecentItem(id).catch(()=>{});
     const photoUrl=await signedUrl('item-photos',i.primary_photo_path,3600);
-    const docs=activeSafetyDocs(id);
+    const itemDocs=activeSafetyDocs(id);
+    const group=safetyGroupForItem(id);
+    const groupDocs=group?activeGroupSafetyDocs(group.id):[];
+    const docs=allSafetyDocsForItem(id);
     const pos=itemPositions(id);
     const total=itemTotal(id);
     const onOrder=itemOnOrder(id);
     const suppliers=suppliersForItem(id);
     const itemOrders=openOrdersForItem(id);
     const safetyStatus=safetyReminderStatus(i);
+    const pref=itemPref(id);
+    const displayRisk=group?.risk_rating || riskRating(i);
+    const assessor=i.risk_assessed_by?userName(i.risk_assessed_by):'';
     const locationTotals=new Map();
     for(const b of pos){const l=byId(S.locations,b.location_id);if(!l)continue;const key=l.location_name;locationTotals.set(key,(locationTotals.get(key)||0)+num(b.quantity));}
     const recent=S.transactions.filter(t=>t.item_id===id).slice(0,25);
-    showModal(`<header><div><h2>${esc(i.name)}</h2><div class="muted">${esc(i.item_code)}</div></div><button class="close" data-close>×</button></header>
+    showModal(`<header><div><h2>${esc(i.name)}</h2><div class="muted">${esc(i.item_code)} ${i.active?'':'· Archived'}</div></div><button class="close" data-close>×</button></header>
       <div class="split"><div>
         ${photoUrl?`<img class="photo zoomable" id="itemPhoto" src="${esc(photoUrl)}" alt="${esc(i.name)}" title="Tap to enlarge">`:''}
         <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Overall stock</div><div class="stat">${qty(total)}</div></div><div class="card"><div class="muted">On order</div><div class="stat">${qty(onOrder)}</div></div><div class="card"><div class="muted">Reorder level</div><div class="stat">${qty(i.reorder_level)}</div></div></div>
         <h3>Totals by location</h3>${locationTotals.size?[...locationTotals.entries()].map(([name,q])=>`<div class="location-chip"><strong>${esc(name)}</strong> · ${qty(q)}</div>`).join(''):'<span class="muted">No stock assigned.</span>'}<h3>Exact stock positions</h3>${pos.length?pos.map(b=>{const l=byId(S.locations,b.location_id);return `<div class="location-chip"><strong>${esc(l?.location_name||'Unknown')}</strong> → ${esc(effectiveBinCode(l)?`Bin Ref ${effectiveBinCode(l)}`:'No bin ref')} · ${qty(b.quantity)}</div>`;}).join(''):'<div class="notice">No stock location currently has a positive quantity.</div>'}
       </div><div>
-        <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div><div style="margin-top:.7rem"><strong>Risk rating</strong><br><span class="badge risk ${riskClass(riskRating(i))}">${esc(riskLabel(riskRating(i)))}</span></div>${onOrder>0?`<div style="margin-top:.7rem"><span class="badge order">ON ORDER ${qty(onOrder)}</span></div>`:''}${i.is_chemical?'<div style="margin-top:.7rem"><span class="badge chemical">Chemical / hazardous item</span></div>':''}${safetyStatus.due&&riskRating(i)!=='NONE'?`<div class="notice risk-notice">Safety reminder due before next recorded use.</div>`:''}</div>
-        <div class="actions quick-actions"><button class="btn good" data-stock-action="ADD">+ Add stock</button><button class="btn warn" data-stock-action="USE">− Use stock</button><button class="btn secondary" data-stock-action="ADJUST">Adjust count</button><button class="btn ghost" data-stock-action="MOVE">Move stock</button></div>
-        <div class="actions"><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()?'<button class="btn ghost" id="editItemBtn">Edit item</button><button class="btn ghost" id="suppliersBtn">Suppliers 1–3</button><button class="btn" id="orderItemBtn">Order item</button>':''}</div>
+        <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div><div style="margin-top:.7rem"><strong>Risk assessment</strong><br>${riskAssessed(i)?`<span class="badge risk ${riskClass(displayRisk)}">${esc(assessmentLabel(i))}</span>`:'<span class="badge muted">Not assessed</span>'}${i.risk_assessed_at?`<div class="muted">Assessed ${fmtShortDate(i.risk_assessed_at)}${assessor?` by ${esc(assessor)}`:''}</div>`:''}</div>${group?`<div style="margin-top:.7rem"><strong>Safety group</strong><br>${esc(group.name)} · <span class="badge risk ${riskClass(group.risk_rating)}">${esc(riskLabel(group.risk_rating))}</span></div>`:''}${onOrder>0?`<div style="margin-top:.7rem"><span class="badge order">ON ORDER ${qty(onOrder)}</span></div>`:''}${i.is_chemical?'<div style="margin-top:.7rem"><span class="badge chemical">Chemical / hazardous item</span></div>':''}${safetyStatus.due?`<div class="notice risk-notice">Safety reminder due before next recorded use.</div>`:''}</div>
+        ${i.active?`<div class="actions quick-actions"><button class="btn good" data-stock-action="ADD">+ Add stock</button><button class="btn warn" data-stock-action="USE">− Use stock</button><button class="btn secondary" data-stock-action="ADJUST">Adjust count</button><button class="btn ghost" data-stock-action="MOVE">Move stock</button></div>`:'<div class="notice">This item is archived. Restore it before recording new stock actions.</div>'}
+        <div class="actions"><button class="btn ${pref?.favourite?'warn':'ghost'}" id="favouriteBtn">${pref?.favourite?'★ Favourite':'☆ Add favourite'}</button><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()&&i.active?'<button class="btn ghost" id="editItemBtn">Edit item</button><button class="btn ghost" id="suppliersBtn">Suppliers 1–3</button><button class="btn" id="orderItemBtn">Order item</button>':''}${canAdmin()?i.active?'<button class="btn danger" id="archiveItemBtn">Archive item</button>':'<button class="btn good" id="restoreItemBtn">Restore item</button>':''}</div>
       </div></div>
       <div class="card" style="margin-top:1rem"><h3>Suppliers & orders</h3>
         ${suppliers.length?suppliers.map(s=>`<div class="supplier-line"><strong>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</strong>${s.preferred?' <span class="badge">Preferred</span>':''}<div class="muted">Ref ${esc(s.supplier_ref||'—')} · Pack ${qty(s.pack_size||1)} · Lead ${s.lead_time_days==null?'—':esc(s.lead_time_days)+' days'} · ${s.unit_price==null?'Price —':money(s.unit_price)}</div></div>`).join(''):'<p class="muted">No suppliers saved yet.</p>'}
         ${itemOrders.length?`<div style="margin-top:.7rem"><strong>Currently on order</strong>${itemOrders.map(o=>`<div class="muted">${qty(orderRemaining(o))} from ${esc(o.supplier_name)}${o.expected_date?` · expected ${fmtShortDate(o.expected_date)}`:''}</div>`).join('')}</div>`:''}
       </div>
-      ${(docs.length||riskRating(i)!=='NONE'||canManage())?`<div class="card" style="margin-top:1rem"><h3>Safety documents</h3><div id="docList">${docs.length?docs.map(d=>`<div class="item-row"><div><strong>${esc(docTypeLabel(d.document_type))}</strong> · ${esc(d.title)}<div class="muted">Version ${esc(d.version||'—')} · Revision ${esc(d.revision_date||'—')} · Review ${esc(d.review_date||'—')}</div></div><button class="btn ghost" data-open-doc="${d.id}">Open</button></div>`).join(''):'<p class="muted">No safety documents uploaded yet.</p>'}</div>${canManage()?'<button class="btn" id="uploadDocBtn">Upload safety document</button>':''}</div>`:''}
+      ${(docs.length||displayRisk!=='NONE'||canManage())?`<div class="card" style="margin-top:1rem"><h3>Safety information</h3>${group?`<p><strong>Shared safety group:</strong> ${esc(group.name)}. Shared documents below apply to every item linked to this group.</p>`:''}<div id="docList">${docs.length?docs.map(d=>`<div class="item-row"><div><strong>${esc(docTypeLabel(d.document_type))}</strong> · ${esc(d.title)} <span class="badge">${d._scope==='group'?'Shared':'Item'}</span><div class="muted">Version ${esc(d.version||'—')} · Revision ${esc(d.revision_date||'—')} · Review ${esc(d.review_date||'—')}</div></div><button class="btn ghost" data-open-safety-doc="${d._scope}:${d.id}">Open</button></div>`).join(''):'<p class="muted">No safety documents uploaded yet.</p>'}</div>${canManage()?'<button class="btn" id="uploadDocBtn">Upload item-specific safety document</button>':''}</div>`:''}
       <div class="card" style="margin-top:1rem"><h3>Recent item history</h3>${transactionTable(recent)}</div>`);
     document.querySelectorAll('[data-stock-action]').forEach(b=>b.onclick=()=>requestStockAction(i,b.dataset.stockAction));
     document.getElementById('printQrBtn').onclick=()=>printQr(i);
+    document.getElementById('favouriteBtn').onclick=()=>toggleFavourite(i.id);
     const photo=document.getElementById('itemPhoto'); if(photo) photo.onclick=()=>photo.classList.toggle('photo-large');
     const edit=document.getElementById('editItemBtn'); if(edit) edit.onclick=()=>openEditItem(i);
     const suppliersBtn=document.getElementById('suppliersBtn'); if(suppliersBtn) suppliersBtn.onclick=()=>openSupplierEditor(i);
     const orderItemBtn=document.getElementById('orderItemBtn'); if(orderItemBtn) orderItemBtn.onclick=()=>openCreateOrder(i.id);
+    const archive=document.getElementById('archiveItemBtn'); if(archive) archive.onclick=()=>archiveItem(i);
+    const restore=document.getElementById('restoreItemBtn'); if(restore) restore.onclick=()=>restoreItem(i);
     const up=document.getElementById('uploadDocBtn'); if(up) up.onclick=()=>openSafetyUpload(i);
-    document.querySelectorAll('[data-open-doc]').forEach(b=>b.onclick=()=>openSafetyDocument(byId(S.safetyDocs,b.dataset.openDoc)));
+    document.querySelectorAll('[data-open-safety-doc]').forEach(b=>b.onclick=()=>{
+      const [scope,docId]=b.dataset.openSafetyDoc.split(':');
+      openSafetyDocument(scope==='group'?byId(S.safetyGroupDocs,docId):byId(S.safetyDocs,docId));
+    });
   }
 
   function locationNameOptions(rows=activeLocations(), includeNone=false) {
@@ -1433,19 +1769,25 @@ Keep this file somewhere secure.
     return b&&num(b.quantity)>0?p:null;
   }
 
+  function sourceAvailable(itemId, locationName, binRef) {
+    const p=sourcePosition(itemId,locationName,binRef);
+    if(!p) return 0;
+    return num(S.balances.find(x=>x.item_id===itemId&&x.location_id===p.id)?.quantity);
+  }
+
   function stockActionForm(item,type) {
     const pos=itemPositions(item.id);
     const positiveIds=new Set(pos.map(b=>b.location_id));
     const sourceRows=activeLocations().filter(l=>positiveIds.has(l.id));
     const allRows=activeLocations();
     const title={ADD:'Add stock',USE:'Use / remove stock',MOVE:'Move stock',ADJUST:'Adjust stock'}[type];
-    const sourcePair=`<label>Location</label><select id="fromLocationName" required>${locationNameOptions(sourceRows)}</select><label>Bin Ref</label><input id="fromBinRef" list="fromBinList" placeholder="Type bin ref, e.g. B12"><datalist id="fromBinList"></datalist>`;
+    const sourcePair=`<label>Location</label><select id="fromLocationName" required>${locationNameOptions(sourceRows)}</select><label>Bin Ref</label><input id="fromBinRef" list="fromBinList" placeholder="Type bin ref, e.g. B12"><datalist id="fromBinList"></datalist><div id="sourceAvailability" class="notice compact">Select the source bin to see available stock.</div>`;
     const destinationPair=`<label>Location</label><select id="toLocationName" required>${locationNameOptions(allRows)}</select><label>Bin Ref (optional)</label><input id="toBinRef" list="toBinList" placeholder="Type bin ref, e.g. B12"><datalist id="toBinList"></datalist>`;
     const adjustPair=`<label>Location</label><select id="fromLocationName" required>${locationNameOptions(allRows)}</select><label>Bin Ref (optional)</label><input id="fromBinRef" list="fromBinList" placeholder="Type bin ref, e.g. B12"><datalist id="fromBinList"></datalist>`;
     return `<header><div><h2>${title}</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header><form id="stockActionForm" data-type="${type}">
       ${type==='ADD'?`${destinationPair}<label>Quantity added</label><input id="actionQty" type="number" min="0.001" step="0.001" required>`:''}
       ${type==='USE'?`${sourcePair}<label>Quantity used / removed</label><input id="actionQty" type="number" min="0.001" step="0.001" required>`:''}
-      ${type==='MOVE'?`<h3>Move from</h3>${sourcePair}<h3>Move to</h3>${destinationPair}<label>Quantity moved</label><input id="actionQty" type="number" min="0.001" step="0.001" required>`:''}
+      ${type==='MOVE'?`<h3>Move from</h3>${sourcePair}<h3>Move to</h3>${destinationPair}<label class="ack-check"><input id="moveAllCheck" type="checkbox"> Move all stock from this bin</label><label>Quantity moved</label><input id="actionQty" type="number" min="0.001" step="0.001" required><div id="movePreview" class="muted"></div>`:''}
       ${type==='ADJUST'?`${adjustPair}<label>Correct quantity at this location / bin ref</label><input id="newQty" type="number" min="0" step="0.001" required><label>Reason</label><select id="reason" required><option value="Stock count correction">Stock count correction</option><option value="Damaged">Damaged</option><option value="Lost">Lost</option><option value="Found">Found</option><option value="Data correction">Data correction</option><option value="Other">Other</option></select>`:''}
       ${type!=='ADJUST'?`<label>Reason / reference (optional)</label><input id="reason" placeholder="Delivery, job, damaged, etc.">`:''}
       <label>Notes (optional)</label><textarea id="notes" rows="2"></textarea>
@@ -1462,6 +1804,19 @@ Keep this file somewhere secure.
     if(type==='USE'||type==='MOVE') bindBinRefSuggestions('fromLocationName','fromBinRef','fromBinList',sourceRows,item.id,true);
     if(type==='ADD'||type==='MOVE') bindBinRefSuggestions('toLocationName','toBinRef','toBinList',activeLocations());
     if(type==='ADJUST') bindBinRefSuggestions('fromLocationName','fromBinRef','fromBinList',activeLocations(),item.id,false);
+    if(type==='USE'||type==='MOVE'){
+      const loc=document.getElementById('fromLocationName'), bin=document.getElementById('fromBinRef'), amount=document.getElementById('actionQty');
+      const all=document.getElementById('moveAllCheck'), preview=document.getElementById('movePreview'), availableEl=document.getElementById('sourceAvailability');
+      const update=()=>{
+        const available=sourceAvailable(item.id,loc.value,bin.value);
+        if(availableEl) availableEl.innerHTML=`<strong>Available here: ${qty(available)}</strong>`;
+        if(amount){ amount.max=available>0?String(available):''; if(all?.checked) amount.value=available||''; }
+        if(preview){ const moving=num(amount?.value); preview.textContent=available>0&&moving>0?`${qty(available)} available → move ${qty(moving)} → ${qty(Math.max(0,available-moving))} remaining`:''; }
+      };
+      loc.addEventListener('change',()=>setTimeout(update,0)); bin.addEventListener('input',update); amount?.addEventListener('input',update);
+      if(all) all.onchange=()=>{amount.disabled=all.checked;update();};
+      setTimeout(update,0);
+    }
     const form=document.getElementById('stockActionForm');
     form.onsubmit=async e=>{
       e.preventDefault();
@@ -1473,6 +1828,11 @@ Keep this file somewhere secure.
           const p=sourcePosition(item.id,fromName,fromRef);
           if(!p){setNotice('No stock was found at that Location / Bin Ref. Check the bin reference and try again.','error');return;}
           from=p.id;
+          const available=sourceAvailable(item.id,fromName,fromRef);
+          const qEl=document.getElementById('actionQty');
+          if(type==='MOVE'&&document.getElementById('moveAllCheck')?.checked) qEl.value=String(available);
+          const requested=num(qEl?.value);
+          if(requested>available){setNotice(`Only ${qty(available)} is available at that source.`, 'error');return;}
         }
         if(type==='ADD'||type==='MOVE'){
           const toName=document.getElementById('toLocationName').value;
@@ -1545,7 +1905,7 @@ Keep this file somewhere secure.
       return `<div class="supplier-editor card">
         <div class="supplier-editor-title"><h3>Supplier ${slot}</h3><label class="preferred-radio"><input type="radio" name="preferredSupplier" value="${slot}" ${preferred===slot?'checked':''}> Preferred</label></div>
         <div class="form-grid">
-          <div><label>Supplier name</label><input id="supplierName${slot}" value="${esc(s?.supplier_name||'')}" placeholder="Leave blank if unused"></div>
+          <div><label>Supplier name</label><input id="supplierName${slot}" list="supplierNamesList" value="${esc(s?.supplier_name||'')}" placeholder="Start typing or add a new supplier"></div>
           <div><label>Supplier part/reference</label><input id="supplierRef${slot}" value="${esc(s?.supplier_ref||'')}"></div>
           <div><label>Price (£, optional)</label><input id="supplierPrice${slot}" type="number" min="0" step="0.01" value="${esc(s?.unit_price??'')}"></div>
           <div><label>Pack size</label><input id="supplierPack${slot}" type="number" min="0.001" step="0.001" value="${esc(s?.pack_size??1)}"></div>
@@ -1555,7 +1915,8 @@ Keep this file somewhere secure.
       </div>`;
     };
     showModal(`<header><div><h2>Suppliers 1–3</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header>
-      <form id="supplierForm"><p class="muted">Save up to three suppliers for this item. The preferred supplier is shown first on Suggested Orders.</p>
+      <form id="supplierForm"><p class="muted">Save up to three suppliers for this item. Start typing to reuse a supplier already saved elsewhere; new names automatically become suggestions next time.</p>
+      <datalist id="supplierNamesList">${globalSupplierNames().map(n=>`<option value="${esc(n)}"></option>`).join('')}</datalist>
       ${section(1)}${section(2)}${section(3)}
       <div class="actions"><button class="btn" type="submit">Save suppliers</button></div></form>`);
     document.getElementById('supplierForm').onsubmit=async e=>{
@@ -1595,6 +1956,7 @@ Keep this file somewhere secure.
     if(currentCategory && !categories.includes(currentCategory)) categories.push(currentCategory);
     categories.sort((a,b)=>a.localeCompare(b));
     const currentRisk=riskRating(i);
+    const linkedGroup=safetyGroupForItem(i?.id);
     return `<header><h2>${i?'Edit item':'Add new item'}</h2><button class="close" data-close>×</button></header><form id="itemForm"><div class="form-grid">
       <div><label>Item name</label><input id="newName" value="${esc(i?.name||'')}" required></div>
       <div><label>Item code</label><input id="newCode" value="${esc(i?.item_code||'')}" required></div>
@@ -1603,7 +1965,7 @@ Keep this file somewhere secure.
       <div><label>Reorder level</label><input id="newReorder" type="number" step="0.001" min="0" value="${esc(i?.reorder_level??0)}"></div>
       <div><label>Unit cost (£, optional)</label><input id="newCost" type="number" step="0.01" min="0" value="${esc(i?.unit_cost??'')}"></div>
       <div class="full"><label><input id="newChemical" type="checkbox" style="width:auto" ${i?.is_chemical?'checked':''}> Chemical / hazardous item</label></div>
-      ${canAdmin()?`<div><label>Risk rating</label><select id="newRiskRating"><option value="NONE" ${currentRisk==='NONE'?'selected':''}>None (default)</option><option value="GREEN" ${currentRisk==='GREEN'?'selected':''}>Green · Low risk</option><option value="AMBER" ${currentRisk==='AMBER'?'selected':''}>Amber · Medium risk</option><option value="RED" ${currentRisk==='RED'?'selected':''}>Red · High risk</option></select></div><div><label>Risk rating change reason (optional)</label><input id="riskChangeReason" placeholder="Why the rating changed"></div>`:`<div><label>Risk rating</label><div><span class="badge risk ${riskClass(currentRisk)}">${esc(riskLabel(currentRisk))}</span></div><div class="muted">Only an admin can change this.</div></div>`}
+      ${canAdmin()?`<div><label>Item risk rating</label><select id="newRiskRating"><option value="NONE" ${currentRisk==='NONE'?'selected':''}>None</option><option value="GREEN" ${currentRisk==='GREEN'?'selected':''}>Green · Low risk</option><option value="AMBER" ${currentRisk==='AMBER'?'selected':''}>Amber · Medium risk</option><option value="RED" ${currentRisk==='RED'?'selected':''}>Red · High risk</option></select><div class="muted">Status: ${i?.risk_assessed_at?`Assessed ${fmtShortDate(i.risk_assessed_at)}`:'Not assessed yet'}</div></div><div><label>Safety group</label><select id="newSafetyGroup"><option value="">None / item-specific</option>${S.safetyGroups.filter(g=>g.active).map(g=>`<option value="${g.id}" ${linkedGroup?.id===g.id?'selected':''}>${esc(g.name)} · ${esc(riskLabel(g.risk_rating))}</option>`).join('')}</select><div class="muted">Shared RA/SSW documents are inherited from the selected group.</div></div><div><label>Assessment / change reason (optional)</label><input id="riskChangeReason" placeholder="Why this rating applies"></div><div class="full"><label class="ack-check"><input id="confirmRiskAssessment" type="checkbox"> Confirm this item risk assessment now. Use this to record <strong>None ✓</strong> even when no extra risk rating is needed.</label></div>`:`<div><label>Risk assessment</label><div>${riskAssessed(i)?`<span class="badge risk ${riskClass(linkedGroup?.risk_rating||currentRisk)}">${esc(assessmentLabel(i))}</span>`:'<span class="badge muted">Not assessed</span>'}</div><div class="muted">Only an admin can change this.</div></div>`}
       <div class="full"><label>Item photo (optional)</label><input id="newPhoto" type="file" accept="image/*" capture="environment"></div>
       ${i?'':`<div><label>Opening stock (optional)</label><input id="openingQty" type="number" min="0" step="0.001" value="0"></div><div><label>Opening location</label><select id="openingLocationName"><option value="">None</option>${locationNames().map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div><div><label>Opening Bin Ref (optional)</label><input id="openingBinRef" list="openingBinList" placeholder="e.g. B12"><datalist id="openingBinList"></datalist></div>`}
       </div><div class="actions"><button class="btn" type="submit">${i?'Save changes':'Create item'}</button></div></form>`;
@@ -1630,9 +1992,19 @@ Keep this file somewhere secure.
       if(canAdmin()){
         const selectedRisk=document.getElementById('newRiskRating')?.value||'NONE';
         const oldRisk=existing?riskRating(existing):'NONE';
-        if(selectedRisk!==oldRisk){
-          const {error}=await sb.rpc('set_item_risk_rating',{p_item_id:itemId,p_rating:selectedRisk,p_reason:document.getElementById('riskChangeReason')?.value.trim()||null});
-          if(error){setNotice(`Item saved, but risk rating update failed: ${parseError(error)}`,'error');}
+        const confirmAssessment=document.getElementById('confirmRiskAssessment')?.checked;
+        if(selectedRisk!==oldRisk || confirmAssessment){
+          const {error}=await sb.rpc('assess_item_risk',{p_item_id:itemId,p_rating:selectedRisk,p_reason:document.getElementById('riskChangeReason')?.value.trim()||null});
+          if(error){setNotice(`Item saved, but risk assessment update failed: ${parseError(error)}`,'error');}
+        }
+        const groupId=document.getElementById('newSafetyGroup')?.value||'';
+        const currentLink=existing?safetyGroupLink(existing.id):null;
+        if(groupId){
+          const {error}=await sb.from('safety_group_items').upsert({item_id:itemId,group_id:groupId,linked_by:S.profile.id,linked_at:new Date().toISOString()},{onConflict:'item_id'});
+          if(error){setNotice(`Item saved, but Safety Group link failed: ${parseError(error)}`,'error');}
+        }else if(currentLink){
+          const {error}=await sb.from('safety_group_items').delete().eq('item_id',itemId);
+          if(error){setNotice(`Item saved, but Safety Group unlink failed: ${parseError(error)}`,'error');}
         }
       }
       const photo=document.getElementById('newPhoto').files[0];
