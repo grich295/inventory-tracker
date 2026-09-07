@@ -204,7 +204,7 @@
     S.session = session;
     const hash = window.location.hash;
     const qs = window.location.search;
-    S.passwordMode = hash.includes('type=recovery') || hash.includes('type=invite') || qs.includes('type=recovery') || qs.includes('type=invite');
+    S.passwordMode = hash.includes('type=recovery') || hash.includes('type=invite') || qs.includes('type=recovery') || qs.includes('type=invite') || session?.user?.user_metadata?.must_set_password === true;
     if (S.session) {
       try {
         await loadData();
@@ -218,7 +218,7 @@
 
   sb.auth.onAuthStateChange(async (event, session) => {
     S.session = session;
-    if (event === 'PASSWORD_RECOVERY') S.passwordMode = true;
+    if (event === 'PASSWORD_RECOVERY' || session?.user?.user_metadata?.must_set_password === true) S.passwordMode = true;
     if (session) {
       try {
         await loadData();
@@ -287,9 +287,15 @@
       e.preventDefault();
       const a=document.getElementById('pw1').value,b=document.getElementById('pw2').value;
       if (a!==b) { S.notice={message:'Passwords do not match.',type:'error'}; return renderPasswordUpdate(); }
-      const { error } = await sb.auth.updateUser({password:a});
+      const currentMeta = S.session?.user?.user_metadata || {};
+      const { error } = await sb.auth.updateUser({
+        password:a,
+        data:{...currentMeta,must_set_password:false,password_set_at:new Date().toISOString()}
+      });
       if (error) { S.notice={message:parseError(error),type:'error'}; return renderPasswordUpdate(); }
-      S.passwordMode=false; history.replaceState({},'',location.pathname); setNotice('Password updated.'); render();
+      const { data:{ session } } = await sb.auth.getSession();
+      S.session=session;
+      S.passwordMode=false; history.replaceState({},'',location.pathname); setNotice('Password set. You can now use Inventory Tracker.'); render();
     };
   }
 
@@ -299,7 +305,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.3</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.4</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${content}</main>
     </div>`;
@@ -610,7 +616,7 @@
     if(!canAdmin()) return '<div class="notice error">Admin access required.</div>';
     const rows=S.profiles.map(p=>`<tr><td>${esc(p.display_name)}<div class="muted">${esc(p.email||'')}</div></td><td>${esc(roleLabel(p.role))}</td><td>${p.active===false?'<span class="badge muted">Disabled</span>':'<span class="badge good">Active</span>'}</td><td><select data-role-user="${p.id}" ${p.id===S.profile.id?'disabled':''}><option value="staff" ${p.role==='staff'?'selected':''}>User</option><option value="manager" ${p.role==='manager'?'selected':''}>Manager</option><option value="admin" ${p.role==='admin'?'selected':''}>Admin</option></select></td><td>${p.id===S.profile.id?'—':p.active===false?`<button class="btn good small" data-user-enable="${p.id}">Re-enable</button>`:`<button class="btn danger small" data-user-disable="${p.id}">Disable</button>`}</td></tr>`).join('');
     return `<div class="split"><div class="card"><h2>Users</h2><p class="muted">Disable users instead of deleting them so their stock history remains intact.</p><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Status</th><th>Change role</th><th>Access</th></tr></thead><tbody>${rows}</tbody></table></div></div>
-      <div class="card"><h2>Invite user</h2><p class="muted">The invited person receives an email and chooses their own password. The Edge Function must be deployed once from Supabase on your laptop.</p><form id="inviteForm"><label>Name</label><input id="inviteName" required><label>Email</label><input id="inviteEmail" type="email" required><label>Role</label><select id="inviteRole"><option value="staff">User</option><option value="manager">Manager</option><option value="admin">Admin</option></select><div class="actions"><button class="btn" type="submit">Send invite</button></div></form></div></div>`;
+      <div class="card"><h2>Invite user</h2><p class="muted">The invited person receives an email and must set their own password before entering the tracker. The v7.4 invite-user Edge Function must be deployed in Supabase.</p><form id="inviteForm"><label>Name</label><input id="inviteName" required><label>Email</label><input id="inviteEmail" type="email" required><label>Role</label><select id="inviteRole"><option value="staff">User</option><option value="manager">Manager</option><option value="admin">Admin</option></select><div class="actions"><button class="btn" type="submit">Send invite</button></div></form></div></div>`;
   }
 
 
@@ -694,7 +700,7 @@
   function stocktakeHtml() {
     const task=assignedOpenStocktake();
     const myHistory=S.stocktakeTasks.filter(t=>t.assigned_user_id===S.profile?.id&&t.status==='COMPLETED').slice(0,10);
-    const taskBlock=task?`<div class="card"><h2>${task.status==='OVERDUE'?'Overdue':'Assigned'} stocktake</h2><p class="muted">Due ${fmtDate(task.due_at)}. Count the actual quantity in each location/bin. Differences create audited stock adjustments when you complete the task.</p><div class="table-wrap"><table><thead><tr><th>Item</th><th>Location / Bin</th><th>Expected</th><th>Counted</th></tr></thead><tbody>${stocktakeItemsFor(task.id).map(x=>`<tr><td>${esc(itemName(x.item_id))}</td><td>${esc(locName(x.location_id))}</td><td>${qty(x.expected_quantity)}</td><td><input class="stocktake-count" data-stocktake-item="${x.id}" type="number" min="0" step="0.001" value="${x.counted_quantity??''}" placeholder="Count"></td></tr>`).join('')}</tbody></table></div><div class="actions"><button class="btn good" id="completeStocktake">Complete stocktake</button></div></div>`:`<div class="card"><h2>Stocktake</h2><p>No stocktake is currently assigned to you.</p><p class="muted">The tracker creates the next random task automatically when the configured interval is due.</p></div>`;
+    const taskBlock=task?`<div class="card"><h2>${task.status==='OVERDUE'?'Overdue':'Assigned'} stocktake</h2><p class="muted">Due ${fmtDate(task.due_at)}. Count the actual quantity in each location/bin. Differences create audited stock adjustments when you complete the task.</p><div class="table-wrap"><table><thead><tr><th>Item</th><th>Location / Bin</th><th>Expected</th><th>Counted</th></tr></thead><tbody>${stocktakeItemsFor(task.id).map(x=>`<tr><td>${esc(itemName(x.item_id))}</td><td>${esc(locName(x.location_id))}</td><td>${qty(x.expected_quantity)}</td><td><input class="stocktake-count" data-stocktake-item="${x.id}" type="number" inputmode="decimal" min="0" step="0.01" value="${x.counted_quantity??''}" placeholder="Count"></td></tr>`).join('')}</tbody></table></div><div class="actions"><button class="btn good" id="completeStocktake">Complete stocktake</button></div></div>`:`<div class="card"><h2>Stocktake</h2><p>No stocktake is currently assigned to you.</p><p class="muted">The tracker creates the next random task automatically when the configured interval is due.</p></div>`;
     const admin=canAdmin()?`<div class="card" style="margin-top:1rem"><h3>Admin stocktake settings</h3><form id="stocktakeSettingsForm" class="form-grid"><div><label>Enabled</label><select id="stocktakeEnabled"><option value="true" ${S.stocktakeSettings?.enabled!==false?'selected':''}>Yes</option><option value="false" ${S.stocktakeSettings?.enabled===false?'selected':''}>No</option></select></div><div><label>Interval (days)</label><input id="stocktakeInterval" type="number" min="1" max="365" value="${S.stocktakeSettings?.interval_days||14}"></div><div><label>Items per task</label><input id="stocktakeCount" type="number" min="1" max="100" value="${S.stocktakeSettings?.item_count||12}"></div><div><label>Due within (days)</label><input id="stocktakeDueDays" type="number" min="1" max="60" value="${S.stocktakeSettings?.due_days||7}"></div><div class="full"><div class="muted">Next automatic task: ${fmtDate(S.stocktakeSettings?.next_task_at)}</div><div class="actions"><button class="btn" type="submit">Save stocktake settings</button><button class="btn ghost" type="button" id="generateStocktakeNow">Create next stocktake now</button></div></div></form><h3>Open / overdue tasks</h3>${S.stocktakeTasks.filter(t=>['OPEN','OVERDUE'].includes(t.status)).map(t=>`<div class="item-row"><div><strong>${esc(userName(t.assigned_user_id))}</strong><div class="muted">${stocktakeItemsFor(t.id).length} items · due ${fmtShortDate(t.due_at)} · ${esc(t.status)}</div></div><div><select data-reassign-task="${t.id}">${S.profiles.filter(p=>p.active!==false).map(p=>`<option value="${p.id}" ${p.id===t.assigned_user_id?'selected':''}>${esc(p.display_name)}</option>`).join('')}</select></div></div>`).join('')||'<p class="muted">No open tasks.</p>'}</div>`:'';
     return `${taskBlock}<div class="card" style="margin-top:1rem"><h3>My completed stocktakes</h3>${myHistory.length?myHistory.map(t=>`<div class="muted">${fmtDate(t.completed_at)} · ${stocktakeItemsFor(t.id).length} items</div>`).join(''):'<p class="muted">No completed stocktakes yet.</p>'}</div>${admin}`;
   }
@@ -1326,7 +1332,7 @@ Keep this file somewhere secure.
     showModal(`<header><div><h2>Add to order</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header>
       <form id="createOrderForm">
         <div class="form-grid">
-          <div><label>Quantity ordered</label><input id="orderQty" type="number" min="0.001" step="0.001" value="${esc(suggested)}" required></div>
+          <div><label>Quantity ordered</label><input id="orderQty" type="number" inputmode="decimal" min="0.01" step="0.01" value="${esc(suggested)}" required></div>
           <div><label>Supplier</label><select id="orderSupplier"><option value="">Manual supplier</option>${suppliers.map(s=>`<option value="${s.id}" ${preferred?.id===s.id?'selected':''}>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</option>`).join('')}</select></div>
           <div><label>Supplier name</label><input id="orderSupplierName" list="globalSupplierNames" value="${esc(preferred?.supplier_name||'')}" required><datalist id="globalSupplierNames">${globalSupplierNames().map(n=>`<option value="${esc(n)}"></option>`).join('')}</datalist></div>
           <div><label>Supplier part ref</label><input id="orderSupplierRef" value="${esc(preferred?.supplier_ref||'')}"></div>
@@ -1387,7 +1393,7 @@ Keep this file somewhere secure.
           <div><span>Already received</span><strong>${qty(order.quantity_received)}</strong></div>
           <div><span>Still on order</span><strong>${qty(remaining)}</strong></div>
         </div>
-        <label>Received now</label><input id="receiveQty" type="number" min="0.001" max="${esc(remaining)}" step="0.001" value="${esc(remaining)}" required>
+        <label>Received now</label><input id="receiveQty" type="number" inputmode="decimal" min="0.01" max="${esc(remaining)}" step="0.01" value="${esc(remaining)}" required>
         <label>Put into location</label><select id="receiveLocation" required>${locationNameOptions(activeLocations())}</select>
         <label>Bin Ref (optional)</label><input id="receiveBin" list="receiveBinList" placeholder="e.g. B12"><datalist id="receiveBinList"></datalist>
         <label>Notes (optional)</label><textarea id="receiveNotes" rows="2" placeholder="Short delivery, damaged box, etc."></textarea>
@@ -1421,7 +1427,7 @@ Keep this file somewhere secure.
     const o=byId(S.purchaseOrders,orderId); if(!o)return;
     showModal(`<header><div><h2>Edit order</h2><div class="muted">${esc(itemName(o.item_id))}</div></div><button class="close" data-close>×</button></header>
       <form id="editOrderForm">
-        <label>Total ordered quantity</label><input id="editOrderQty" type="number" min="${esc(o.quantity_received)}" step="0.001" value="${esc(o.quantity_ordered)}" required>
+        <label>Total ordered quantity</label><input id="editOrderQty" type="number" inputmode="decimal" min="${esc(o.quantity_received)}" step="0.01" value="${esc(o.quantity_ordered)}" required>
         <label>Order / PO reference</label><input id="editOrderRef" value="${esc(o.order_reference||'')}">
         <label>Expected delivery date</label><input id="editOrderExpected" type="date" value="${esc(o.expected_date||'')}">
         <label>Notes</label><textarea id="editOrderNotes" rows="2">${esc(o.notes||'')}</textarea>
@@ -1567,7 +1573,7 @@ Keep this file somewhere secure.
     const f=document.getElementById('inviteForm'); if(f) f.onsubmit=async e=>{
       e.preventDefault();
       const body={action:'invite',display_name:document.getElementById('inviteName').value.trim(),email:document.getElementById('inviteEmail').value.trim(),role:document.getElementById('inviteRole').value,redirect_to:location.origin+location.pathname};
-      try{await invoke(body);setNotice('Invitation sent. The user can choose their own password.');await loadData({transactions:false});render();}
+      try{await invoke(body);setNotice('Invitation sent. The user must set their password before entering the tracker.');await loadData({transactions:false});render();}
       catch(e){setNotice(`Invite failed: ${parseError(e)}. If this is the first invite, deploy the included invite-user Edge Function from your laptop.`, 'error');render();}
     };
   }
@@ -1685,10 +1691,10 @@ Keep this file somewhere secure.
     const destinationPair=`<label>Location</label><select id="toLocationName" required>${locationNameOptions(allRows)}</select><label>Bin Ref (optional)</label><input id="toBinRef" list="toBinList" placeholder="Type bin ref, e.g. B12"><datalist id="toBinList"></datalist>`;
     const adjustPair=`<label>Location</label><select id="fromLocationName" required>${locationNameOptions(allRows)}</select><label>Bin Ref (optional)</label><input id="fromBinRef" list="fromBinList" placeholder="Type bin ref, e.g. B12"><datalist id="fromBinList"></datalist>`;
     return `<header><div><h2>${title}</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header><form id="stockActionForm" data-type="${type}">
-      ${type==='ADD'?`${destinationPair}<label>Quantity added</label><input id="actionQty" type="number" min="0.001" step="0.001" required>`:''}
-      ${type==='USE'?`${sourcePair}<label>Quantity used / removed</label><input id="actionQty" type="number" min="0.001" step="0.001" required>`:''}
-      ${type==='MOVE'?`<h3>Move from</h3>${sourcePair}<h3>Move to</h3>${destinationPair}<label class="ack-check"><input id="moveAllCheck" type="checkbox"> Move all stock from this bin</label><label>Quantity moved</label><input id="actionQty" type="number" min="0.001" step="0.001" required><div id="movePreview" class="muted"></div>`:''}
-      ${type==='ADJUST'?`${adjustPair}<label>Correct quantity at this location / bin ref</label><input id="newQty" type="number" min="0" step="0.001" required><label>Reason</label><select id="reason" required><option value="Stock count correction">Stock count correction</option><option value="Damaged">Damaged</option><option value="Lost">Lost</option><option value="Found">Found</option><option value="Data correction">Data correction</option><option value="Other">Other</option></select>`:''}
+      ${type==='ADD'?`${destinationPair}<label>Quantity added</label><input id="actionQty" type="number" inputmode="decimal" min="0.01" step="0.01" required>`:''}
+      ${type==='USE'?`${sourcePair}<label>Quantity used / removed</label><input id="actionQty" type="number" inputmode="decimal" min="0.01" step="0.01" required>`:''}
+      ${type==='MOVE'?`<h3>Move from</h3>${sourcePair}<h3>Move to</h3>${destinationPair}<label class="ack-check"><input id="moveAllCheck" type="checkbox"> Move all stock from this bin</label><label>Quantity moved</label><input id="actionQty" type="number" inputmode="decimal" min="0.01" step="0.01" required><div id="movePreview" class="muted"></div>`:''}
+      ${type==='ADJUST'?`${adjustPair}<label>Correct quantity at this location / bin ref</label><input id="newQty" type="number" inputmode="decimal" min="0" step="0.01" required><label>Reason</label><select id="reason" required><option value="Stock count correction">Stock count correction</option><option value="Damaged">Damaged</option><option value="Lost">Lost</option><option value="Found">Found</option><option value="Data correction">Data correction</option><option value="Other">Other</option></select>`:''}
       ${type!=='ADJUST'?`<label>Reason / reference (optional)</label><input id="reason" placeholder="Delivery, job, damaged, etc.">`:''}
       <label>Notes (optional)</label><textarea id="notes" rows="2"></textarea>
       <div class="actions"><button class="btn" type="submit">Confirm ${title.toLowerCase()}</button></div></form>`;
@@ -1808,7 +1814,7 @@ Keep this file somewhere secure.
           <div><label>Supplier name</label><input id="supplierName${slot}" list="supplierNamesList" value="${esc(s?.supplier_name||'')}" placeholder="Start typing or add a new supplier"></div>
           <div><label>Supplier part/reference</label><input id="supplierRef${slot}" value="${esc(s?.supplier_ref||'')}"></div>
           <div><label>Price (£, optional)</label><input id="supplierPrice${slot}" type="number" min="0" step="0.01" value="${esc(s?.unit_price??'')}"></div>
-          <div><label>Pack size</label><input id="supplierPack${slot}" type="number" min="0.001" step="0.001" value="${esc(s?.pack_size??1)}"></div>
+          <div><label>Pack size</label><input id="supplierPack${slot}" type="number" inputmode="decimal" min="0.01" step="0.01" value="${esc(s?.pack_size??1)}"></div>
           <div><label>Lead time (days)</label><input id="supplierLead${slot}" type="number" min="0" step="1" value="${esc(s?.lead_time_days??'')}"></div>
           <div><label>Notes</label><input id="supplierNotes${slot}" value="${esc(s?.notes||'')}"></div>
         </div>
@@ -1860,10 +1866,10 @@ Keep this file somewhere secure.
       <div><label>Item code</label><input id="newCode" value="${esc(i?.item_code||'')}" required></div>
       <div><label>QR value</label><input id="newQr" value="${esc(i?.qr_value||'')}" placeholder="Defaults to item code"><button class="btn ghost" id="generateQr" type="button" style="margin-top:.35rem">Generate code</button></div>
       <div><label>Category</label><select id="newCategory"><option value="">Uncategorised</option>${categories.map(c=>`<option value="${esc(c)}" ${currentCategory===c?'selected':''}>${esc(c)}</option>`).join('')}</select></div>
-      <div><label>Reorder level</label><input id="newReorder" type="number" step="0.001" min="0" value="${esc(i?.reorder_level??0)}"></div>
+      <div><label>Reorder level</label><input id="newReorder" type="number" inputmode="decimal" step="0.01" min="0" value="${esc(i?.reorder_level??0)}"></div>
       <div><label>Unit cost (£, optional)</label><input id="newCost" type="number" step="0.01" min="0" value="${esc(i?.unit_cost??'')}"></div>
       <div class="full"><label>Item photo (optional)</label><input id="newPhoto" type="file" accept="image/*" capture="environment"></div>
-      ${i?'':`<div><label>Opening stock (optional)</label><input id="openingQty" type="number" min="0" step="0.001" value="0"></div><div><label>Opening location</label><select id="openingLocationName"><option value="">None</option>${locationNames().map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div><div><label>Opening Bin Ref (optional)</label><input id="openingBinRef" list="openingBinList" placeholder="e.g. B12"><datalist id="openingBinList"></datalist></div>`}
+      ${i?'':`<div><label>Opening stock (optional)</label><input id="openingQty" type="number" inputmode="decimal" min="0" step="0.01" value="0"></div><div><label>Opening location</label><select id="openingLocationName"><option value="">None</option>${locationNames().map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div><div><label>Opening Bin Ref (optional)</label><input id="openingBinRef" list="openingBinList" placeholder="e.g. B12"><datalist id="openingBinList"></datalist></div>`}
       </div><div class="actions"><button class="btn" type="submit">${i?'Save changes':'Create item'}</button></div></form>`;
   }
 
