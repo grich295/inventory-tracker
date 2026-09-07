@@ -2,23 +2,133 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#111827" />
-  <title>Inventory Tracker</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#17324d" />
+  <title>Safety Tracker</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="styles.css?v=74" />
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
 </head>
 <body>
-  <div id="app"><div class="splash">Loading Inventory Tracker…</div></div>
+  <div id="toast" class="toast" hidden></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <script src="config.js"></script>
-  <script src="app.js?v=74"></script>
+  <main id="authView" class="auth-shell">
+    <section class="auth-card">
+      <div class="brand-mark">ST</div>
+      <h1>Safety Tracker</h1>
+      <p class="muted">Document, training and sign-off tracking.</p>
+      <form id="loginForm" class="stack">
+        <label>Email<input id="loginEmail" type="email" autocomplete="email" required /></label>
+        <label>Password<input id="loginPassword" type="password" autocomplete="current-password" required /></label>
+        <button class="primary" type="submit">Sign in</button>
+      </form>
+      <button id="forgotPasswordBtn" class="link-button" type="button">Forgot password?</button>
+      <div id="authMessage" class="message" hidden></div>
+    </section>
+  </main>
+
+  <div id="appView" hidden>
+    <header class="topbar">
+      <div>
+        <strong>Safety Tracker</strong>
+        <span class="version">v1.0.1</span>
+      </div>
+      <div class="user-chip">
+        <span id="currentUserName">User</span>
+        <span id="currentUserRole" class="pill"></span>
+        <button id="signOutBtn" class="ghost small">Sign out</button>
+      </div>
+    </header>
+
+    <nav id="mainNav" class="nav-tabs">
+      <button data-view="mySafety" class="active">My Safety</button>
+      <button data-view="documents">Documents</button>
+      <button data-view="training">Training</button>
+      <button data-view="people" class="manager-only">People</button>
+      <button data-view="reports" class="manager-only">Reports</button>
+      <button data-view="admin" class="admin-only">Admin</button>
+    </nav>
+
+    <main class="page-shell">
+      <section id="mySafetyView" class="view active-view">
+        <div class="page-heading">
+          <div><h2>My Safety</h2><p class="muted">Your assigned documents and training.</p></div>
+        </div>
+        <div id="myStats" class="stats-grid"></div>
+        <div class="section-card">
+          <div class="section-title"><h3>Actions required</h3></div>
+          <div id="myActions" class="card-list"></div>
+        </div>
+        <div class="section-card">
+          <div class="section-title"><h3>Completed</h3></div>
+          <div id="myCompleted" class="card-list"></div>
+        </div>
+      </section>
+
+      <section id="documentsView" class="view">
+        <div class="page-heading">
+          <div><h2>Documents</h2><p class="muted">Risk Assessments, COSHH, SSW, policies and procedures.</p></div>
+          <button id="newDocumentBtn" class="primary manager-only">New document</button>
+        </div>
+        <div class="filters">
+          <input id="documentSearch" placeholder="Search title or reference" />
+          <select id="documentTypeFilter"><option value="">All types</option></select>
+          <select id="documentStatusFilter"><option value="ACTIVE">Active</option><option value="ARCHIVED">Archived</option><option value="">All statuses</option></select>
+        </div>
+        <div id="documentsList" class="card-list"></div>
+      </section>
+
+      <section id="trainingView" class="view">
+        <div class="page-heading">
+          <div><h2>Training</h2><p class="muted">Ad-hoc sessions, toolbox talks, inductions and refreshers.</p></div>
+          <button id="newTrainingBtn" class="primary manager-only">New training</button>
+        </div>
+        <div class="filters">
+          <input id="trainingSearch" placeholder="Search training" />
+          <select id="trainingTypeFilter"><option value="">All types</option><option>AD_HOC</option><option>TOOLBOX_TALK</option><option>INDUCTION</option><option>REFRESHER</option><option>OTHER</option></select>
+        </div>
+        <div id="trainingList" class="card-list"></div>
+      </section>
+
+      <section id="peopleView" class="view">
+        <div class="page-heading">
+          <div><h2>People</h2><p class="muted">Assign documents and training to active users.</p></div>
+          <button id="inviteUserBtn" class="primary admin-only">Invite user</button>
+        </div>
+        <div id="peopleList" class="card-list"></div>
+      </section>
+
+      <section id="reportsView" class="view">
+        <div class="page-heading"><div><h2>Reports</h2><p class="muted">Evidence, outstanding actions and renewal tracking.</p></div></div>
+        <div id="reportStats" class="stats-grid"></div>
+        <div class="button-grid">
+          <button data-report="outstanding" class="secondary">Outstanding sign-offs CSV</button>
+          <button data-report="document-signoffs" class="secondary">Document sign-offs CSV</button>
+          <button data-report="training-signoffs" class="secondary">Training sign-offs CSV</button>
+          <button data-report="training-matrix" class="secondary">Training matrix CSV</button>
+          <button data-report="reviews" class="secondary">Review dates CSV</button>
+        </div>
+      </section>
+
+      <section id="adminView" class="view">
+        <div class="page-heading"><div><h2>Admin</h2><p class="muted">System controls and backup.</p></div></div>
+        <div class="section-card">
+          <h3>Backup</h3>
+          <p class="muted">Downloads database records as JSON. Uploaded files remain in Supabase Storage.</p>
+          <button id="backupBtn" class="secondary">Download JSON backup</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="modal" class="modal">
+    <form method="dialog" id="modalShell">
+      <div class="modal-head"><h3 id="modalTitle"></h3><button value="cancel" class="icon-button" aria-label="Close">×</button></div>
+      <div id="modalBody"></div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
 </body>
 </html>
