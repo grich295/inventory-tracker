@@ -46,6 +46,7 @@
     safetyGroupItems: [],
     safetyGroupDocs: [],
     safetyGroupAcks: [],
+    safetySettings: null,
     stocktakeSettings: null,
     stocktakeTasks: [],
     stocktakeItems: [],
@@ -173,7 +174,7 @@
   }
 
   async function loadData({transactions=true, docs=true}={}) {
-    const [profiles, items, locations, balances, itemSuppliers, purchaseOrders, categories, safetyAcks, riskHistory, userPrefs, safetyGroups, safetyGroupItems, safetyGroupDocs, safetyGroupAcks, stocktakeSettingsRows, stocktakeTasks, stocktakeItems] = await Promise.all([
+    const [profiles, items, locations, balances, itemSuppliers, purchaseOrders, categories, safetyAcks, riskHistory, userPrefs, safetyGroups, safetyGroupItems, safetyGroupDocs, safetyGroupAcks, safetySettingsRows, stocktakeSettingsRows, stocktakeTasks, stocktakeItems] = await Promise.all([
       fetchAll('profiles','*','display_name',true),
       fetchAll('items','*','name',true),
       fetchAll('stock_locations','*','location_name',true),
@@ -188,6 +189,7 @@
       fetchAll('safety_group_items','*'),
       fetchAll('safety_group_documents','*','uploaded_at',false),
       fetchAll('safety_group_acknowledgements','*','acknowledged_at',false),
+      fetchAll('safety_settings','*'),
       fetchAll('stocktake_settings','*'),
       fetchAll('stocktake_tasks','*','created_at',false),
       fetchAll('stocktake_task_items','*')
@@ -196,6 +198,7 @@
     S.itemSuppliers = itemSuppliers; S.purchaseOrders = purchaseOrders; S.categories = categories;
     S.safetyAcks = safetyAcks; S.riskHistory = riskHistory; S.userPrefs=userPrefs;
     S.safetyGroups=safetyGroups; S.safetyGroupItems=safetyGroupItems; S.safetyGroupDocs=safetyGroupDocs; S.safetyGroupAcks=safetyGroupAcks;
+    S.safetySettings=safetySettingsRows[0]||{acknowledgements_enabled:true};
     S.stocktakeSettings=stocktakeSettingsRows[0]||null; S.stocktakeTasks=stocktakeTasks; S.stocktakeItems=stocktakeItems;
     S.profile = byId(S.profiles, S.session?.user?.id) || S.profile;
     if (transactions) S.transactions = await fetchAll('transactions','*','occurred_at',false);
@@ -222,7 +225,7 @@
   function startRealtime() {
     if(S.liveChannel||!S.session)return;
     let c=sb.channel('inventory-live');
-    for(const table of ['stock_balances','transactions','items','stock_locations','safety_documents','profiles','item_suppliers','purchase_orders','inventory_categories','safety_acknowledgements','risk_rating_history','user_item_preferences','safety_groups','safety_group_items','safety_group_documents','safety_group_acknowledgements','stocktake_tasks','stocktake_task_items']){
+    for(const table of ['stock_balances','transactions','items','stock_locations','safety_documents','profiles','item_suppliers','purchase_orders','inventory_categories','safety_acknowledgements','risk_rating_history','user_item_preferences','safety_groups','safety_group_items','safety_group_documents','safety_group_acknowledgements','safety_settings','stocktake_tasks','stocktake_task_items']){
       c=c.on('postgres_changes',{event:'*',schema:'public',table},queueLiveRefresh);
     }
     S.liveChannel=c.subscribe();
@@ -328,7 +331,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['safety','Safety'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.1</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.2</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${content}</main>
     </div>`;
@@ -410,7 +413,7 @@
     const risk=group?.risk_rating || riskRating(i);
     const assessed=riskAssessed(i);
     const badge=assessed?`<span class="badge risk ${riskClass(risk)}">${esc(assessmentLabel(i))}</span>`:`<span class="badge muted">Not assessed</span>`;
-    return `<div class="item-row inventory-item-row ${i.active?'':'archived-row'}" data-item="${i.id}">${i.primary_photo_path?`<img class="item-thumb" data-photo-path="${esc(i.primary_photo_path)}" alt="">`:`<div class="item-thumb placeholder">📦</div>`}<div class="item-main"><div class="item-title">${esc(i.name)}${i.active?'':' <span class="badge muted">Archived</span>'}</div><div class="muted">${esc(i.item_code)}${i.category?' · '+esc(i.category):''}</div><div class="muted">${pos || 'No stock location set'}</div>${badge} ${group?`<span class="badge">${esc(group.name)}</span> `:''}${i.is_chemical?'<span class="badge chemical">Chemical</span> ':''}${low&&i.active?'<span class="badge low">Low stock</span> ':''}${onOrder>0?`<span class="badge order">On order ${qty(onOrder)}</span>`:''}</div><div class="qty">${qty(total)}</div></div>`;
+    return `<div class="item-row inventory-item-row ${i.active?'':'archived-row'}" data-item="${i.id}">${i.primary_photo_path?`<img class="item-thumb" data-photo-path="${esc(i.primary_photo_path)}" alt="">`:`<div class="item-thumb placeholder">📦</div>`}<div class="item-main"><div class="item-title">${esc(i.name)}${i.active?'':' <span class="badge muted">Archived</span>'}</div><div class="muted">${esc(i.item_code)}${i.category?' · '+esc(i.category):''}</div><div class="muted">${pos || 'No stock location set'}</div>${badge} ${group?`<span class="badge">${esc(group.name)}</span> `:''}${i.is_chemical?'<span class="badge chemical">Hazard</span> ':''}${low&&i.active?'<span class="badge low">Low stock</span> ':''}${onOrder>0?`<span class="badge order">On order ${qty(onOrder)}</span>`:''}</div><div class="qty">${qty(total)}</div></div>`;
   }
 
   function categoryNames() {
@@ -645,8 +648,8 @@
     <div class="split" style="margin-top:1rem"><div class="card"><h3>Usage by item</h3><div class="table-wrap"><table><thead><tr><th>Item</th><th>Used</th></tr></thead><tbody>${summary.map(x=>`<tr data-item="${x.id}"><td>${esc(x.name)}</td><td>${qty(x.q)}</td></tr>`).join('')||'<tr><td colspan="2">No usage in this period.</td></tr>'}</tbody></table></div></div><div class="card"><h3>12-month usage trend</h3><p class="muted">Choose an item in the filter to analyse whether usage is increasing or decreasing.</p><canvas id="trendChart" height="250"></canvas></div></div>
     <div class="card" style="margin-top:1rem"><h3>Who added, used, moved or adjusted stock</h3><div class="table-wrap"><table><thead><tr><th>User</th><th>Added</th><th>Used</th><th>Moved</th><th>Adjusted</th><th>Actions</th></tr></thead><tbody>${activityRows||'<tr><td colspan="6">No activity in this period.</td></tr>'}</tbody></table></div></div>
     <div class="card" style="margin-top:1rem"><h3>Detailed usage</h3>${transactionTable(list)}</div>
-    ${canAdmin()?`<div class="card" style="margin-top:1rem"><h3>Safety acknowledgement evidence</h3><p class="muted">Downloadable evidence of safety reminders acknowledged by users. This supports, but does not replace, main training and instruction.</p><div class="actions"><button class="btn secondary" id="exportSafetyCsv">Safety CSV</button><button class="btn" id="exportSafetyExcel">Safety Excel</button></div><div class="table-wrap" style="margin-top:.8rem"><table><thead><tr><th>Date/time</th><th>User</th><th>Item</th><th>Risk</th><th>Reason</th></tr></thead><tbody>${recentAcks||'<tr><td colspan="5">No acknowledgements recorded yet.</td></tr>'}</tbody></table></div></div><div class="card" style="margin-top:1rem"><h3>Risk-assessed items</h3><div class="table-wrap"><table><thead><tr><th>Item</th><th>Risk</th><th>Safety docs</th><th>Acknowledgements</th><th>Rating last changed</th></tr></thead><tbody>${safetyRows||'<tr><td colspan="5">No items have been assessed yet.</td></tr>'}</tbody></table></div></div>`:''}
-    ${chemicals.length?`<div class="card" style="margin-top:1rem"><h3>Chemical register</h3><p class="muted">Current quantity, exact storage locations and whether key safety documents are on file.</p><div class="table-wrap"><table><thead><tr><th>Chemical</th><th>Stock</th><th>Where kept</th><th>Risk assessment</th><th>SSW</th><th>SDS/MSDS</th><th>COSHH</th><th>Next review</th></tr></thead><tbody>${chemicalRows}</tbody></table></div></div>`:''}`;
+    ${canAdmin()?`<div class="card" style="margin-top:1rem"><h3>Safety acknowledgement evidence</h3><p class="muted">Downloadable evidence of safety reminders acknowledged by users. This supports, but does not replace, main training and instruction.</p><div class="actions"><button class="btn secondary" id="exportSafetyCsv">Safety CSV</button><button class="btn" id="exportSafetyExcel">Safety Excel</button></div><div class="table-wrap" style="margin-top:.8rem"><table><thead><tr><th>Date/time</th><th>User</th><th>Item</th><th>Risk</th><th>Reason</th></tr></thead><tbody>${recentAcks||'<tr><td colspan="5">No acknowledgements recorded yet.</td></tr>'}</tbody></table></div></div><div class="card" style="margin-top:1rem"><h3>Risk-assessed items</h3><div class="table-wrap"><table><thead><tr><th>Item</th><th>Risk</th><th>Safety refs</th><th>Acknowledgements</th><th>Rating last changed</th></tr></thead><tbody>${safetyRows||'<tr><td colspan="5">No items have been assessed yet.</td></tr>'}</tbody></table></div></div>`:''}
+    ${chemicals.length?`<div class="card" style="margin-top:1rem"><h3>Hazard register</h3><p class="muted">Current quantity, exact storage locations and whether key safety references are recorded.</p><div class="table-wrap"><table><thead><tr><th>Hazard item</th><th>Stock</th><th>Where kept</th><th>Risk assessment</th><th>SSW</th><th>SDS/MSDS</th><th>COSHH</th><th>Next review</th></tr></thead><tbody>${chemicalRows}</tbody></table></div></div>`:''}`;
   }
 
   function historyHtml() {
@@ -819,14 +822,24 @@
 
   function safetyGroupsHtml() {
     if(!canAdmin())return '<div class="notice error">Admin access required.</div>';
+    const ackOn=S.safetySettings?.acknowledgements_enabled!==false;
     const rows=S.safetyGroups.filter(g=>g.active).map(g=>{
       const linked=S.safetyGroupItems.filter(x=>x.group_id===g.id).length,docs=activeGroupSafetyDocs(g.id).length,acks=S.safetyGroupAcks.filter(x=>x.group_id===g.id).length;
-      return `<div class="card"><div class="item-title">${esc(g.name)}</div><div><span class="badge risk ${riskClass(g.risk_rating)}">${esc(riskLabel(g.risk_rating))}</span></div><p class="muted">${esc(g.description||'No description')}</p><div class="muted">${linked} linked item(s) · ${docs} document(s) · ${acks} acknowledgement(s) · reminder ${g.acknowledgement_days||riskIntervalDays(g.risk_rating)||'off'}${g.acknowledgement_days||riskIntervalDays(g.risk_rating)?' days':''}</div><div class="actions"><button class="btn ghost" data-edit-safety-group="${g.id}">Edit</button><button class="btn" data-group-docs="${g.id}">Documents</button><button class="btn secondary" data-group-items="${g.id}">Link items</button></div></div>`;
+      const groupAck=g.acknowledgement_required!==false;
+      return `<div class="card"><div class="item-title">${esc(g.name)}</div><div><span class="badge risk ${riskClass(g.risk_rating)}">${esc(riskLabel(g.risk_rating))}</span></div><p class="muted">${esc(g.description||'No description')}</p><div class="muted">${linked} linked item(s) · ${docs} safety reference(s) · ${acks} acknowledgement(s) · acknowledgements ${groupAck?'required':'off for this group'}</div><div class="actions"><button class="btn ghost" data-edit-safety-group="${g.id}">Edit</button><button class="btn" data-group-docs="${g.id}">Safety references</button><button class="btn secondary" data-group-items="${g.id}">Link items</button></div></div>`;
     }).join('');
-    return `<div class="toolbar"><button class="btn" id="addSafetyGroup">Add Safety Group</button></div><div class="card"><h2>Shared Safety Groups</h2><p class="muted">Upload an RA/SSW once and link it to many related items. Acknowledgement is against the shared group, so users are not repeatedly signing off every individual bulb or fitting.</p></div><div class="grid cards" style="margin-top:1rem">${rows||'<div class="card">No Safety Groups yet.</div>'}</div>`;
+    return `<div class="card"><h2>Safety controls</h2><p class="muted">Keep the inventory tracker simple: record the safety information that applies, or upload a file only when it is useful at the point of use.</p><form id="safetyGlobalSettings" class="form-grid"><div><label>Pre-use safety acknowledgements</label><select id="safetyAckEnabled"><option value="true" ${ackOn?'selected':''}>Enabled</option><option value="false" ${!ackOn?'selected':''}>Disabled</option></select></div><div class="full"><div class="muted">Turning this off stops acknowledgement prompts. Existing sign-off evidence is kept and safety references remain available.</div><div class="actions"><button class="btn" type="submit">Save safety setting</button></div></div></form></div><div class="toolbar" style="margin-top:1rem"><button class="btn" id="addSafetyGroup">Add Safety Group</button></div><div class="card"><h2>Shared Safety Groups</h2><p class="muted">Use a group when the same RA, SSW or other safety information applies to many related items. Add either an uploaded file or a simple reference to the controlled document held elsewhere.</p></div><div class="grid cards" style="margin-top:1rem">${rows||'<div class="card">No Safety Groups yet.</div>'}</div>`;
   }
 
   function bindSafetyGroups() {
+    const settings=document.getElementById('safetyGlobalSettings');
+    if(settings) settings.onsubmit=async e=>{
+      e.preventDefault();
+      const row={acknowledgements_enabled:document.getElementById('safetyAckEnabled').value==='true',updated_at:new Date().toISOString(),updated_by:S.profile.id};
+      const {error}=await sb.from('safety_settings').update(row).eq('singleton',true);
+      if(error){setNotice(parseError(error),'error');render();return;}
+      await loadData({transactions:false,docs:false});setNotice(`Safety acknowledgements ${row.acknowledgements_enabled?'enabled':'disabled'}.`);render();
+    };
     const add=document.getElementById('addSafetyGroup');if(add)add.onclick=()=>openSafetyGroupEditor();
     document.querySelectorAll('[data-edit-safety-group]').forEach(b=>b.onclick=()=>openSafetyGroupEditor(byId(S.safetyGroups,b.dataset.editSafetyGroup)));
     document.querySelectorAll('[data-group-docs]').forEach(b=>b.onclick=()=>openSafetyGroupDocuments(byId(S.safetyGroups,b.dataset.groupDocs)));
@@ -852,9 +865,10 @@
 
   function openSafetyGroupEditor(group=null) {
     const rating=group?.risk_rating||'NONE';
-    showModal(`<header><h2>${group?'Edit':'Add'} Safety Group</h2><button class="close" data-close>×</button></header><form id="safetyGroupForm"><label>Name</label><input id="safetyGroupName" value="${esc(group?.name||'')}" placeholder="Electrical Fitting / Lamp Replacement" required><label>Description</label><textarea id="safetyGroupDescription">${esc(group?.description||'')}</textarea><div class="form-grid"><div><label>Risk rating</label><select id="safetyGroupRisk"><option value="NONE" ${rating==='NONE'?'selected':''}>None</option><option value="GREEN" ${rating==='GREEN'?'selected':''}>Green</option><option value="AMBER" ${rating==='AMBER'?'selected':''}>Amber</option><option value="RED" ${rating==='RED'?'selected':''}>Red</option></select></div><div><label>Acknowledgement interval (days)</label><input id="safetyGroupDays" type="number" min="1" value="${esc(group?.acknowledgement_days||'')}" placeholder="Leave blank for rating default"></div></div><div class="actions"><button class="btn" type="submit">Save Safety Group</button></div></form>`);
+    const ackRequired=group?.acknowledgement_required!==false;
+    showModal(`<header><h2>${group?'Edit':'Add'} Safety Group</h2><button class="close" data-close>×</button></header><form id="safetyGroupForm"><label>Name</label><input id="safetyGroupName" value="${esc(group?.name||'')}" placeholder="Electrical Fitting / Lamp Replacement" required><label>Description</label><textarea id="safetyGroupDescription">${esc(group?.description||'')}</textarea><div class="form-grid"><div><label>Risk rating</label><select id="safetyGroupRisk"><option value="NONE" ${rating==='NONE'?'selected':''}>None</option><option value="GREEN" ${rating==='GREEN'?'selected':''}>Green</option><option value="AMBER" ${rating==='AMBER'?'selected':''}>Amber</option><option value="RED" ${rating==='RED'?'selected':''}>Red</option></select></div><div><label>Require acknowledgement for this group</label><select id="safetyGroupAckRequired"><option value="true" ${ackRequired?'selected':''}>Yes</option><option value="false" ${!ackRequired?'selected':''}>No</option></select></div><div><label>Acknowledgement interval (days)</label><input id="safetyGroupDays" type="number" min="1" value="${esc(group?.acknowledgement_days||'')}" placeholder="Leave blank for rating default"></div></div><div class="actions"><button class="btn" type="submit">Save Safety Group</button></div></form>`);
     document.getElementById('safetyGroupForm').onsubmit=async e=>{
-      e.preventDefault();const row={name:document.getElementById('safetyGroupName').value.trim(),description:document.getElementById('safetyGroupDescription').value.trim()||null,risk_rating:document.getElementById('safetyGroupRisk').value,acknowledgement_days:document.getElementById('safetyGroupDays').value?Math.round(num(document.getElementById('safetyGroupDays').value)):null,updated_at:new Date().toISOString()};let error;
+      e.preventDefault();const row={name:document.getElementById('safetyGroupName').value.trim(),description:document.getElementById('safetyGroupDescription').value.trim()||null,risk_rating:document.getElementById('safetyGroupRisk').value,acknowledgement_required:document.getElementById('safetyGroupAckRequired').value==='true',acknowledgement_days:document.getElementById('safetyGroupDays').value?Math.round(num(document.getElementById('safetyGroupDays').value)):null,updated_at:new Date().toISOString()};let error;
       if(group)({error}=await sb.from('safety_groups').update(row).eq('id',group.id));else{row.created_by=S.profile.id;({error}=await sb.from('safety_groups').insert(row));}
       if(error){setNotice(parseError(error),'error');render();return;}await loadData({transactions:false,docs:false});closeModal();setNotice('Safety Group saved.');render();
     };
@@ -862,12 +876,22 @@
 
   function openSafetyGroupDocuments(group) {
     const docs=activeGroupSafetyDocs(group.id);
-    showModal(`<header><div><h2>Shared safety documents</h2><div class="muted">${esc(group.name)}</div></div><button class="close" data-close>×</button></header><div class="item-list">${docs.map(d=>`<div class="item-row"><div><strong>${esc(docTypeLabel(d.document_type))}</strong> · ${esc(d.title)}<div class="muted">Version ${esc(d.version||'—')} · Revision ${esc(d.revision_date||'—')} · Review ${esc(d.review_date||'—')}</div></div><button class="btn ghost" data-group-open-doc="${d.id}">Open</button></div>`).join('')||'<p class="muted">No shared documents uploaded yet.</p>'}</div><form id="groupDocForm" style="margin-top:1rem"><h3>Upload document</h3><div class="form-grid"><div><label>Type</label><select id="groupDocType"><option value="RISK_ASSESSMENT">Risk Assessment</option><option value="SSW">SSW / Safe System of Work</option><option value="SDS_MSDS">SDS / MSDS</option><option value="COSHH">COSHH Assessment</option><option value="MANUFACTURER">Manufacturer Instructions</option><option value="OTHER">Other</option></select></div><div><label>Title</label><input id="groupDocTitle" required></div><div><label>Version</label><input id="groupDocVersion"></div><div><label>Revision date</label><input id="groupDocRevision" type="date"></div><div><label>Review date</label><input id="groupDocReview" type="date"></div><div><label>File</label><input id="groupDocFile" type="file" accept=".pdf,.doc,.docx,image/*" required></div></div><div class="actions"><button class="btn" type="submit">Upload shared document</button></div></form>`);
+    showModal(`<header><div><h2>Shared safety references</h2><div class="muted">${esc(group.name)}</div></div><button class="close" data-close>×</button></header><div class="item-list">${docs.map(d=>`<div class="item-row"><div><strong>${esc(docTypeLabel(d.document_type))}</strong> · ${esc(d.title)} ${safetySourceBadge(d)}<div class="muted">${safetyDocMetaHtml(d)}</div></div><div class="actions"><button class="btn ghost" data-group-open-doc="${d.id}">${d.storage_path||d.external_url?'Open':'Details'}</button><button class="btn danger" data-group-delete-doc="${d.id}">Delete</button></div></div>`).join('')||'<p class="muted">No shared safety references recorded yet.</p>'}</div><form id="groupDocForm" style="margin-top:1rem"><h3>Add safety reference</h3><div class="form-grid"><div><label>Type</label><select id="groupDocType"><option value="RISK_ASSESSMENT">Risk Assessment</option><option value="SSW">SSW / Safe System of Work</option><option value="SDS_MSDS">SDS / MSDS</option><option value="COSHH">COSHH Assessment</option><option value="MANUFACTURER">Manufacturer Instructions</option><option value="OTHER">Other</option></select></div><div><label>How is it held?</label><select id="groupDocSource"><option value="REFERENCE">Reference held elsewhere</option><option value="UPLOAD">Upload file to tracker</option></select></div><div><label>Title</label><input id="groupDocTitle" required></div><div><label>Reference number (optional)</label><input id="groupDocReference" placeholder="e.g. RA-014"></div><div><label>Version</label><input id="groupDocVersion"></div><div><label>Revision date</label><input id="groupDocRevision" type="date"></div><div><label>Review date</label><input id="groupDocReview" type="date"></div><div id="groupExternalFields"><label>Where is it stored?</label><input id="groupDocLocation" placeholder="H&amp;S Drive → Maintenance → RA-014"><label>Web/file link (optional)</label><input id="groupDocUrl" type="url" placeholder="https://..."></div><div id="groupUploadFields" class="hidden"><label>File</label><input id="groupDocFile" type="file" accept=".pdf,.doc,.docx,image/*"></div></div><div class="actions"><button class="btn" type="submit">Save safety reference</button></div></form>`);
     document.querySelectorAll('[data-group-open-doc]').forEach(b=>b.onclick=()=>openSafetyDocument(byId(S.safetyGroupDocs,b.dataset.groupOpenDoc)));
+    document.querySelectorAll('[data-group-delete-doc]').forEach(b=>b.onclick=()=>deleteSafetyDocument('group',byId(S.safetyGroupDocs,b.dataset.groupDeleteDoc),()=>openSafetyGroupDocuments(byId(S.safetyGroups,group.id))));
+    const source=document.getElementById('groupDocSource'), external=document.getElementById('groupExternalFields'), upload=document.getElementById('groupUploadFields'), file=document.getElementById('groupDocFile'), location=document.getElementById('groupDocLocation');
+    const toggle=()=>{const isUpload=source.value==='UPLOAD';external.classList.toggle('hidden',isUpload);upload.classList.toggle('hidden',!isUpload);file.required=isUpload;location.required=!isUpload;};source.onchange=toggle;toggle();
     document.getElementById('groupDocForm').onsubmit=async e=>{
-      e.preventDefault();const f=document.getElementById('groupDocFile').files[0];if(!f)return;const path=`groups/${group.id}/${Date.now()}-${slug(f.name)}`;let {error}=await sb.storage.from('safety-documents').upload(path,f,{contentType:f.type});if(error){setNotice(parseError(error),'error');render();return;}const row={group_id:group.id,document_type:document.getElementById('groupDocType').value,title:document.getElementById('groupDocTitle').value.trim(),version:document.getElementById('groupDocVersion').value.trim()||null,revision_date:document.getElementById('groupDocRevision').value||null,review_date:document.getElementById('groupDocReview').value||null,storage_path:path,uploaded_by:S.profile.id};({error}=await sb.from('safety_group_documents').insert(row));if(error){setNotice(parseError(error),'error');render();return;}await loadData({transactions:false,docs:false});openSafetyGroupDocuments(byId(S.safetyGroups,group.id));
+      e.preventDefault();
+      const isUpload=source.value==='UPLOAD';let path=null,error;
+      if(isUpload){const f=file.files[0];if(!f)return;path=`groups/${group.id}/${Date.now()}-${slug(f.name)}`;({error}=await sb.storage.from('safety-documents').upload(path,f,{contentType:f.type}));if(error){setNotice(parseError(error),'error');render();return;}}
+      const row={group_id:group.id,document_type:document.getElementById('groupDocType').value,title:document.getElementById('groupDocTitle').value.trim(),document_reference:document.getElementById('groupDocReference').value.trim()||null,version:document.getElementById('groupDocVersion').value.trim()||null,revision_date:document.getElementById('groupDocRevision').value||null,review_date:document.getElementById('groupDocReview').value||null,source_kind:isUpload?'UPLOAD':'REFERENCE',storage_path:path,external_location:isUpload?null:location.value.trim(),external_url:isUpload?null:document.getElementById('groupDocUrl').value.trim()||null,uploaded_by:S.profile.id};
+      ({error}=await sb.from('safety_group_documents').insert(row));
+      if(error){if(path)await sb.storage.from('safety-documents').remove([path]);setNotice(parseError(error),'error');render();return;}
+      await loadData({transactions:false,docs:false});openSafetyGroupDocuments(byId(S.safetyGroups,group.id));
     };
   }
+
 
 
   function backupHtml() {
@@ -910,6 +934,7 @@
     'safety_group_items',
     'safety_group_documents',
     'safety_group_acknowledgements',
+    'safety_settings',
     'stocktake_settings',
     'stocktake_tasks',
     'stocktake_task_items'
@@ -947,7 +972,7 @@
       backup_format:'inventory-tracker-backup-v1',
       created_at:new Date().toISOString(),
       created_by:{id:S.profile?.id||null,name:S.profile?.display_name||null,role:S.profile?.role||null},
-      app_version:'7.1',
+      app_version:'7.2',
       project_url:cfg.supabaseUrl,
       tables:{},
       uploaded_files:{requested:!!includeFiles,downloaded:0,failed:[]}
@@ -1650,12 +1675,12 @@ Keep this file somewhere secure.
     const rows=[['Date/time','User','Scope','Item / Safety Group','Risk rating','Reason for reminder','Documents acknowledged','Acknowledgement statement']];
     S.safetyAcks.forEach(a=>{
       const docs=Array.isArray(a.documents_snapshot)?a.documents_snapshot:[];
-      const docText=docs.map(d=>`${d.type||''}: ${d.title||''}${d.version?` v${d.version}`:''}${d.revision_date?` (${d.revision_date})`:''}`).join(' | ');
+      const docText=docs.map(d=>`${d.type||''}: ${d.title||''}${d.document_reference?` [${d.document_reference}]`:''}${d.version?` v${d.version}`:''}${d.revision_date?` (${d.revision_date})`:''}`).join(' | ');
       rows.push([a.acknowledged_at,userName(a.user_id),'Item',itemName(a.item_id),a.risk_rating||'NONE',a.acknowledgement_reason||'',docText,a.statement||'']);
     });
     S.safetyGroupAcks.forEach(a=>{
       const docs=Array.isArray(a.documents_snapshot)?a.documents_snapshot:[];
-      const docText=docs.map(d=>`${d.type||''}: ${d.title||''}${d.version?` v${d.version}`:''}${d.revision_date?` (${d.revision_date})`:''}`).join(' | ');
+      const docText=docs.map(d=>`${d.type||''}: ${d.title||''}${d.document_reference?` [${d.document_reference}]`:''}${d.version?` v${d.version}`:''}${d.revision_date?` (${d.revision_date})`:''}`).join(' | ');
       rows.push([a.acknowledged_at,userName(a.user_id),'Safety Group',byId(S.safetyGroups,a.group_id)?.name||'Unknown group',a.risk_rating||'NONE',a.acknowledgement_reason||'',docText,a.statement||'']);
     });
     rows.splice(1,rows.length-1,...rows.slice(1).sort((a,b)=>new Date(b[0])-new Date(a[0])));
@@ -1748,6 +1773,9 @@ Keep this file somewhere secure.
   function safetyReminderStatus(item) {
     const group=safetyGroupForItem(item.id);
     const rating=group?.risk_rating || riskRating(item);
+    if(S.safetySettings?.acknowledgements_enabled===false) return {due:false,reason:'Safety acknowledgements are disabled by Admin',days:null,group,rating};
+    const required=group ? group.acknowledgement_required!==false : item.acknowledgement_required!==false;
+    if(!required) return {due:false,reason:group?'Acknowledgements are off for this Safety Group':'Acknowledgements are off for this item',days:null,group,rating};
     const days=group?.acknowledgement_days || riskIntervalDays(rating);
     if(!days || rating==='NONE') return {due:false,reason:'No safety acknowledgement required',days:null,group,rating};
     const ack=latestSafetyAck(item.id);
@@ -1757,7 +1785,7 @@ Keep this file somewhere secure.
     if(changedAt>ackAt) return {due:true,reason:group?'Safety group changed since your last acknowledgement':'Risk rating changed since your last acknowledgement',days,group,rating};
     const docs=allSafetyDocsForItem(item.id);
     const updatedDoc=docs.find(d=>new Date(d.uploaded_at)>ackAt);
-    if(updatedDoc) return {due:true,reason:'Safety document added or updated since your last acknowledgement',days,group,rating};
+    if(updatedDoc) return {due:true,reason:'Safety information added or updated since your last acknowledgement',days,group,rating};
     const ageDays=(Date.now()-ackAt.getTime())/86400000;
     if(ageDays>=days) return {due:true,reason:`Periodic ${days}-day safety reminder`,days,group,rating};
     const lastUse=group?lastUserGroupUse(group.id):lastUserUse(item.id);
@@ -1770,7 +1798,7 @@ Keep this file somewhere secure.
   }
 
   function safetyAckStatement() {
-    return 'I acknowledge this safety reminder and understand that this product or task may have associated risks. I have reviewed the linked safety information available to me. If I am unsure about any risk, control measure or instruction, I will stop and ask my manager for clarification before proceeding.';
+    return 'I acknowledge this safety reminder. I have read or reviewed the safety information identified above and will follow the relevant controls and instructions. If anything is unclear, or I am unsure about any risk, control measure or instruction, I will stop and ask my manager before proceeding.';
   }
 
   function requestStockAction(item,type) {
@@ -1785,7 +1813,7 @@ Keep this file somewhere secure.
     const group=status.group;
     showModal(`<header><div><h2>Safety reminder</h2><div class="muted">${esc(group?group.name:item.name)}</div></div><button class="close" data-close>×</button></header>
       <div class="safety-panel ${riskClass(status.rating)}"><div><span class="badge risk ${riskClass(status.rating)}">${esc(riskLabel(status.rating))}</span></div><p><strong>This product or task has associated risks.</strong> Review the linked safety information before proceeding.</p><p class="muted">This is a reminder supporting your main training and instruction. Reason shown now: ${esc(status.reason)}.</p></div>
-      <div class="card" style="margin-top:1rem"><h3>Linked safety documents</h3>${docs.length?docs.map(d=>`<div class="item-row"><div><strong>${esc(docTypeLabel(d.document_type))}</strong> · ${esc(d.title)} <span class="badge">${d._scope==='group'?'Shared':'Item'}</span><div class="muted">Version ${esc(d.version||'—')} · Revision ${esc(d.revision_date||'—')}</div></div><button class="btn ghost" type="button" data-open-safety-doc="${d._scope}:${d.id}">Open</button></div>`).join(''):'<div class="notice">No safety documents are currently linked. Follow your main training/instructions and ask your manager if you are unsure.</div>'}</div>
+      <div class="card" style="margin-top:1rem"><h3>Safety information / references</h3>${docs.length?docs.map(d=>`<div class="item-row"><div><strong>${esc(docTypeLabel(d.document_type))}</strong> · ${esc(d.title)} <span class="badge">${d._scope==='group'?'Shared':'Item'}</span> ${safetySourceBadge(d)}<div class="muted">${safetyDocMetaHtml(d)}</div></div><button class="btn ghost" type="button" data-open-safety-doc="${d._scope}:${d.id}">${d.storage_path||d.external_url?'Open':'Details'}</button></div>`).join(''):'<div class="notice">No safety references are currently linked. Follow your main training/instructions and ask your manager if you are unsure.</div>'}</div>
       <form id="safetyAckForm"><label class="ack-check"><input id="safetyAckCheck" type="checkbox" required> ${esc(statement)}</label><div class="actions"><button class="btn warn" type="submit">Acknowledge & continue</button><button class="btn ghost" type="button" id="safetyAckCancel">Cancel</button></div></form>`);
     document.querySelectorAll('[data-open-safety-doc]').forEach(b=>b.onclick=()=>{
       const [scope,id]=b.dataset.openSafetyDoc.split(':');
@@ -1795,7 +1823,7 @@ Keep this file somewhere secure.
     document.getElementById('safetyAckCancel').onclick=()=>openItem(item.id);
     document.getElementById('safetyAckForm').onsubmit=async e=>{
       e.preventDefault();
-      const snapshot=docs.map(d=>({id:d.id,scope:d._scope,type:d.document_type,title:d.title,version:d.version||null,revision_date:d.revision_date||null,uploaded_at:d.uploaded_at}));
+      const snapshot=docs.map(d=>({id:d.id,scope:d._scope,type:d.document_type,title:d.title,document_reference:d.document_reference||null,version:d.version||null,revision_date:d.revision_date||null,source_kind:d.source_kind||'UPLOAD',external_location:d.external_location||null,external_url:d.external_url||null,uploaded_at:d.uploaded_at}));
       let error;
       if(group){
         ({error}=await sb.from('safety_group_acknowledgements').insert({group_id:group.id,user_id:S.profile.id,risk_rating:status.rating,statement,acknowledgement_reason:status.reason,documents_snapshot:snapshot}));
@@ -1836,7 +1864,7 @@ Keep this file somewhere secure.
         <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Overall stock</div><div class="stat">${qty(total)}</div></div><div class="card"><div class="muted">On order</div><div class="stat">${qty(onOrder)}</div></div><div class="card"><div class="muted">Reorder level</div><div class="stat">${qty(i.reorder_level)}</div></div></div>
         <h3>Totals by location</h3>${locationTotals.size?[...locationTotals.entries()].map(([name,q])=>`<div class="location-chip"><strong>${esc(name)}</strong> · ${qty(q)}</div>`).join(''):'<span class="muted">No stock assigned.</span>'}<h3>Exact stock positions</h3>${pos.length?pos.map(b=>{const l=byId(S.locations,b.location_id);return `<div class="location-chip"><strong>${esc(l?.location_name||'Unknown')}</strong> → ${esc(effectiveBinCode(l)?`Bin Ref ${effectiveBinCode(l)}`:'No bin ref')} · ${qty(b.quantity)}</div>`;}).join(''):'<div class="notice">No stock location currently has a positive quantity.</div>'}
       </div><div>
-        <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div><div style="margin-top:.7rem"><strong>Risk assessment</strong><br>${riskAssessed(i)?`<span class="badge risk ${riskClass(displayRisk)}">${esc(assessmentLabel(i))}</span>`:'<span class="badge muted">Not assessed</span>'}${i.risk_assessed_at?`<div class="muted">Assessed ${fmtShortDate(i.risk_assessed_at)}${assessor?` by ${esc(assessor)}`:''}</div>`:''}</div>${group?`<div style="margin-top:.7rem"><strong>Safety group</strong><br>${esc(group.name)} · <span class="badge risk ${riskClass(group.risk_rating)}">${esc(riskLabel(group.risk_rating))}</span></div>`:''}${onOrder>0?`<div style="margin-top:.7rem"><span class="badge order">ON ORDER ${qty(onOrder)}</span></div>`:''}${i.is_chemical?'<div style="margin-top:.7rem"><span class="badge chemical">Chemical / hazardous item</span></div>':''}${safetyStatus.due?`<div class="notice risk-notice">Safety reminder due before next recorded use.</div>`:''}</div>
+        <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div><div style="margin-top:.7rem"><strong>Risk assessment</strong><br>${riskAssessed(i)?`<span class="badge risk ${riskClass(displayRisk)}">${esc(assessmentLabel(i))}</span>`:'<span class="badge muted">Not assessed</span>'}${i.risk_assessed_at?`<div class="muted">Assessed ${fmtShortDate(i.risk_assessed_at)}${assessor?` by ${esc(assessor)}`:''}</div>`:''}</div>${group?`<div style="margin-top:.7rem"><strong>Safety group</strong><br>${esc(group.name)} · <span class="badge risk ${riskClass(group.risk_rating)}">${esc(riskLabel(group.risk_rating))}</span></div>`:''}${onOrder>0?`<div style="margin-top:.7rem"><span class="badge order">ON ORDER ${qty(onOrder)}</span></div>`:''}${i.is_chemical?'<div style="margin-top:.7rem"><span class="badge chemical">Hazardous item / H&amp;S information</span></div>':''}${safetyStatus.due?`<div class="notice risk-notice">Safety reminder due before next recorded use.</div>`:''}</div>
         ${i.active?`<div class="actions quick-actions"><button class="btn good" data-stock-action="ADD">+ Add stock</button><button class="btn warn" data-stock-action="USE">− Use stock</button><button class="btn secondary" data-stock-action="ADJUST">Adjust count</button><button class="btn ghost" data-stock-action="MOVE">Move stock</button></div>`:'<div class="notice">This item is archived. Restore it before recording new stock actions.</div>'}
         <div class="actions"><button class="btn ${pref?.favourite?'warn':'ghost'}" id="favouriteBtn">${pref?.favourite?'★ Favourite':'☆ Add favourite'}</button><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()&&i.active?'<button class="btn ghost" id="editItemBtn">Edit item</button><button class="btn ghost" id="suppliersBtn">Suppliers 1–3</button><button class="btn" id="orderItemBtn">Order item</button>':''}${canAdmin()?i.active?'<button class="btn danger" id="archiveItemBtn">Archive item</button>':'<button class="btn good" id="restoreItemBtn">Restore item</button>':''}</div>
       </div></div>
@@ -1844,7 +1872,7 @@ Keep this file somewhere secure.
         ${suppliers.length?suppliers.map(s=>`<div class="supplier-line"><strong>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</strong>${s.preferred?' <span class="badge">Preferred</span>':''}<div class="muted">Ref ${esc(s.supplier_ref||'—')} · Pack ${qty(s.pack_size||1)} · Lead ${s.lead_time_days==null?'—':esc(s.lead_time_days)+' days'} · ${s.unit_price==null?'Price —':money(s.unit_price)}</div></div>`).join(''):'<p class="muted">No suppliers saved yet.</p>'}
         ${itemOrders.length?`<div style="margin-top:.7rem"><strong>Currently on order</strong>${itemOrders.map(o=>`<div class="muted">${qty(orderRemaining(o))} from ${esc(o.supplier_name)}${o.expected_date?` · expected ${fmtShortDate(o.expected_date)}`:''}</div>`).join('')}</div>`:''}
       </div>
-      ${(docs.length||displayRisk!=='NONE'||canManage())?`<div class="card" style="margin-top:1rem"><h3>Safety information</h3>${group?`<p><strong>Shared safety group:</strong> ${esc(group.name)}. Shared documents below apply to every item linked to this group.</p>`:''}<div id="docList">${docs.length?docs.map(d=>`<div class="item-row"><div><strong>${esc(docTypeLabel(d.document_type))}</strong> · ${esc(d.title)} <span class="badge">${d._scope==='group'?'Shared':'Item'}</span><div class="muted">Version ${esc(d.version||'—')} · Revision ${esc(d.revision_date||'—')} · Review ${esc(d.review_date||'—')}</div></div><button class="btn ghost" data-open-safety-doc="${d._scope}:${d.id}">Open</button></div>`).join(''):'<p class="muted">No safety documents uploaded yet.</p>'}</div>${canManage()?'<button class="btn" id="uploadDocBtn">Upload item-specific safety document</button>':''}</div>`:''}
+      ${(docs.length||displayRisk!=='NONE'||canManage())?`<div class="card" style="margin-top:1rem"><h3>Safety information</h3>${group?`<p><strong>Shared safety group:</strong> ${esc(group.name)}. Shared safety references below apply to every item linked to this group.</p>`:''}<div id="docList">${docs.length?docs.map(d=>`<div class="item-row"><div><strong>${esc(docTypeLabel(d.document_type))}</strong> · ${esc(d.title)} <span class="badge">${d._scope==='group'?'Shared':'Item'}</span> ${safetySourceBadge(d)}<div class="muted">${safetyDocMetaHtml(d)}</div></div><div class="actions"><button class="btn ghost" data-open-safety-doc="${d._scope}:${d.id}">${d.storage_path||d.external_url?'Open':'Details'}</button>${canManage()&&d._scope==='item'?`<button class="btn danger" data-delete-item-safety-doc="${d.id}">Delete</button>`:''}</div></div>`).join(''):'<p class="muted">No safety references recorded yet.</p>'}</div>${canManage()?'<button class="btn" id="uploadDocBtn">Add item safety reference</button>':''}</div>`:''}
       <div class="card" style="margin-top:1rem"><h3>Recent item history</h3>${transactionTable(recent)}</div>`);
     document.querySelectorAll('[data-stock-action]').forEach(b=>b.onclick=()=>requestStockAction(i,b.dataset.stockAction));
     document.getElementById('printQrBtn').onclick=()=>printQr(i);
@@ -1856,6 +1884,7 @@ Keep this file somewhere secure.
     const archive=document.getElementById('archiveItemBtn'); if(archive) archive.onclick=()=>archiveItem(i);
     const restore=document.getElementById('restoreItemBtn'); if(restore) restore.onclick=()=>restoreItem(i);
     const up=document.getElementById('uploadDocBtn'); if(up) up.onclick=()=>openSafetyUpload(i);
+    document.querySelectorAll('[data-delete-item-safety-doc]').forEach(b=>b.onclick=()=>deleteSafetyDocument('item',byId(S.safetyDocs,b.dataset.deleteItemSafetyDoc),()=>openItem(i.id)));
     document.querySelectorAll('[data-open-safety-doc]').forEach(b=>b.onclick=()=>{
       const [scope,docId]=b.dataset.openSafetyDoc.split(':');
       openSafetyDocument(scope==='group'?byId(S.safetyGroupDocs,docId):byId(S.safetyDocs,docId));
@@ -2104,8 +2133,8 @@ Keep this file somewhere secure.
       <div><label>Category</label><select id="newCategory"><option value="">Uncategorised</option>${categories.map(c=>`<option value="${esc(c)}" ${currentCategory===c?'selected':''}>${esc(c)}</option>`).join('')}</select></div>
       <div><label>Reorder level</label><input id="newReorder" type="number" step="0.001" min="0" value="${esc(i?.reorder_level??0)}"></div>
       <div><label>Unit cost (£, optional)</label><input id="newCost" type="number" step="0.01" min="0" value="${esc(i?.unit_cost??'')}"></div>
-      <div class="full"><label><input id="newChemical" type="checkbox" style="width:auto" ${i?.is_chemical?'checked':''}> Chemical / hazardous item</label></div>
-      ${canAdmin()?`<div><label>Item risk rating</label><select id="newRiskRating"><option value="NONE" ${currentRisk==='NONE'?'selected':''}>None</option><option value="GREEN" ${currentRisk==='GREEN'?'selected':''}>Green · Low risk</option><option value="AMBER" ${currentRisk==='AMBER'?'selected':''}>Amber · Medium risk</option><option value="RED" ${currentRisk==='RED'?'selected':''}>Red · High risk</option></select><div class="muted">Status: ${i?.risk_assessed_at?`Assessed ${fmtShortDate(i.risk_assessed_at)}`:'Not assessed yet'}</div></div><div><label>Safety group</label><select id="newSafetyGroup"><option value="">None / item-specific</option>${S.safetyGroups.filter(g=>g.active).map(g=>`<option value="${g.id}" ${linkedGroup?.id===g.id?'selected':''}>${esc(g.name)} · ${esc(riskLabel(g.risk_rating))}</option>`).join('')}</select><div class="muted">Shared RA/SSW documents are inherited from the selected group.</div></div><div><label>Assessment / change reason (optional)</label><input id="riskChangeReason" placeholder="Why this rating applies"></div><div class="full"><label class="ack-check"><input id="confirmRiskAssessment" type="checkbox"> Confirm this item risk assessment now. Use this to record <strong>None ✓</strong> even when no extra risk rating is needed.</label></div>`:`<div><label>Risk assessment</label><div>${riskAssessed(i)?`<span class="badge risk ${riskClass(linkedGroup?.risk_rating||currentRisk)}">${esc(assessmentLabel(i))}</span>`:'<span class="badge muted">Not assessed</span>'}</div><div class="muted">Only an admin can change this.</div></div>`}
+      <div class="full"><label><input id="newChemical" type="checkbox" style="width:auto" ${i?.is_chemical?'checked':''}> Hazardous item / H&amp;S information</label></div>
+      ${canAdmin()?`<div><label>Item risk rating</label><select id="newRiskRating"><option value="NONE" ${currentRisk==='NONE'?'selected':''}>None</option><option value="GREEN" ${currentRisk==='GREEN'?'selected':''}>Green · Low risk</option><option value="AMBER" ${currentRisk==='AMBER'?'selected':''}>Amber · Medium risk</option><option value="RED" ${currentRisk==='RED'?'selected':''}>Red · High risk</option></select><div class="muted">Status: ${i?.risk_assessed_at?`Assessed ${fmtShortDate(i.risk_assessed_at)}`:'Not assessed yet'}</div></div><div><label>Safety group</label><select id="newSafetyGroup"><option value="">None / item-specific</option>${S.safetyGroups.filter(g=>g.active).map(g=>`<option value="${g.id}" ${linkedGroup?.id===g.id?'selected':''}>${esc(g.name)} · ${esc(riskLabel(g.risk_rating))}</option>`).join('')}</select><div class="muted">Shared safety references are inherited from the selected group.</div></div><div><label>Assessment / change reason (optional)</label><input id="riskChangeReason" placeholder="Why this rating applies"></div><div><label>Require acknowledgement for this item</label><select id="newAckRequired"><option value="true" ${i?.acknowledgement_required!==false?'selected':''}>Yes</option><option value="false" ${i?.acknowledgement_required===false?'selected':''}>No</option></select><div class="muted">Used when the item is not controlled by a Safety Group. Global acknowledgements can also be switched off under Safety.</div></div><div class="full"><label class="ack-check"><input id="confirmRiskAssessment" type="checkbox"> Confirm this item risk assessment now. Use this to record <strong>None ✓</strong> even when no extra risk rating is needed.</label></div>`:`<div><label>Risk assessment</label><div>${riskAssessed(i)?`<span class="badge risk ${riskClass(linkedGroup?.risk_rating||currentRisk)}">${esc(assessmentLabel(i))}</span>`:'<span class="badge muted">Not assessed</span>'}</div><div class="muted">Only an admin can change this.</div></div>`}
       <div class="full"><label>Item photo (optional)</label><input id="newPhoto" type="file" accept="image/*" capture="environment"></div>
       ${i?'':`<div><label>Opening stock (optional)</label><input id="openingQty" type="number" min="0" step="0.001" value="0"></div><div><label>Opening location</label><select id="openingLocationName"><option value="">None</option>${locationNames().map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div><div><label>Opening Bin Ref (optional)</label><input id="openingBinRef" list="openingBinList" placeholder="e.g. B12"><datalist id="openingBinList"></datalist></div>`}
       </div><div class="actions"><button class="btn" type="submit">${i?'Save changes':'Create item'}</button></div></form>`;
@@ -2125,7 +2154,7 @@ Keep this file somewhere secure.
     }
     document.getElementById('itemForm').onsubmit=async e=>{
       e.preventDefault();
-      const row={name:name.value.trim(),item_code:code.value.trim(),qr_value:(qr.value.trim()||code.value.trim()),category:document.getElementById('newCategory').value||null,reorder_level:num(document.getElementById('newReorder').value),unit_cost:document.getElementById('newCost').value===''?null:num(document.getElementById('newCost').value),is_chemical:document.getElementById('newChemical').checked};
+      const row={name:name.value.trim(),item_code:code.value.trim(),qr_value:(qr.value.trim()||code.value.trim()),category:document.getElementById('newCategory').value||null,reorder_level:num(document.getElementById('newReorder').value),unit_cost:document.getElementById('newCost').value===''?null:num(document.getElementById('newCost').value),is_chemical:document.getElementById('newChemical').checked};if(canAdmin())row.acknowledgement_required=document.getElementById('newAckRequired')?.value!=='false';
       let itemId=existing?.id;
       if(existing){const {error}=await sb.from('items').update(row).eq('id',existing.id);if(error){setNotice(parseError(error),'error');closeModal();render();return;}}
       else {row.created_by=S.profile.id;const {data,error}=await sb.from('items').insert(row).select('id').single();if(error){setNotice(parseError(error),'error');closeModal();render();return;}itemId=data.id;}
@@ -2199,13 +2228,50 @@ Keep this file somewhere secure.
 
   function docTypeLabel(v){return ({RISK_ASSESSMENT:'Risk Assessment',SSW:'SSW / Safe System of Work',SDS_MSDS:'SDS / MSDS',COSHH:'COSHH Assessment',MANUFACTURER:'Manufacturer Instructions',OTHER:'Other'})[v]||v;}
 
+  function safetySourceBadge(doc){return doc?.storage_path?'<span class="badge">File</span>':'<span class="badge muted">Reference</span>';}
+
+  function safetyDocMetaHtml(doc){
+    const parts=[];
+    if(doc?.document_reference)parts.push(`Ref ${esc(doc.document_reference)}`);
+    if(doc?.version)parts.push(`Version ${esc(doc.version)}`);
+    if(doc?.revision_date)parts.push(`Revision ${esc(doc.revision_date)}`);
+    if(doc?.review_date)parts.push(`Review ${esc(doc.review_date)}`);
+    if(!doc?.storage_path&&doc?.external_location)parts.push(`Held: ${esc(doc.external_location)}`);
+    return parts.join(' · ')||'No additional reference details';
+  }
+
   function openSafetyUpload(item) {
-    showModal(`<header><div><h2>Upload safety document</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header><form id="docForm"><label>Document type</label><select id="docType"><option value="RISK_ASSESSMENT">Risk Assessment</option><option value="SSW">SSW / Safe System of Work</option><option value="SDS_MSDS">SDS / MSDS</option><option value="COSHH">COSHH Assessment</option><option value="MANUFACTURER">Manufacturer Instructions</option><option value="OTHER">Other</option></select><label>Title</label><input id="docTitle" required><div class="form-grid"><div><label>Version</label><input id="docVersion"></div><div><label>Revision date</label><input id="docRevision" type="date"></div><div><label>Review date</label><input id="docReview" type="date"></div><div><label>File</label><input id="docFile" type="file" accept=".pdf,.doc,.docx,image/*" required></div></div><div class="actions"><button class="btn" type="submit">Upload document</button></div></form>`);
-    document.getElementById('docForm').onsubmit=async e=>{e.preventDefault();const f=document.getElementById('docFile').files[0];if(!f)return;const path=`${item.id}/${Date.now()}-${slug(f.name)}`;let {error}=await sb.storage.from('safety-documents').upload(path,f,{contentType:f.type});if(error){setNotice(parseError(error),'error');closeModal();render();return;}const row={item_id:item.id,document_type:document.getElementById('docType').value,title:document.getElementById('docTitle').value.trim(),version:document.getElementById('docVersion').value.trim()||null,revision_date:document.getElementById('docRevision').value||null,review_date:document.getElementById('docReview').value||null,storage_path:path,uploaded_by:S.profile.id};({error}=await sb.from('safety_documents').insert(row));if(error){setNotice(parseError(error),'error');closeModal();render();return;}await loadData({transactions:false,docs:true});closeModal();setNotice('Safety document uploaded.');render();};
+    showModal(`<header><div><h2>Add safety reference</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header><form id="docForm"><div class="notice">You do not have to upload the file. If the controlled RA/SSW is already stored elsewhere, record its reference, revision and where staff can find it.</div><div class="form-grid"><div><label>Document type</label><select id="docType"><option value="RISK_ASSESSMENT">Risk Assessment</option><option value="SSW">SSW / Safe System of Work</option><option value="SDS_MSDS">SDS / MSDS</option><option value="COSHH">COSHH Assessment</option><option value="MANUFACTURER">Manufacturer Instructions</option><option value="OTHER">Other</option></select></div><div><label>How is it held?</label><select id="docSource"><option value="REFERENCE">Reference held elsewhere</option><option value="UPLOAD">Upload file to tracker</option></select></div><div><label>Title</label><input id="docTitle" required></div><div><label>Reference number (optional)</label><input id="docReference" placeholder="e.g. RA-014"></div><div><label>Version</label><input id="docVersion"></div><div><label>Revision date</label><input id="docRevision" type="date"></div><div><label>Review date</label><input id="docReview" type="date"></div><div id="docExternalFields"><label>Where is it stored?</label><input id="docLocation" placeholder="H&amp;S Drive → Maintenance → RA-014"><label>Web/file link (optional)</label><input id="docUrl" type="url" placeholder="https://..."></div><div id="docUploadFields" class="hidden"><label>File</label><input id="docFile" type="file" accept=".pdf,.doc,.docx,image/*"></div></div><div class="actions"><button class="btn" type="submit">Save safety reference</button></div></form>`);
+    const source=document.getElementById('docSource'),external=document.getElementById('docExternalFields'),upload=document.getElementById('docUploadFields'),file=document.getElementById('docFile'),location=document.getElementById('docLocation');
+    const toggle=()=>{const isUpload=source.value==='UPLOAD';external.classList.toggle('hidden',isUpload);upload.classList.toggle('hidden',!isUpload);file.required=isUpload;location.required=!isUpload;};source.onchange=toggle;toggle();
+    document.getElementById('docForm').onsubmit=async e=>{
+      e.preventDefault();const isUpload=source.value==='UPLOAD';let path=null,error;
+      if(isUpload){const f=file.files[0];if(!f)return;path=`${item.id}/${Date.now()}-${slug(f.name)}`;({error}=await sb.storage.from('safety-documents').upload(path,f,{contentType:f.type}));if(error){setNotice(parseError(error),'error');closeModal();render();return;}}
+      const row={item_id:item.id,document_type:document.getElementById('docType').value,title:document.getElementById('docTitle').value.trim(),document_reference:document.getElementById('docReference').value.trim()||null,version:document.getElementById('docVersion').value.trim()||null,revision_date:document.getElementById('docRevision').value||null,review_date:document.getElementById('docReview').value||null,source_kind:isUpload?'UPLOAD':'REFERENCE',storage_path:path,external_location:isUpload?null:location.value.trim(),external_url:isUpload?null:document.getElementById('docUrl').value.trim()||null,uploaded_by:S.profile.id};
+      ({error}=await sb.from('safety_documents').insert(row));
+      if(error){if(path)await sb.storage.from('safety-documents').remove([path]);setNotice(parseError(error),'error');closeModal();render();return;}
+      await loadData({transactions:false,docs:true});closeModal();setNotice('Safety reference saved.');render();
+    };
   }
 
   async function openSafetyDocument(doc) {
-    if(!doc)return;const url=await signedUrl('safety-documents',doc.storage_path,900);if(!url){setNotice('Could not open this document.','error');render();return;}window.open(url,'_blank','noopener');
+    if(!doc)return;
+    if(doc.storage_path){const url=await signedUrl('safety-documents',doc.storage_path,900);if(!url){setNotice('Could not open this safety file.','error');render();return;}window.open(url,'_blank','noopener');return;}
+    if(doc.external_url){window.open(doc.external_url,'_blank','noopener');return;}
+    showModal(`<header><h2>${esc(doc.title)}</h2><button class="close" data-close>×</button></header><p><strong>${esc(docTypeLabel(doc.document_type))}</strong></p><p>${safetyDocMetaHtml(doc)}</p><div class="notice"><strong>Controlled document held elsewhere</strong><br>${esc(doc.external_location||'Location not recorded')}</div>`);
+  }
+
+  async function deleteSafetyDocument(scope,doc,onDone) {
+    if(!doc||!canManage())return;
+    const ok=confirm(`Delete “${doc.title}” from the current safety information?\n\nThis removes the current reference${doc.storage_path?' and uploaded file':''}. Previous acknowledgement records keep their title/version snapshot, but a deleted uploaded file will no longer be stored in the tracker.`);
+    if(!ok)return;
+    try{
+      if(doc.storage_path){const {error}=await sb.storage.from('safety-documents').remove([doc.storage_path]);if(error)throw error;}
+      const table=scope==='group'?'safety_group_documents':'safety_documents';
+      const {error}=await sb.from(table).delete().eq('id',doc.id);if(error)throw error;
+      await loadData({transactions:false,docs:scope!=='group'});setNotice('Safety reference deleted.');
+      if(onDone)onDone();else render();
+    }catch(e){setNotice(`Delete failed: ${parseError(e)}`,'error');render();}
   }
 
   async function signedUrl(bucket,path,seconds=900){if(!path)return null;const {data,error}=await sb.storage.from(bucket).createSignedUrl(path,seconds);return error?null:data?.signedUrl||null;}
