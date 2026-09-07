@@ -61,6 +61,13 @@
     legacyFrom: '',
     legacyTo: '',
     scanner: null,
+    cameraStream: null,
+    cameraTrack: null,
+    scanFrame: null,
+    smallQrMode: false,
+    torchOn: false,
+    cameraBaseZoom: null,
+    cameraCaps: null,
     chart: null,
     liveChannel: null,
     liveTimer: null,
@@ -321,7 +328,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['safety','Safety'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.0</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.1</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${content}</main>
     </div>`;
@@ -373,13 +380,18 @@
 
   function scanHtml() {
     return `<div class="scan-box">
-      <div class="card"><h2>Scan Stock QR</h2><p class="muted">Point the rear camera at the QR code on the bin or item label. Hold the code steady inside the scan area.</p>
+      <div class="card"><h2>Scan Stock QR</h2><p class="muted">Point the rear camera at the QR code on the bin or item label. For small labels, use <strong>Small QR 2×</strong> and keep the code near the centre guide.</p>
         <div id="reader" class="scanner live-scanner">
           <video id="qrVideo" playsinline muted autoplay></video>
           <canvas id="qrCanvas" class="hidden"></canvas>
           <div class="qr-guide" aria-hidden="true"></div>
+          <div id="scanModeBadge" class="scan-mode-badge">Normal scan</div>
         </div>
         <div id="scanStatus" class="notice">Starting rear camera…</div>
+        <div class="camera-tools">
+          <button class="btn ghost" id="smallQrBtn" type="button" aria-pressed="false">Small QR 2×</button>
+          <button class="btn ghost hidden" id="torchBtn" type="button" aria-pressed="false">Torch</button>
+        </div>
         <div class="actions">
           <button class="btn secondary" id="stopScan">Stop camera</button>
           <button class="btn ghost" id="scanPhotoBtn">Scan QR from photo</button>
@@ -935,7 +947,7 @@
       backup_format:'inventory-tracker-backup-v1',
       created_at:new Date().toISOString(),
       created_by:{id:S.profile?.id||null,name:S.profile?.display_name||null,role:S.profile?.role||null},
-      app_version:'6.3',
+      app_version:'7.1',
       project_url:cfg.supabaseUrl,
       tables:{},
       uploaded_files:{requested:!!includeFiles,downloaded:0,failed:[]}
@@ -1080,6 +1092,11 @@ Keep this file somewhere secure.
     document.getElementById('scanText').onkeydown=e=>{if(e.key==='Enter') find();};
     document.getElementById('stopScan').onclick=stopScanner;
 
+    const smallBtn=document.getElementById('smallQrBtn');
+    if(smallBtn) smallBtn.onclick=toggleSmallQrMode;
+    const torchBtn=document.getElementById('torchBtn');
+    if(torchBtn) torchBtn.onclick=toggleTorch;
+
     const photoBtn=document.getElementById('scanPhotoBtn');
     const photoInput=document.getElementById('scanPhotoInput');
     if(photoBtn && photoInput) {
@@ -1122,6 +1139,119 @@ Keep this file somewhere secure.
     return opts;
   }
 
+  function clamp(v,min,max) {
+    return Math.min(max,Math.max(min,v));
+  }
+
+  function updateCameraControls() {
+    const smallBtn=document.getElementById('smallQrBtn');
+    const torchBtn=document.getElementById('torchBtn');
+    const reader=document.getElementById('reader');
+    const badge=document.getElementById('scanModeBadge');
+    if(smallBtn) {
+      smallBtn.setAttribute('aria-pressed',S.smallQrMode?'true':'false');
+      smallBtn.textContent=S.smallQrMode?'Small QR 2×: ON':'Small QR 2×';
+      smallBtn.classList.toggle('active-tool',S.smallQrMode);
+    }
+    if(reader) reader.classList.toggle('small-qr-mode',S.smallQrMode);
+    if(badge) badge.textContent=S.smallQrMode?'Small QR 2× mode':'Normal scan';
+    const hasTorch=!!S.cameraCaps?.torch;
+    if(torchBtn) {
+      torchBtn.classList.toggle('hidden',!hasTorch);
+      torchBtn.setAttribute('aria-pressed',S.torchOn?'true':'false');
+      torchBtn.textContent=S.torchOn?'Torch: ON':'Torch';
+      torchBtn.classList.toggle('active-tool',S.torchOn);
+    }
+  }
+
+  async function configureCameraTrack(track) {
+    S.cameraTrack=track;
+    S.cameraCaps=track?.getCapabilities ? track.getCapabilities() : {};
+    const settings=track?.getSettings ? track.getSettings() : {};
+    S.cameraBaseZoom=typeof settings.zoom==='number' ? settings.zoom : (typeof S.cameraCaps?.zoom?.min==='number' ? S.cameraCaps.zoom.min : null);
+    try {
+      const focusModes=S.cameraCaps?.focusMode;
+      if(Array.isArray(focusModes) && focusModes.includes('continuous')) {
+        await track.applyConstraints({advanced:[{focusMode:'continuous'}]});
+      }
+    } catch(_) {}
+    updateCameraControls();
+  }
+
+  async function toggleSmallQrMode() {
+    S.smallQrMode=!S.smallQrMode;
+    const track=S.cameraTrack;
+    const zoomCaps=S.cameraCaps?.zoom;
+    if(track && zoomCaps && typeof zoomCaps.min==='number' && typeof zoomCaps.max==='number') {
+      try {
+        const target=S.smallQrMode
+          ? clamp(2,zoomCaps.min,zoomCaps.max)
+          : clamp(S.cameraBaseZoom ?? zoomCaps.min,zoomCaps.min,zoomCaps.max);
+        await track.applyConstraints({advanced:[{zoom:target}]});
+      } catch(_) {}
+    }
+    updateCameraControls();
+    const status=document.getElementById('scanStatus');
+    if(status && S.cameraStream) {
+      status.className='notice';
+      status.textContent=S.smallQrMode
+        ? 'Small QR 2× mode — centre the small code and hold steady.'
+        : 'Normal scan mode — hold the QR steady inside the guide.';
+    }
+  }
+
+  async function toggleTorch() {
+    if(!S.cameraTrack || !S.cameraCaps?.torch) return;
+    const next=!S.torchOn;
+    try {
+      await S.cameraTrack.applyConstraints({advanced:[{torch:next}]});
+      S.torchOn=next;
+      updateCameraControls();
+    } catch(_) {
+      const status=document.getElementById('scanStatus');
+      if(status) {
+        status.className='notice warn';
+        status.textContent='Torch control is not available on this camera.';
+      }
+    }
+  }
+
+  function signalScanSuccess() {
+    try { if(navigator.vibrate) navigator.vibrate(100); } catch(_) {}
+    try {
+      const AC=window.AudioContext||window.webkitAudioContext;
+      if(!AC) return;
+      const ac=new AC();
+      const osc=ac.createOscillator();
+      const gain=ac.createGain();
+      osc.frequency.value=880;
+      gain.gain.setValueAtTime(0.045,ac.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.08);
+      osc.connect(gain); gain.connect(ac.destination);
+      osc.start(); osc.stop(ac.currentTime+0.08);
+      setTimeout(()=>{try{ac.close();}catch(_){}},180);
+    } catch(_) {}
+  }
+
+  function drawScanRegion(ctx,canvas,video,region) {
+    const vw=video.videoWidth, vh=video.videoHeight;
+    if(region==='full') {
+      const maxDim=1280;
+      const ratio=Math.min(1,maxDim/Math.max(vw,vh));
+      const outW=Math.max(1,Math.round(vw*ratio));
+      const outH=Math.max(1,Math.round(vh*ratio));
+      canvas.width=outW; canvas.height=outH;
+      ctx.drawImage(video,0,0,vw,vh,0,0,outW,outH);
+      return;
+    }
+    const scale=Number(region)||0.7;
+    const crop=Math.max(160,Math.floor(Math.min(vw,vh)*scale));
+    const sx=Math.floor((vw-crop)/2), sy=Math.floor((vh-crop)/2);
+    const out=Math.min(1400,crop);
+    canvas.width=out; canvas.height=out;
+    ctx.drawImage(video,sx,sy,crop,crop,0,0,out,out);
+  }
+
   async function startQrScanner() {
     const status=document.getElementById('scanStatus');
     const video=document.getElementById('qrVideo');
@@ -1138,31 +1268,38 @@ Keep this file somewhere secure.
     try {
       if(status) {
         status.className='notice';
-        status.textContent='Starting rear camera…';
+        status.textContent='Starting high-resolution rear camera…';
       }
 
+      S.smallQrMode=false;
+      S.torchOn=false;
+      S.cameraCaps=null;
       const stream=await navigator.mediaDevices.getUserMedia({
         audio:false,
         video:{
           facingMode:{ideal:'environment'},
-          width:{ideal:1920},
-          height:{ideal:1080},
-          focusMode:{ideal:'continuous'}
+          width:{ideal:3840},
+          height:{ideal:2160},
+          frameRate:{ideal:30}
         }
       });
 
       S.cameraStream=stream;
+      const track=stream.getVideoTracks()[0] || null;
+      await configureCameraTrack(track);
       video.srcObject=stream;
       await video.play();
 
+      const actual=track?.getSettings ? track.getSettings() : {};
       if(status) {
         status.className='notice';
-        status.textContent='Camera ready — hold the QR steady and bring it fairly close.';
+        status.textContent=`Camera ready${actual.width&&actual.height?` · ${actual.width}×${actual.height}`:''} — centre the QR and hold steady.`;
       }
 
       const ctx=canvas.getContext('2d',{willReadFrequently:true});
       let lastScan=0;
       let detector=null;
+      let regionIndex=0;
 
       if('BarcodeDetector' in window) {
         try {
@@ -1177,7 +1314,7 @@ Keep this file somewhere secure.
           return;
         }
 
-        if(ts-lastScan < 90) {
+        if(ts-lastScan < 85) {
           S.scanFrame=requestAnimationFrame(scanFrame);
           return;
         }
@@ -1186,27 +1323,25 @@ Keep this file somewhere secure.
         try {
           let decoded='';
 
-          // Try the browser's native QR detector first when available.
+          // Native detector gets the full live frame first when supported.
           if(detector) {
-            const found=await detector.detect(video);
-            if(found?.length) decoded=String(found[0].rawValue||'').trim();
+            try {
+              const found=await detector.detect(video);
+              if(found?.length) decoded=String(found[0].rawValue||'').trim();
+            } catch(_) {}
           }
 
-          // Cross-browser fallback: read the centre of the video with jsQR.
+          // jsQR rotates through full-frame and progressively tighter centre crops.
+          // Tighter crops preserve more pixels for the small ~1 inch labels.
           if(!decoded && window.jsQR) {
-            const vw=video.videoWidth, vh=video.videoHeight;
-            const crop=Math.floor(Math.min(vw,vh)*0.88);
-            const sx=Math.floor((vw-crop)/2);
-            const sy=Math.floor((vh-crop)/2);
-            const out=Math.min(900,crop);
-
-            canvas.width=out;
-            canvas.height=out;
-            ctx.drawImage(video,sx,sy,crop,crop,0,0,out,out);
-            const image=ctx.getImageData(0,0,out,out);
-            const code=jsQR(image.data,image.width,image.height,{
-              inversionAttempts:'attemptBoth'
-            });
+            const regions=S.smallQrMode
+              ? [0.55,0.40,0.30,0.70,'full']
+              : ['full',0.86,0.68,0.52];
+            const region=regions[regionIndex % regions.length];
+            regionIndex++;
+            drawScanRegion(ctx,canvas,video,region);
+            const image=ctx.getImageData(0,0,canvas.width,canvas.height);
+            const code=jsQR(image.data,image.width,image.height,{inversionAttempts:'attemptBoth'});
             if(code?.data) decoded=String(code.data).trim();
           }
 
@@ -1215,6 +1350,7 @@ Keep this file somewhere secure.
               status.className='notice success';
               status.textContent='QR found.';
             }
+            signalScanSuccess();
             await stopScanner();
             findScanned(decoded);
             return;
@@ -1244,6 +1380,10 @@ Keep this file somewhere secure.
       try { S.cameraStream.getTracks().forEach(t=>t.stop()); } catch(_) {}
       S.cameraStream=null;
     }
+    S.cameraTrack=null;
+    S.cameraCaps=null;
+    S.cameraBaseZoom=null;
+    S.torchOn=false;
 
     const video=document.getElementById('qrVideo');
     if(video) {
