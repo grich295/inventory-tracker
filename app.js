@@ -305,7 +305,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.4</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.4.1</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${content}</main>
     </div>`;
@@ -614,9 +614,16 @@
 
   function usersHtml() {
     if(!canAdmin()) return '<div class="notice error">Admin access required.</div>';
-    const rows=S.profiles.map(p=>`<tr><td>${esc(p.display_name)}<div class="muted">${esc(p.email||'')}</div></td><td>${esc(roleLabel(p.role))}</td><td>${p.active===false?'<span class="badge muted">Disabled</span>':'<span class="badge good">Active</span>'}</td><td><select data-role-user="${p.id}" ${p.id===S.profile.id?'disabled':''}><option value="staff" ${p.role==='staff'?'selected':''}>User</option><option value="manager" ${p.role==='manager'?'selected':''}>Manager</option><option value="admin" ${p.role==='admin'?'selected':''}>Admin</option></select></td><td>${p.id===S.profile.id?'—':p.active===false?`<button class="btn good small" data-user-enable="${p.id}">Re-enable</button>`:`<button class="btn danger small" data-user-disable="${p.id}">Disable</button>`}</td></tr>`).join('');
-    return `<div class="split"><div class="card"><h2>Users</h2><p class="muted">Disable users instead of deleting them so their stock history remains intact.</p><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Status</th><th>Change role</th><th>Access</th></tr></thead><tbody>${rows}</tbody></table></div></div>
-      <div class="card"><h2>Invite user</h2><p class="muted">The invited person receives an email and must set their own password before entering the tracker. The v7.4 invite-user Edge Function must be deployed in Supabase.</p><form id="inviteForm"><label>Name</label><input id="inviteName" required><label>Email</label><input id="inviteEmail" type="email" required><label>Role</label><select id="inviteRole"><option value="staff">User</option><option value="manager">Manager</option><option value="admin">Admin</option></select><div class="actions"><button class="btn" type="submit">Send invite</button></div></form></div></div>`;
+    const rows=S.profiles.map(p=>{
+      const access=p.id===S.profile.id
+        ? ''
+        : p.active===false
+          ? `<button class="btn good small" data-user-enable="${p.id}">Re-enable</button>`
+          : `<button class="btn danger small" data-user-disable="${p.id}">Disable</button>`;
+      return `<tr><td>${esc(p.display_name)}<div class="muted">${esc(p.email||'')}</div></td><td>${esc(roleLabel(p.role))}</td><td>${p.active===false?'<span class="badge muted">Disabled</span>':'<span class="badge good">Active</span>'}</td><td><select data-role-user="${p.id}" ${p.id===S.profile.id?'disabled':''}><option value="staff" ${p.role==='staff'?'selected':''}>User</option><option value="manager" ${p.role==='manager'?'selected':''}>Manager</option><option value="admin" ${p.role==='admin'?'selected':''}>Admin</option></select></td><td><div class="actions user-actions">${access}<button class="btn ghost small" data-user-email="${p.id}">Change email</button></div></td></tr>`;
+    }).join('');
+    return `<div class="split"><div class="card"><h2>Users</h2><p class="muted">Correct a registered email without deleting the account. Password, role and stock history are preserved. Disable users instead of deleting them when they leave.</p><div class="table-wrap"><table><thead><tr><th>Name / email</th><th>Role</th><th>Status</th><th>Change role</th><th>Account</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+      <div class="card"><h2>Invite user</h2><p class="muted">The invited person receives an email and must set their own password before entering the tracker. The v7.4.1 invite-user Edge Function must be deployed in Supabase.</p><form id="inviteForm"><label>Name</label><input id="inviteName" required><label>Email</label><input id="inviteEmail" type="email" required><label>Role</label><select id="inviteRole"><option value="staff">User</option><option value="manager">Manager</option><option value="admin">Admin</option></select><div class="actions"><button class="btn" type="submit">Send invite</button></div></form></div></div>`;
   }
 
 
@@ -1569,6 +1576,22 @@ Keep this file somewhere secure.
     });
     document.querySelectorAll('[data-user-enable]').forEach(b=>b.onclick=async()=>{
       try{await invoke({action:'enable',user_id:b.dataset.userEnable});await loadData({transactions:false});setNotice('User re-enabled.');render();}catch(e){setNotice(parseError(e),'error');render();}
+    });
+    document.querySelectorAll('[data-user-email]').forEach(b=>b.onclick=async()=>{
+      const p=byId(S.profiles,b.dataset.userEmail); if(!p)return;
+      const entered=prompt(`Enter the corrected email address for ${p.display_name}:`,p.email||'');
+      if(entered===null)return;
+      const email=String(entered).trim().toLowerCase();
+      if(!email){setNotice('Email address cannot be blank.','error');render();return;}
+      if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){setNotice('Enter a valid email address.','error');render();return;}
+      if(email===String(p.email||'').trim().toLowerCase()){setNotice('That is already the registered email address.');render();return;}
+      if(!confirm(`Change ${p.display_name}'s registered email from\n${p.email||'—'}\nto\n${email}?\n\nTheir password, role and stock history will stay the same.`))return;
+      try{
+        await invoke({action:'change_email',user_id:p.id,email});
+        await loadData({transactions:false});
+        setNotice(`Email changed to ${email}. The user should use this address the next time they sign in.`);
+        render();
+      }catch(e){setNotice(`Email change failed: ${parseError(e)}`,'error');render();}
     });
     const f=document.getElementById('inviteForm'); if(f) f.onsubmit=async e=>{
       e.preventDefault();
