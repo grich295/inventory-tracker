@@ -66,6 +66,10 @@
     liveTimer: null,
     notice: null,
     passwordMode: false,
+    offline: !navigator.onLine,
+    offlineSnapshotAt: null,
+    syncingOffline: false,
+    offlineSyncError: null,
     report: { period: 'month', item: '', user: '', location: '', bin: '', from: '', to: '' }
   };
 
@@ -123,6 +127,120 @@
   const slug = v => String(v || '').trim().replace(/[^a-z0-9._-]+/gi,'-').replace(/^-+|-+$/g,'').slice(0,80) || 'file';
   const fileExt = f => (f.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g,'');
 
+
+  const offlineSnapshotKey = 'inventoryTrackerOfflineSnapshotV1';
+  const offlineQueueKey = 'inventoryTrackerOfflineQueueV1';
+  const clientRef = id => `CLIENT:${id}`;
+  const makeClientId = () => (crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const isNetworkError = e => {
+    const m=String(e?.message||e||'').toLowerCase();
+    return !navigator.onLine || e?.name==='AbortError' || m.includes('failed to fetch') || m.includes('network') || m.includes('load failed') || m.includes('fetch');
+  };
+  function allOfflineQueue(){
+    try{const v=JSON.parse(localStorage.getItem(offlineQueueKey)||'[]');return Array.isArray(v)?v:[];}catch(_){return [];}
+  }
+  function saveOfflineQueue(rows){localStorage.setItem(offlineQueueKey,JSON.stringify(rows));}
+  function currentOfflineQueue(){const uid=S.session?.user?.id;return uid?allOfflineQueue().filter(x=>x.user_id===uid):[];}
+  function pendingOfflineCount(){return currentOfflineQueue().length;}
+  function saveOfflineSnapshot(){
+    if(!S.session?.user?.id||!S.profile)return;
+    const payload={
+      saved_at:new Date().toISOString(),user_id:S.session.user.id,profile:S.profile,
+      profiles:S.profiles,items:S.items,locations:S.locations,balances:S.balances,transactions:S.transactions,
+      categories:S.categories,itemSuppliers:S.itemSuppliers,purchaseOrders:S.purchaseOrders,userPrefs:S.userPrefs,
+      stocktakeSettings:S.stocktakeSettings,stocktakeTasks:S.stocktakeTasks,stocktakeItems:S.stocktakeItems
+    };
+    try{localStorage.setItem(offlineSnapshotKey,JSON.stringify(payload));S.offlineSnapshotAt=payload.saved_at;}
+    catch(e){
+      try{payload.transactions=S.transactions.slice(0,500);localStorage.setItem(offlineSnapshotKey,JSON.stringify(payload));S.offlineSnapshotAt=payload.saved_at;}catch(_){}
+    }
+  }
+  function restoreOfflineSnapshot(){
+    try{
+      const p=JSON.parse(localStorage.getItem(offlineSnapshotKey)||'null');
+      if(!p||p.user_id!==S.session?.user?.id)return false;
+      S.profile=p.profile||null;S.profiles=p.profiles||[];S.items=p.items||[];S.locations=p.locations||[];S.balances=p.balances||[];S.transactions=p.transactions||[];
+      S.categories=p.categories||[];S.itemSuppliers=p.itemSuppliers||[];S.purchaseOrders=p.purchaseOrders||[];S.userPrefs=p.userPrefs||[];
+      S.stocktakeSettings=p.stocktakeSettings||null;S.stocktakeTasks=p.stocktakeTasks||[];S.stocktakeItems=p.stocktakeItems||[];S.offlineSnapshotAt=p.saved_at||null;
+      return !!S.profile;
+    }catch(_){return false;}
+  }
+  function offlineStatusHtml(){
+    const n=pendingOfflineCount();
+    if(!S.offline&&!n)return '';
+    const when=S.offlineSnapshotAt?` Last saved ${esc(fmtDate(S.offlineSnapshotAt))}.`:'';
+    if(S.offline)return `<div class="offline-banner"><strong>Offline mode.</strong> Using the last saved stock data.${when} Scan/search and Add, Use, Move and Adjust will be queued. Counts may be stale until the connection returns.${n?` <strong>${n} action${n===1?'':'s'} pending sync.</strong>`:''}<div class="actions"><button class="btn ghost small" id="reviewOfflineBtn">Pending actions</button></div></div>`;
+    return `<div class="offline-banner syncing"><strong>${n} stock action${n===1?'':'s'} waiting to sync.</strong>${S.offlineSyncError?` ${esc(S.offlineSyncError)}`:''}<div class="actions"><button class="btn small" id="syncOfflineBtn" ${S.syncingOffline?'disabled':''}>${S.syncingOffline?'Syncing…':'Sync now'}</button><button class="btn ghost small" id="reviewOfflineBtn">Review</button></div></div>`;
+  }
+  function localPosition(locationName,binRef){
+    let p=findPosition(locationName,binRef);if(p)return p;
+    p={id:`offline-pos:${makeClientId()}`,location_name:locationName,area_name:'',bin_code:normalizeBin(binRef),active:true,notes:'Pending offline stock position',_offline:true};
+    S.locations.push(p);return p;
+  }
+  function localBalance(itemId,locationId){
+    let b=S.balances.find(x=>x.item_id===itemId&&x.location_id===locationId);
+    if(!b){b={id:`offline-bal:${makeClientId()}`,item_id:itemId,location_id:locationId,quantity:0,updated_at:new Date().toISOString(),_offline:true};S.balances.push(b);}
+    return b;
+  }
+  function applyLocalStockOperation(op){
+    const now=op.created_at||new Date().toISOString();
+    let fromPos=null,toPos=null,old=0;
+    if(op.from_location_name){fromPos=localPosition(op.from_location_name,op.from_bin_ref||'');op.from_local_id=fromPos.id;}
+    if(op.to_location_name){toPos=localPosition(op.to_location_name,op.to_bin_ref||'');op.to_local_id=toPos.id;}
+    if(op.type==='ADD'){
+      const b=localBalance(op.item_id,toPos.id);old=num(b.quantity);b.quantity=old+num(op.quantity);b.updated_at=now;
+    }else if(op.type==='USE'){
+      const b=localBalance(op.item_id,fromPos.id);old=num(b.quantity);b.quantity=Math.max(0,old-num(op.quantity));b.updated_at=now;
+    }else if(op.type==='MOVE'){
+      const f=localBalance(op.item_id,fromPos.id),t=localBalance(op.item_id,toPos.id);old=num(f.quantity);f.quantity=Math.max(0,old-num(op.quantity));t.quantity=num(t.quantity)+num(op.quantity);f.updated_at=t.updated_at=now;
+    }else if(op.type==='ADJUST'){
+      const b=localBalance(op.item_id,fromPos.id);old=num(b.quantity);op.previous_quantity=old;b.quantity=num(op.new_quantity);b.updated_at=now;
+    }
+    const existing=S.transactions.find(t=>t.reference===clientRef(op.id));
+    if(!existing){
+      S.transactions.unshift({id:`offline-tx:${op.id}`,item_id:op.item_id,transaction_type:op.type,quantity:op.type==='ADJUST'?Math.abs(num(op.new_quantity)-old):num(op.quantity),from_location_id:fromPos?.id||null,to_location_id:toPos?.id||null,new_quantity:op.new_quantity??null,reason:op.reason||null,reference:clientRef(op.id),notes:[op.notes,'Pending offline sync'].filter(Boolean).join(' · '),user_id:op.user_id,occurred_at:now,_offline_pending:true});
+    }
+  }
+  function queueStockOperation(op){
+    const rows=allOfflineQueue();
+    if(!rows.some(x=>x.id===op.id)){applyLocalStockOperation(op);rows.push(op);saveOfflineQueue(rows);saveOfflineSnapshot();}
+    S.offline=true;
+  }
+  async function resolveServerPosition(name,binRef){
+    const {data,error}=await sb.rpc('get_or_create_stock_position',{p_location_name:name,p_bin_ref:normalizeBin(binRef)});if(error)throw error;return data;
+  }
+  async function sendClientStockOperation(op){
+    let from=null,to=null;
+    if(op.from_location_name)from=await resolveServerPosition(op.from_location_name,op.from_bin_ref||'');
+    if(op.to_location_name)to=await resolveServerPosition(op.to_location_name,op.to_bin_ref||'');
+    if(op.type==='MOVE'&&from===to)throw new Error('Choose a different destination Location / Bin Ref.');
+    const {error}=await sb.rpc('apply_client_stock_transaction',{p_item_id:op.item_id,p_type:op.type,p_quantity:num(op.quantity),p_from_location_id:from,p_to_location_id:to,p_new_quantity:op.new_quantity==null?null:num(op.new_quantity),p_reason:op.reason||null,p_client_reference:clientRef(op.id),p_notes:op.notes||null});
+    if(error)throw error;
+  }
+  async function syncOfflineQueue(){
+    if(S.syncingOffline||!navigator.onLine||!S.session)return;
+    const uid=S.session.user.id;let rows=allOfflineQueue(),mine=rows.filter(x=>x.user_id===uid);if(!mine.length){S.offline=false;S.offlineSyncError=null;return;}
+    S.syncingOffline=true;S.offline=false;S.offlineSyncError=null;render();
+    let synced=0;
+    for(const op of mine){
+      try{
+        await sendClientStockOperation(op);rows=rows.filter(x=>x.id!==op.id);saveOfflineQueue(rows);synced++;
+      }catch(e){
+        if(isNetworkError(e)){S.offline=true;S.offlineSyncError='Connection was lost during sync.';break;}
+        op.last_error=parseError(e);rows=rows.map(x=>x.id===op.id?op:x);saveOfflineQueue(rows);S.offlineSyncError=`Sync stopped: ${parseError(e)}`;break;
+      }
+    }
+    try{if(navigator.onLine){await loadData();S.offline=false;startRealtime();}}catch(e){if(restoreOfflineSnapshot())S.offline=true;}
+    S.syncingOffline=false;
+    if(synced&&!S.offlineSyncError)setNotice(`${synced} offline stock action${synced===1?'':'s'} synced.`);
+    render();
+  }
+  function showOfflineQueue(){
+    const rows=currentOfflineQueue();
+    showModal(`<header><div><h2>Pending offline stock actions</h2><div class="muted">These are kept on this device until they are accepted by Supabase.</div></div><button class="close" data-close>×</button></header>${rows.length?`<div class="item-list">${rows.map(op=>`<div class="item-row"><div><strong>${esc(itemName(op.item_id))}</strong><div class="muted">${esc(op.type)} · ${op.type==='ADJUST'?`new count ${qty(op.new_quantity)}`:qty(op.quantity)} · ${esc(op.from_location_name||op.to_location_name||'')}</div>${op.last_error?`<div class="notice error compact">${esc(op.last_error)}</div>`:''}</div><span class="badge warn">Pending</span></div>`).join('')}</div>`:'<div class="notice success">No pending stock actions.</div>'}<div class="actions">${navigator.onLine&&rows.length?'<button class="btn" id="modalSyncOffline">Sync now</button>':''}<button class="btn ghost" data-close>Close</button></div>`);
+    const b=document.getElementById('modalSyncOffline');if(b)b.onclick=()=>{closeModal();syncOfflineQueue();};
+  }
+
   function setNotice(message, type='success') {
     S.notice = { message, type };
     setTimeout(() => { if (S.notice?.message === message) { S.notice = null; render(); } }, 4500);
@@ -170,6 +288,7 @@
     S.stocktakeSettings=stocktakeSettingsRows[0]||null; S.stocktakeTasks=stocktakeTasks; S.stocktakeItems=stocktakeItems;
     S.profile=byId(S.profiles,S.session?.user?.id)||S.profile;
     if(transactions) S.transactions=await fetchAll('transactions','*','occurred_at',false);
+    S.offline=false; S.offlineSyncError=null; saveOfflineSnapshot();
   }
 
 
@@ -191,7 +310,7 @@
   }
 
   function startRealtime() {
-    if(S.liveChannel||!S.session)return;
+    if(S.liveChannel||!S.session||S.offline||!navigator.onLine)return;
     let c=sb.channel('inventory-live');
     for(const table of ['stock_balances','transactions','items','stock_locations','profiles','item_suppliers','purchase_orders','inventory_categories','user_item_preferences','stocktake_tasks','stocktake_task_items']){
       c=c.on('postgres_changes',{event:'*',schema:'public',table},queueLiveRefresh);
@@ -211,7 +330,13 @@
         if(S.profile?.active===false){ await sb.auth.signOut(); return; }
         try{ await sb.rpc('ensure_stocktake_task',{p_force:false}); await loadData({transactions:false}); }catch(_){}
         startRealtime();
-      } catch (e) { setNotice(parseError(e),'error'); }
+        if(pendingOfflineCount())setTimeout(syncOfflineQueue,250);
+      } catch (e) {
+        if(restoreOfflineSnapshot()){
+          S.offline=true;S.offlineSyncError=null;
+          setNotice(`Offline mode: showing saved inventory from ${fmtDate(S.offlineSnapshotAt)}.`, 'success');
+        }else setNotice(navigator.onLine?parseError(e):'No connection and no saved offline inventory is available on this device.','error');
+      }
     }
     render();
   }
@@ -225,7 +350,11 @@
         if(S.profile?.active===false){ await sb.auth.signOut(); return; }
         try{ await sb.rpc('ensure_stocktake_task',{p_force:false}); await loadData({transactions:false}); }catch(_){}
         startRealtime();
-      } catch (e) { S.notice = {message:parseError(e),type:'error'}; }
+        if(pendingOfflineCount())setTimeout(syncOfflineQueue,250);
+      } catch (e) {
+        if(restoreOfflineSnapshot()){S.offline=true;S.notice={message:`Offline mode: showing saved inventory from ${fmtDate(S.offlineSnapshotAt)}.`,type:'success'};}
+        else S.notice = {message:parseError(e),type:'error'};
+      }
     } else {
       stopRealtime();
       S.profile = null; S.profiles=[]; S.items=[]; S.locations=[]; S.balances=[]; S.transactions=[];
@@ -247,6 +376,7 @@
       <div class="login">
         <h1>Inventory Tracker</h1>
         <p class="muted">Sign in to scan, find and update stock.</p>
+        ${!navigator.onLine?'<div class="notice warn">No connection. Offline mode is available only if this device still has a previously signed-in session and saved inventory data.</div>':''}
         ${noticeHtml()}
         <form id="loginForm">
           <label>Email</label><input id="loginEmail" type="email" autocomplete="email" required>
@@ -305,15 +435,17 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.4.1</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.5</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
-      <main class="content">${noticeHtml()}${content}</main>
+      <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
   }
 
   function bindShell() {
     document.getElementById('logoutBtn').onclick = () => sb.auth.signOut();
     document.querySelectorAll('[data-page]').forEach(b => b.onclick = () => { S.page=b.dataset.page; S.selectedItemId=null; render(); });
+    const sync=document.getElementById('syncOfflineBtn');if(sync)sync.onclick=()=>syncOfflineQueue();
+    const review=document.getElementById('reviewOfflineBtn');if(review)review.onclick=()=>showOfflineQueue();
   }
 
   function pageHtml() {
@@ -347,6 +479,7 @@
         <div class="card"><div class="muted">Used this month</div><div class="stat">${qty(usedMonth)}</div></div>
       </div>
       <div class="toolbar" style="margin-top:1rem"><button class="btn good" data-go="scan">Scan Stock QR</button><button class="btn" data-go="items">Manual search</button>${canManage()?'<button class="btn secondary" id="dashAddItem">Add new item</button>':''}</div>
+      ${S.offline?`<div class="notice warn"><strong>Offline stock mode:</strong> QR/manual search and stock Add, Use, Move and Adjust are available. Orders, user/admin changes, stocktake submission and other database changes need a connection. Any queued stock changes are checked against the live database when syncing.</div>`:''}
       ${assignedOpenStocktake()?`<div class="notice warn" style="margin-top:1rem"><strong>Stocktake ${assignedOpenStocktake().status==='OVERDUE'?'overdue':'due'}.</strong> About ${stocktakeItemsFor(assignedOpenStocktake().id).length} items have been assigned to you. <button class="btn ghost" data-go="stocktake">Open Stocktake</button></div>`:''}
       ${dashboardPersonalHtml()}
       ${canAdmin()&&backupDue()?`<div class="notice warn" style="margin-top:1rem"><strong>Admin backup due.</strong> ${lastBackupAt()?`Last backup: ${esc(fmtDate(lastBackupAt()))}.`:'No app backup has been recorded on this device yet.'} <button class="btn ghost" data-go="backup">Open Backup</button></div>`:''}
@@ -628,6 +761,7 @@
 
 
   async function hydrateItemThumbnails(root=document) {
+    if(S.offline||!navigator.onLine)return;
     const imgs=[...root.querySelectorAll?.('img.item-thumb[data-photo-path]')||[]].filter(x=>!x.getAttribute('src'));
     if(!imgs.length) return;
     const paths=[...new Set(imgs.map(x=>x.dataset.photoPath).filter(Boolean))];
@@ -1749,14 +1883,14 @@ Keep this file somewhere secure.
     const form=document.getElementById('stockActionForm');
     form.onsubmit=async e=>{
       e.preventDefault();
+      let op=null;
       try{
-        let from=null,to=null;
+        let fromName=null,fromRef='',toName=null,toRef='';
         if(type==='USE'||type==='MOVE'){
-          const fromName=document.getElementById('fromLocationName').value;
-          const fromRef=document.getElementById('fromBinRef').value;
+          fromName=document.getElementById('fromLocationName').value;
+          fromRef=document.getElementById('fromBinRef').value;
           const p=sourcePosition(item.id,fromName,fromRef);
           if(!p){setNotice('No stock was found at that Location / Bin Ref. Check the bin reference and try again.','error');return;}
-          from=p.id;
           const available=sourceAvailable(item.id,fromName,fromRef);
           const qEl=document.getElementById('actionQty');
           if(type==='MOVE'&&document.getElementById('moveAllCheck')?.checked) qEl.value=String(available);
@@ -1764,21 +1898,27 @@ Keep this file somewhere secure.
           if(requested>available){setNotice(`Only ${qty(available)} is available at that source.`, 'error');return;}
         }
         if(type==='ADD'||type==='MOVE'){
-          const toName=document.getElementById('toLocationName').value;
-          const toRef=document.getElementById('toBinRef').value;
-          to=await ensurePosition(toName,toRef);
+          toName=document.getElementById('toLocationName').value;toRef=document.getElementById('toBinRef').value;
         }
         if(type==='ADJUST'){
-          const fromName=document.getElementById('fromLocationName').value;
-          const fromRef=document.getElementById('fromBinRef').value;
-          from=await ensurePosition(fromName,fromRef);
+          fromName=document.getElementById('fromLocationName').value;fromRef=document.getElementById('fromBinRef').value;
         }
-        if(type==='MOVE'&&from===to){setNotice('Choose a different destination Location / Bin Ref.','error');return;}
-        const quantity=num(document.getElementById('actionQty')?.value), newQuantity=document.getElementById('newQty')?num(document.getElementById('newQty').value):null;
+        if(type==='MOVE'&&fromName===toName&&normalizeBin(fromRef).toLowerCase()===normalizeBin(toRef).toLowerCase()){setNotice('Choose a different destination Location / Bin Ref.','error');return;}
+        const quantity=num(document.getElementById('actionQty')?.value),newQuantity=document.getElementById('newQty')?num(document.getElementById('newQty').value):null;
         const reason=document.getElementById('reason')?.value||null,notes=document.getElementById('notes')?.value||null;
-        const {error}=await sb.rpc('apply_stock_transaction',{p_item_id:item.id,p_type:type,p_quantity:quantity,p_from_location_id:from,p_to_location_id:to,p_new_quantity:newQuantity,p_reason:reason,p_reference:null,p_notes:notes});
-        if(error) throw error;
-        await loadData(); closeModal(); setNotice(`${item.name}: ${type.toLowerCase()} recorded.`); render();
+        op={id:makeClientId(),user_id:S.profile.id,item_id:item.id,type,quantity,from_location_name:fromName,from_bin_ref:normalizeBin(fromRef),to_location_name:toName,to_bin_ref:normalizeBin(toRef),new_quantity:newQuantity,reason,notes,created_at:new Date().toISOString()};
+        if(S.offline||!navigator.onLine){
+          queueStockOperation(op);closeModal();setNotice(`${item.name}: ${type.toLowerCase()} saved offline and will sync automatically.`);render();return;
+        }
+        try{
+          await sendClientStockOperation(op);
+          await loadData();closeModal();setNotice(`${item.name}: ${type.toLowerCase()} recorded.`);render();
+        }catch(err){
+          if(isNetworkError(err)){
+            queueStockOperation(op);closeModal();setNotice(`${item.name}: connection lost — action saved offline for automatic sync.`);render();return;
+          }
+          throw err;
+        }
       }catch(err){setNotice(parseError(err),'error');}
     };
   }
@@ -1971,7 +2111,7 @@ Keep this file somewhere secure.
 
 
 
-  async function signedUrl(bucket,path,seconds=900){if(!path)return null;const {data,error}=await sb.storage.from(bucket).createSignedUrl(path,seconds);return error?null:data?.signedUrl||null;}
+  async function signedUrl(bucket,path,seconds=900){if(!path||S.offline||!navigator.onLine)return null;const {data,error}=await sb.storage.from(bucket).createSignedUrl(path,seconds);return error?null:data?.signedUrl||null;}
 
   function printQr(item) {
     showModal(`<header><h2>QR label</h2><button class="close" data-close>×</button></header><div class="print-target" style="text-align:center"><h3>${esc(item.name)}</h3><div id="qrBox" class="qrprint"></div><div>${esc(item.qr_value)}</div><div class="no-print actions"><button class="btn" id="doPrint">Print</button></div></div>`);
@@ -1987,6 +2127,15 @@ Keep this file somewhere secure.
   if ('serviceWorker' in navigator) {
     window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
   }
+
+  window.addEventListener('offline',()=>{
+    if(!S.session)return;
+    S.offline=true;stopRealtime();saveOfflineSnapshot();setNotice('Connection lost. Offline stock mode is active.');render();
+  });
+  window.addEventListener('online',()=>{
+    if(!S.session)return;
+    S.offline=false;setNotice('Connection restored. Checking pending offline stock actions…');render();setTimeout(syncOfflineQueue,200);
+  });
 
   bootstrap();
 })();

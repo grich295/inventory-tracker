@@ -46,3 +46,10 @@
 @media(max-width:720px){.camera-tools .btn{flex:1 1 145px}.live-scanner video{height:390px}}
 
 .user-actions{margin-top:0;align-items:center}.user-actions .btn{white-space:nowrap}
+
+
+/* v7.5 offline mode */
+.offline-banner{padding:.8rem 1rem;border-radius:12px;margin:0 0 1rem;background:#fff7ed;border:1px solid #fdba74;color:#7c2d12}
+.offline-banner.syncing{background:#eff6ff;border-color:#93c5fd;color:#1e3a8a}
+.offline-banner .actions{margin-top:.55rem}.offline-banner .btn.ghost{background:#fff8;border-color:currentColor;color:inherit}
+@media(max-width:720px){.offline-banner .actions .btn{flex:1 1 130px}}
