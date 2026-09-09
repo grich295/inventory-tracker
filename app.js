@@ -436,7 +436,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.6</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.6.1</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -1942,7 +1942,8 @@ Keep this file somewhere secure.
       ${type==='ADJUST'?`${adjustPair}<label>Correct quantity at this location / bin ref</label><input id="newQty" type="number" inputmode="decimal" min="0" step="0.01" required><label>Reason</label><select id="reason" required><option value="Stock count correction">Stock count correction</option><option value="Damaged">Damaged</option><option value="Lost">Lost</option><option value="Found">Found</option><option value="Data correction">Data correction</option><option value="Other">Other</option></select>`:''}
       ${type!=='ADJUST'?`<label>Reason / reference (optional)</label><input id="reason" placeholder="Delivery, job, damaged, etc.">`:''}
       <label>Notes (optional)</label><textarea id="notes" rows="2"></textarea>
-      <div class="actions"><button class="btn" type="submit">Confirm ${title.toLowerCase()}</button></div></form>`;
+      <div id="stockActionMessage" class="notice compact" hidden></div>
+      <div class="actions"><button class="btn" id="confirmStockActionBtn" type="submit">Confirm ${title.toLowerCase()}</button></div></form>`;
   }
 
   function openStockAction(item,type) {
@@ -1969,8 +1970,23 @@ Keep this file somewhere secure.
       setTimeout(update,0);
     }
     const form=document.getElementById('stockActionForm');
+    const submitBtn=document.getElementById('confirmStockActionBtn');
+    const formMessage=document.getElementById('stockActionMessage');
+    const showFormMessage=(message,type='error')=>{
+      if(!formMessage)return;
+      formMessage.hidden=false;
+      formMessage.className=`notice compact ${type==='error'?'error':'success'}`;
+      formMessage.textContent=message;
+    };
+    const setBusy=busy=>{
+      if(!submitBtn)return;
+      submitBtn.disabled=busy;
+      submitBtn.textContent=busy?'Saving…':`Confirm ${title.toLowerCase()}`;
+    };
     form.onsubmit=async e=>{
       e.preventDefault();
+      if(formMessage){formMessage.hidden=true;formMessage.textContent='';}
+      setBusy(true);
       let op=null;
       try{
         let fromName=null,fromRef='',toName=null,toRef='';
@@ -1978,36 +1994,64 @@ Keep this file somewhere secure.
           fromName=document.getElementById('fromLocationName').value;
           fromRef=document.getElementById('fromBinRef').value;
           const p=sourcePosition(item.id,fromName,fromRef);
-          if(!p){setNotice('No stock was found at that Location / Bin Ref. Check the bin reference and try again.','error');return;}
+          if(!p){showFormMessage('No stock was found at that Location / Bin Ref. Check the bin reference and try again.');return;}
           const available=sourceAvailable(item.id,fromName,fromRef);
           const qEl=document.getElementById('actionQty');
           if(type==='MOVE'&&document.getElementById('moveAllCheck')?.checked) qEl.value=String(available);
           const requested=num(qEl?.value);
-          if(requested>available){setNotice(`Only ${qty(available)} is available at that source.`, 'error');return;}
+          if(requested<=0){showFormMessage('Enter a quantity greater than zero.');return;}
+          if(requested>available){showFormMessage(`Only ${qty(available)} is available at that source.`);return;}
         }
         if(type==='ADD'||type==='MOVE'){
-          toName=document.getElementById('toLocationName').value;toRef=document.getElementById('toBinRef').value;
+          toName=document.getElementById('toLocationName').value;
+          toRef=document.getElementById('toBinRef').value;
         }
         if(type==='ADJUST'){
-          fromName=document.getElementById('fromLocationName').value;fromRef=document.getElementById('fromBinRef').value;
+          fromName=document.getElementById('fromLocationName').value;
+          fromRef=document.getElementById('fromBinRef').value;
         }
-        if(type==='MOVE'&&fromName===toName&&normalizeBin(fromRef).toLowerCase()===normalizeBin(toRef).toLowerCase()){setNotice('Choose a different destination Location / Bin Ref.','error');return;}
-        const quantity=num(document.getElementById('actionQty')?.value),newQuantity=document.getElementById('newQty')?num(document.getElementById('newQty').value):null;
-        const reason=document.getElementById('reason')?.value||null,notes=document.getElementById('notes')?.value||null;
+        if(type==='MOVE'&&fromName===toName&&normalizeBin(fromRef).toLowerCase()===normalizeBin(toRef).toLowerCase()){
+          showFormMessage('Choose a different destination Location / Bin Ref.');return;
+        }
+
+        const quantity=num(document.getElementById('actionQty')?.value);
+        const newQuantity=document.getElementById('newQty')?num(document.getElementById('newQty').value):null;
+        if(type==='ADD'&&quantity<=0){showFormMessage('Enter a quantity greater than zero.');return;}
+        if(type==='ADJUST'&&(newQuantity===null||newQuantity<0)){showFormMessage('Enter the correct stock quantity.');return;}
+
+        const reason=document.getElementById('reason')?.value||null;
+        const notes=document.getElementById('notes')?.value||null;
         op={id:makeClientId(),user_id:S.profile.id,item_id:item.id,type,quantity,from_location_name:fromName,from_bin_ref:normalizeBin(fromRef),to_location_name:toName,to_bin_ref:normalizeBin(toRef),new_quantity:newQuantity,reason,notes,created_at:new Date().toISOString()};
+
         if(S.offline||!navigator.onLine){
-          queueStockOperation(op);closeModal();setNotice(`${item.name}: ${type.toLowerCase()} saved offline and will sync automatically.`);render();return;
+          queueStockOperation(op);
+          closeModal();
+          setNotice(`${item.name}: ${type.toLowerCase()} saved offline and will sync automatically.`);
+          render();
+          return;
         }
+
         try{
           await sendClientStockOperation(op);
-          await loadData();closeModal();setNotice(`${item.name}: ${type.toLowerCase()} recorded.`);render();
+          await loadData();
+          closeModal();
+          setNotice(`${item.name}: ${type.toLowerCase()} recorded.`);
+          render();
         }catch(err){
           if(isNetworkError(err)){
-            queueStockOperation(op);closeModal();setNotice(`${item.name}: connection lost — action saved offline for automatic sync.`);render();return;
+            queueStockOperation(op);
+            closeModal();
+            setNotice(`${item.name}: connection lost — action saved offline for automatic sync.`);
+            render();
+            return;
           }
-          throw err;
+          showFormMessage(parseError(err));
         }
-      }catch(err){setNotice(parseError(err),'error');}
+      }catch(err){
+        showFormMessage(parseError(err));
+      }finally{
+        if(document.body.contains(form))setBusy(false);
+      }
     };
   }
 
