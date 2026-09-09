@@ -61,6 +61,7 @@
     torchOn: false,
     cameraBaseZoom: null,
     cameraCaps: null,
+    cameraZoom: null,
     chart: null,
     liveChannel: null,
     liveTimer: null,
@@ -435,7 +436,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.5</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.6</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -489,7 +490,7 @@
 
   function scanHtml() {
     return `<div class="scan-box">
-      <div class="card"><h2>Scan Stock QR</h2><p class="muted">Point the rear camera at the QR code on the bin or item label. For small labels, use <strong>Small QR 2×</strong> and keep the code near the centre guide.</p>
+      <div class="card"><h2>Scan Stock QR</h2><p class="muted">Point the rear camera at the QR code on the bin or item label. For small labels, use <strong>Small QR Auto</strong> and keep the code near the centre guide.</p>
         <div id="reader" class="scanner live-scanner">
           <video id="qrVideo" playsinline muted autoplay></video>
           <canvas id="qrCanvas" class="hidden"></canvas>
@@ -498,8 +499,13 @@
         </div>
         <div id="scanStatus" class="notice">Starting rear camera…</div>
         <div class="camera-tools">
-          <button class="btn ghost" id="smallQrBtn" type="button" aria-pressed="false">Small QR 2×</button>
+          <button class="btn ghost" id="smallQrBtn" type="button" aria-pressed="false">Small QR Auto</button>
+          <button class="btn ghost hidden" id="refocusBtn" type="button">Refocus</button>
           <button class="btn ghost hidden" id="torchBtn" type="button" aria-pressed="false">Torch</button>
+        </div>
+        <div id="zoomWrap" class="camera-zoom hidden">
+          <label for="zoomSlider">Camera zoom <strong id="zoomValue">1.0×</strong></label>
+          <input id="zoomSlider" type="range" min="1" max="4" step="0.1" value="1">
         </div>
         <div class="actions">
           <button class="btn secondary" id="stopScan">Stop camera</button>
@@ -1125,6 +1131,10 @@ Keep this file somewhere secure.
     if(smallBtn) smallBtn.onclick=toggleSmallQrMode;
     const torchBtn=document.getElementById('torchBtn');
     if(torchBtn) torchBtn.onclick=toggleTorch;
+    const refocusBtn=document.getElementById('refocusBtn');
+    if(refocusBtn) refocusBtn.onclick=refocusCamera;
+    const zoomSlider=document.getElementById('zoomSlider');
+    if(zoomSlider) zoomSlider.oninput=()=>setCameraZoom(Number(zoomSlider.value));
 
     const photoBtn=document.getElementById('scanPhotoBtn');
     const photoInput=document.getElementById('scanPhotoInput');
@@ -1137,16 +1147,21 @@ Keep this file somewhere secure.
         try {
           if(status) status.textContent='Reading QR from photo…';
           await stopScanner();
-          let decoder=document.getElementById('photoQrDecoder');
-          if(!decoder) {
-            decoder=document.createElement('div');
-            decoder.id='photoQrDecoder';
-            decoder.className='hidden';
-            document.body.appendChild(decoder);
+          let decoded=await decodeQrFromPhoto(file);
+          if(!decoded && window.Html5Qrcode) {
+            let decoder=document.getElementById('photoQrDecoder');
+            if(!decoder) {
+              decoder=document.createElement('div');
+              decoder.id='photoQrDecoder';
+              decoder.className='hidden';
+              document.body.appendChild(decoder);
+            }
+            S.scanner=new Html5Qrcode('photoQrDecoder', qrScannerOptions());
+            decoded=await S.scanner.scanFile(file,true);
           }
-          S.scanner=new Html5Qrcode('photoQrDecoder', qrScannerOptions());
-          const decoded=await S.scanner.scanFile(file,true);
-          if(status) status.textContent='QR found.';
+          if(!decoded) throw new Error('No QR found');
+          if(status) { status.className='notice success'; status.textContent='QR found.'; }
+          signalScanSuccess();
           findScanned(decoded);
         } catch(e) {
           if(status) {
@@ -1175,21 +1190,37 @@ Keep this file somewhere secure.
   function updateCameraControls() {
     const smallBtn=document.getElementById('smallQrBtn');
     const torchBtn=document.getElementById('torchBtn');
+    const refocusBtn=document.getElementById('refocusBtn');
     const reader=document.getElementById('reader');
     const badge=document.getElementById('scanModeBadge');
+    const zoomWrap=document.getElementById('zoomWrap');
+    const zoomSlider=document.getElementById('zoomSlider');
+    const zoomValue=document.getElementById('zoomValue');
     if(smallBtn) {
       smallBtn.setAttribute('aria-pressed',S.smallQrMode?'true':'false');
-      smallBtn.textContent=S.smallQrMode?'Small QR 2×: ON':'Small QR 2×';
+      smallBtn.textContent=S.smallQrMode?'Small QR Auto: ON':'Small QR Auto';
       smallBtn.classList.toggle('active-tool',S.smallQrMode);
     }
     if(reader) reader.classList.toggle('small-qr-mode',S.smallQrMode);
-    if(badge) badge.textContent=S.smallQrMode?'Small QR 2× mode':'Normal scan';
+    if(badge) badge.textContent=S.smallQrMode?'Small QR enhanced scan':'Normal scan';
     const hasTorch=!!S.cameraCaps?.torch;
     if(torchBtn) {
       torchBtn.classList.toggle('hidden',!hasTorch);
       torchBtn.setAttribute('aria-pressed',S.torchOn?'true':'false');
       torchBtn.textContent=S.torchOn?'Torch: ON':'Torch';
       torchBtn.classList.toggle('active-tool',S.torchOn);
+    }
+    const focusModes=S.cameraCaps?.focusMode;
+    const canRefocus=Array.isArray(focusModes)&&focusModes.some(x=>['continuous','single-shot','manual'].includes(x));
+    if(refocusBtn) refocusBtn.classList.toggle('hidden',!canRefocus);
+    const z=S.cameraCaps?.zoom;
+    const hasZoom=z&&typeof z.min==='number'&&typeof z.max==='number'&&z.max>z.min;
+    if(zoomWrap) zoomWrap.classList.toggle('hidden',!hasZoom);
+    if(hasZoom&&zoomSlider) {
+      zoomSlider.min=String(z.min);zoomSlider.max=String(z.max);zoomSlider.step=String(z.step||0.1);
+      const current=Number(S.cameraZoom??S.cameraBaseZoom??z.min);
+      zoomSlider.value=String(clamp(current,z.min,z.max));
+      if(zoomValue) zoomValue.textContent=`${Number(zoomSlider.value).toFixed(1)}×`;
     }
   }
 
@@ -1198,6 +1229,7 @@ Keep this file somewhere secure.
     S.cameraCaps=track?.getCapabilities ? track.getCapabilities() : {};
     const settings=track?.getSettings ? track.getSettings() : {};
     S.cameraBaseZoom=typeof settings.zoom==='number' ? settings.zoom : (typeof S.cameraCaps?.zoom?.min==='number' ? S.cameraCaps.zoom.min : null);
+    S.cameraZoom=S.cameraBaseZoom;
     try {
       const focusModes=S.cameraCaps?.focusMode;
       if(Array.isArray(focusModes) && focusModes.includes('continuous')) {
@@ -1207,26 +1239,50 @@ Keep this file somewhere secure.
     updateCameraControls();
   }
 
+  async function setCameraZoom(value) {
+    const track=S.cameraTrack, caps=S.cameraCaps?.zoom;
+    if(!track||!caps||typeof caps.min!=='number'||typeof caps.max!=='number')return;
+    const target=clamp(Number(value),caps.min,caps.max);
+    try{
+      await track.applyConstraints({advanced:[{zoom:target}]});
+      S.cameraZoom=target;
+      const zoomValue=document.getElementById('zoomValue');if(zoomValue)zoomValue.textContent=`${target.toFixed(1)}×`;
+      const slider=document.getElementById('zoomSlider');if(slider&&Math.abs(Number(slider.value)-target)>.01)slider.value=String(target);
+    }catch(_){}
+  }
+
   async function toggleSmallQrMode() {
     S.smallQrMode=!S.smallQrMode;
-    const track=S.cameraTrack;
-    const zoomCaps=S.cameraCaps?.zoom;
-    if(track && zoomCaps && typeof zoomCaps.min==='number' && typeof zoomCaps.max==='number') {
-      try {
-        const target=S.smallQrMode
-          ? clamp(2,zoomCaps.min,zoomCaps.max)
-          : clamp(S.cameraBaseZoom ?? zoomCaps.min,zoomCaps.min,zoomCaps.max);
-        await track.applyConstraints({advanced:[{zoom:target}]});
-      } catch(_) {}
+    const caps=S.cameraCaps?.zoom;
+    if(caps&&typeof caps.min==='number'&&typeof caps.max==='number') {
+      const target=S.smallQrMode
+        ? clamp(Math.max(2.5,caps.min+(caps.max-caps.min)*0.24),caps.min,caps.max)
+        : clamp(S.cameraBaseZoom??caps.min,caps.min,caps.max);
+      await setCameraZoom(target);
     }
     updateCameraControls();
     const status=document.getElementById('scanStatus');
-    if(status && S.cameraStream) {
+    if(status&&S.cameraStream){
       status.className='notice';
       status.textContent=S.smallQrMode
-        ? 'Small QR 2× mode — centre the small code and hold steady.'
+        ? 'Small QR enhanced scan — centre the label, hold about 15–25 cm away and tap Refocus if needed.'
         : 'Normal scan mode — hold the QR steady inside the guide.';
     }
+  }
+
+  async function refocusCamera() {
+    const track=S.cameraTrack,modes=S.cameraCaps?.focusMode;
+    if(!track||!Array.isArray(modes))return;
+    const status=document.getElementById('scanStatus');
+    try{
+      if(modes.includes('single-shot')) {
+        await track.applyConstraints({advanced:[{focusMode:'single-shot'}]});
+        setTimeout(()=>{try{if(S.cameraTrack&&modes.includes('continuous'))S.cameraTrack.applyConstraints({advanced:[{focusMode:'continuous'}]});}catch(_){}},700);
+      } else if(modes.includes('continuous')) {
+        await track.applyConstraints({advanced:[{focusMode:'continuous'}]});
+      }
+      if(status){status.className='notice';status.textContent='Refocusing camera — hold the QR still for a moment.';}
+    }catch(_){if(status){status.className='notice warn';status.textContent='Manual refocus is not available on this camera.';}}
   }
 
   async function toggleTorch() {
@@ -1263,22 +1319,57 @@ Keep this file somewhere secure.
   }
 
   function drawScanRegion(ctx,canvas,video,region) {
-    const vw=video.videoWidth, vh=video.videoHeight;
+    const vw=video.videoWidth,vh=video.videoHeight;
+    ctx.imageSmoothingEnabled=false;
     if(region==='full') {
-      const maxDim=1280;
-      const ratio=Math.min(1,maxDim/Math.max(vw,vh));
-      const outW=Math.max(1,Math.round(vw*ratio));
-      const outH=Math.max(1,Math.round(vh*ratio));
-      canvas.width=outW; canvas.height=outH;
-      ctx.drawImage(video,0,0,vw,vh,0,0,outW,outH);
-      return;
+      const maxDim=1500,ratio=Math.min(1,maxDim/Math.max(vw,vh));
+      const outW=Math.max(1,Math.round(vw*ratio)),outH=Math.max(1,Math.round(vh*ratio));
+      canvas.width=outW;canvas.height=outH;ctx.imageSmoothingEnabled=false;
+      ctx.drawImage(video,0,0,vw,vh,0,0,outW,outH);return;
     }
     const scale=Number(region)||0.7;
     const crop=Math.max(160,Math.floor(Math.min(vw,vh)*scale));
-    const sx=Math.floor((vw-crop)/2), sy=Math.floor((vh-crop)/2);
-    const out=Math.min(1400,crop);
-    canvas.width=out; canvas.height=out;
+    const sx=Math.floor((vw-crop)/2),sy=Math.floor((vh-crop)/2);
+    const out=Math.min(1700,Math.max(crop,S.smallQrMode?900:crop));
+    canvas.width=out;canvas.height=out;ctx.imageSmoothingEnabled=false;
     ctx.drawImage(video,sx,sy,crop,crop,0,0,out,out);
+  }
+
+  async function nativeDetectQr(detector,video,smallMode,cycle) {
+    if(!detector)return '';
+    try{
+      const found=await detector.detect(video);if(found?.length)return String(found[0].rawValue||'').trim();
+      if(!smallMode||cycle%2)return '';
+      const vw=video.videoWidth,vh=video.videoHeight,crop=Math.floor(Math.min(vw,vh)*0.48);
+      const sx=Math.floor((vw-crop)/2),sy=Math.floor((vh-crop)/2);
+      const bitmap=await createImageBitmap(video,sx,sy,crop,crop);
+      try{const close=await detector.detect(bitmap);if(close?.length)return String(close[0].rawValue||'').trim();}finally{bitmap.close?.();}
+    }catch(_){}
+    return '';
+  }
+
+  async function decodeQrFromPhoto(file) {
+    let bitmap;
+    try{bitmap=await createImageBitmap(file);}catch(_){return '';}
+    try{
+      if('BarcodeDetector' in window){
+        try{const formats=await BarcodeDetector.getSupportedFormats();if(formats.includes('qr_code')){const detector=new BarcodeDetector({formats:['qr_code']});const found=await detector.detect(bitmap);if(found?.length)return String(found[0].rawValue||'').trim();}}catch(_){}
+      }
+      if(!window.jsQR)return '';
+      const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
+      const regions=['full',0.86,0.68,0.50,0.36];
+      for(const region of regions){
+        const w=bitmap.width,h=bitmap.height;
+        let sx=0,sy=0,sw=w,sh=h;
+        if(region!=='full'){const crop=Math.floor(Math.min(w,h)*Number(region));sx=Math.floor((w-crop)/2);sy=Math.floor((h-crop)/2);sw=sh=crop;}
+        const max=1800,ratio=Math.min(1,max/Math.max(sw,sh));
+        const ow=Math.max(1,Math.round(sw*ratio)),oh=Math.max(1,Math.round(sh*ratio));
+        canvas.width=ow;canvas.height=oh;ctx.imageSmoothingEnabled=false;ctx.drawImage(bitmap,sx,sy,sw,sh,0,0,ow,oh);
+        const image=ctx.getImageData(0,0,ow,oh),code=jsQR(image.data,ow,oh,{inversionAttempts:'attemptBoth'});
+        if(code?.data)return String(code.data).trim();
+      }
+    }catch(_){}finally{bitmap?.close?.();}
+    return '';
   }
 
   async function startQrScanner() {
@@ -1329,6 +1420,7 @@ Keep this file somewhere secure.
       let lastScan=0;
       let detector=null;
       let regionIndex=0;
+      let scanCycle=0;
 
       if('BarcodeDetector' in window) {
         try {
@@ -1343,7 +1435,7 @@ Keep this file somewhere secure.
           return;
         }
 
-        if(ts-lastScan < 85) {
+        if(ts-lastScan < 105) {
           S.scanFrame=requestAnimationFrame(scanFrame);
           return;
         }
@@ -1352,26 +1444,21 @@ Keep this file somewhere secure.
         try {
           let decoded='';
 
-          // Native detector gets the full live frame first when supported.
-          if(detector) {
-            try {
-              const found=await detector.detect(video);
-              if(found?.length) decoded=String(found[0].rawValue||'').trim();
-            } catch(_) {}
-          }
+          scanCycle++;
+          // Native detector checks the full frame and, in small-label mode, a centre crop too.
+          if(detector) decoded=await nativeDetectQr(detector,video,S.smallQrMode,scanCycle);
 
-          // jsQR rotates through full-frame and progressively tighter centre crops.
-          // Tighter crops preserve more pixels for the small ~1 inch labels.
+          // jsQR checks more than one centre crop per cycle in small-label mode.
           if(!decoded && window.jsQR) {
-            const regions=S.smallQrMode
-              ? [0.55,0.40,0.30,0.70,'full']
-              : ['full',0.86,0.68,0.52];
-            const region=regions[regionIndex % regions.length];
-            regionIndex++;
-            drawScanRegion(ctx,canvas,video,region);
-            const image=ctx.getImageData(0,0,canvas.width,canvas.height);
-            const code=jsQR(image.data,image.width,image.height,{inversionAttempts:'attemptBoth'});
-            if(code?.data) decoded=String(code.data).trim();
+            const regions=S.smallQrMode?[0.58,0.44,0.32,0.72,'full']:['full',0.84,0.66,0.50];
+            const attempts=S.smallQrMode?2:1;
+            for(let n=0;n<attempts&&!decoded;n++){
+              const region=regions[regionIndex%regions.length];regionIndex++;
+              drawScanRegion(ctx,canvas,video,region);
+              const image=ctx.getImageData(0,0,canvas.width,canvas.height);
+              const code=jsQR(image.data,image.width,image.height,{inversionAttempts:'attemptBoth'});
+              if(code?.data)decoded=String(code.data).trim();
+            }
           }
 
           if(decoded) {
@@ -1412,6 +1499,7 @@ Keep this file somewhere secure.
     S.cameraTrack=null;
     S.cameraCaps=null;
     S.cameraBaseZoom=null;
+    S.cameraZoom=null;
     S.torchOn=false;
 
     const video=document.getElementById('qrVideo');
@@ -2031,7 +2119,7 @@ Keep this file somewhere secure.
       <div><label>Category</label><select id="newCategory"><option value="">Uncategorised</option>${categories.map(c=>`<option value="${esc(c)}" ${currentCategory===c?'selected':''}>${esc(c)}</option>`).join('')}</select></div>
       <div><label>Reorder level</label><input id="newReorder" type="number" inputmode="decimal" step="0.01" min="0" value="${esc(i?.reorder_level??0)}"></div>
       <div><label>Unit cost (£, optional)</label><input id="newCost" type="number" step="0.01" min="0" value="${esc(i?.unit_cost??'')}"></div>
-      <div class="full"><label>Item photo (optional)</label><input id="newPhoto" type="file" accept="image/*" capture="environment"></div>
+      <div class="full"><label>Item photo (optional)</label><input id="newPhoto" type="file" accept="image/*" capture="environment"><div id="photoEditStatus" class="muted photo-edit-status">Take/select a photo, then crop/rotate it before saving. The saved copy is automatically resized and compressed to reduce storage and mobile data.</div></div>
       ${i?'':`<div><label>Opening stock (optional)</label><input id="openingQty" type="number" inputmode="decimal" min="0" step="0.01" value="0"></div><div><label>Opening location</label><select id="openingLocationName"><option value="">None</option>${locationNames().map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div><div><label>Opening Bin Ref (optional)</label><input id="openingBinRef" list="openingBinList" placeholder="e.g. B12"><datalist id="openingBinList"></datalist></div>`}
       </div><div class="actions"><button class="btn" type="submit">${i?'Save changes':'Create item'}</button></div></form>`;
   }
@@ -2042,6 +2130,17 @@ Keep this file somewhere secure.
 
   function bindItemForm(existing) {
     const name=document.getElementById('newName'),code=document.getElementById('newCode'),qr=document.getElementById('newQr');
+    let editedPhoto=null;
+    const photoInput=document.getElementById('newPhoto'),photoStatus=document.getElementById('photoEditStatus');
+    if(photoInput) photoInput.onchange=async()=>{
+      const file=photoInput.files?.[0];editedPhoto=null;if(!file)return;
+      if(photoStatus)photoStatus.textContent='Opening photo editor…';
+      try{
+        const edited=await editItemPhoto(file);
+        if(edited){editedPhoto=edited;if(photoStatus)photoStatus.textContent=`Photo ready · ${Math.round(edited.size/1024)} KB · resized/compressed before upload.`;}
+        else {photoInput.value='';if(photoStatus)photoStatus.textContent='Photo cancelled — no new photo will be uploaded.';}
+      }catch(err){photoInput.value='';if(photoStatus)photoStatus.textContent='Photo could not be edited. Choose or take another photo.';}
+    };
     const gen=document.getElementById('generateQr'); if(gen) gen.onclick=()=>{const v=`ITM-${Date.now().toString(36).toUpperCase().slice(-7)}`;qr.value=v;if(!code.value.trim())code.value=v;};
     if(!existing) {
       let codeTouched=false,qrTouched=false;
@@ -2055,7 +2154,7 @@ Keep this file somewhere secure.
       let itemId=existing?.id;
       if(existing){const {error}=await sb.from('items').update(row).eq('id',existing.id);if(error){setNotice(parseError(error),'error');closeModal();render();return;}}
       else {row.created_by=S.profile.id;const {data,error}=await sb.from('items').insert(row).select('id').single();if(error){setNotice(parseError(error),'error');closeModal();render();return;}itemId=data.id;}
-      const photo=document.getElementById('newPhoto').files[0];
+      const photo=editedPhoto;
       if(photo){try{await uploadItemPhoto(itemId,photo);}catch(err){setNotice(`Item saved, but photo upload failed: ${parseError(err)}`,'error');}}
       if(!existing){
         const opening=num(document.getElementById('openingQty').value),locationName=document.getElementById('openingLocationName').value,binRef=document.getElementById('openingBinRef').value;
@@ -2086,16 +2185,62 @@ Keep this file somewhere secure.
     };
   }
 
+  async function canvasJpegFile(canvas,name,targetBytes=360000) {
+    let quality=0.82,blob=null;
+    for(let n=0;n<5;n++){
+      blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));
+      if(!blob||blob.size<=targetBytes||quality<=0.58)break;
+      quality-=0.07;
+    }
+    if(!blob)throw new Error('Could not process photo');
+    return new File([blob],`${String(name||'item-photo').replace(/\.[^.]+$/,'')}.jpg`,{type:'image/jpeg',lastModified:Date.now()});
+  }
+
+  async function editItemPhoto(file) {
+    if(!file?.type?.startsWith('image/'))throw new Error('Choose an image file');
+    const bitmap=await createImageBitmap(file);
+    return await new Promise(resolve=>{
+      const back=document.createElement('div');back.className='photo-editor-backdrop';
+      back.innerHTML=`<div class="photo-editor"><header><div><h2>Crop item photo</h2><p class="muted">Drag to position · use zoom to crop · rotate if needed.</p></div><button class="close" id="photoCancelTop" type="button">×</button></header><div class="photo-editor-stage"><canvas id="photoEditCanvas"></canvas><div class="photo-crop-guide"></div></div><div class="photo-editor-controls"><label>Crop shape<select id="photoRatio"><option value="original">Original shape</option><option value="1">Square</option><option value="1.333333">Landscape 4:3</option><option value="0.75">Portrait 3:4</option></select></label><label>Zoom <strong id="photoZoomValue">1.0×</strong><input id="photoZoom" type="range" min="1" max="3" step="0.05" value="1"></label></div><div class="actions"><button class="btn ghost" id="photoRotate" type="button">Rotate 90°</button><button class="btn ghost" id="photoReset" type="button">Reset</button><button class="btn secondary" id="photoRetake" type="button">Cancel / retake</button><button class="btn" id="photoUse" type="button">Use cropped photo</button></div><p class="muted photo-size-note">Saved photo will be limited to 1280 px on the longest edge and compressed for low data/storage use.</p></div>`;
+      document.body.appendChild(back);
+      const canvas=back.querySelector('#photoEditCanvas'),ctx=canvas.getContext('2d');
+      const ratioSel=back.querySelector('#photoRatio'),zoomEl=back.querySelector('#photoZoom'),zoomValue=back.querySelector('#photoZoomValue');
+      let rotation=0,zoom=1,offX=0,offY=0,drag=false,lastX=0,lastY=0;
+      const sourceRatio=bitmap.width/bitmap.height;
+      function rotatedSize(){return rotation%180===0?[bitmap.width,bitmap.height]:[bitmap.height,bitmap.width]}
+      function cropRatio(){return ratioSel.value==='original'?(rotation%180===0?sourceRatio:1/sourceRatio):Number(ratioSel.value)}
+      function setCanvasSize(){const r=cropRatio(),maxW=Math.min(720,Math.max(320,window.innerWidth-44)),maxH=Math.min(520,Math.max(280,window.innerHeight*0.52));let w=maxW,h=w/r;if(h>maxH){h=maxH;w=h*r}canvas.width=Math.max(240,Math.round(w));canvas.height=Math.max(240,Math.round(h));draw()}
+      function clampOffsets(){const [rw,rh]=rotatedSize(),base=Math.max(canvas.width/rw,canvas.height/rh),sc=base*zoom;const dw=rw*sc,dh=rh*sc;offX=clamp(offX,-Math.max(0,(dw-canvas.width)/2),Math.max(0,(dw-canvas.width)/2));offY=clamp(offY,-Math.max(0,(dh-canvas.height)/2),Math.max(0,(dh-canvas.height)/2))}
+      function draw(){clampOffsets();const [rw,rh]=rotatedSize(),base=Math.max(canvas.width/rw,canvas.height/rh),sc=base*zoom;ctx.clearRect(0,0,canvas.width,canvas.height);ctx.save();ctx.translate(canvas.width/2+offX,canvas.height/2+offY);ctx.rotate(rotation*Math.PI/180);ctx.drawImage(bitmap,-bitmap.width*sc/2,-bitmap.height*sc/2,bitmap.width*sc,bitmap.height*sc);ctx.restore()}
+      function finish(value){bitmap.close?.();back.remove();resolve(value)}
+      canvas.addEventListener('pointerdown',e=>{drag=true;lastX=e.clientX;lastY=e.clientY;canvas.setPointerCapture?.(e.pointerId)});
+      canvas.addEventListener('pointermove',e=>{if(!drag)return;offX+=e.clientX-lastX;offY+=e.clientY-lastY;lastX=e.clientX;lastY=e.clientY;draw()});
+      canvas.addEventListener('pointerup',()=>drag=false);canvas.addEventListener('pointercancel',()=>drag=false);
+      zoomEl.oninput=()=>{zoom=Number(zoomEl.value);zoomValue.textContent=`${zoom.toFixed(1)}×`;draw()};
+      ratioSel.onchange=()=>{offX=offY=0;setCanvasSize()};
+      back.querySelector('#photoRotate').onclick=()=>{rotation=(rotation+90)%360;offX=offY=0;setCanvasSize()};
+      back.querySelector('#photoReset').onclick=()=>{rotation=0;zoom=1;offX=offY=0;zoomEl.value='1';zoomValue.textContent='1.0×';ratioSel.value='original';setCanvasSize()};
+      back.querySelector('#photoCancelTop').onclick=()=>finish(null);back.querySelector('#photoRetake').onclick=()=>finish(null);
+      back.querySelector('#photoUse').onclick=async()=>{
+        const ratio=canvas.width/canvas.height,max=1280;let ow,oh;if(ratio>=1){ow=max;oh=Math.round(max/ratio)}else{oh=max;ow=Math.round(max*ratio)}
+        const out=document.createElement('canvas');out.width=ow;out.height=oh;const ox=out.getContext('2d');
+        const [rw,rh]=rotatedSize(),base=Math.max(canvas.width/rw,canvas.height/rh),displayScale=base*zoom,outputScale=ow/canvas.width;
+        ox.save();ox.translate(ow/2+offX*outputScale,oh/2+offY*outputScale);ox.rotate(rotation*Math.PI/180);const sc=displayScale*outputScale;ox.drawImage(bitmap,-bitmap.width*sc/2,-bitmap.height*sc/2,bitmap.width*sc,bitmap.height*sc);ox.restore();
+        try{const f=await canvasJpegFile(out,file.name,360000);finish(f)}catch(_){finish(null)}
+      };
+      setCanvasSize();
+    });
+  }
+
   async function compressImage(file) {
-    if(!file.type.startsWith('image/') || file.size < 650000) return file;
-    try {
-      const img=await createImageBitmap(file); const max=1600; const scale=Math.min(1,max/Math.max(img.width,img.height));
-      const canvas=document.createElement('canvas'); canvas.width=Math.round(img.width*scale); canvas.height=Math.round(img.height*scale);
-      canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
-      const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',0.82));
-      if(!blob) return file;
-      return new File([blob],`${file.name.replace(/\.[^.]+$/,'')}.jpg`,{type:'image/jpeg'});
-    } catch(_) { return file; }
+    if(!file?.type?.startsWith('image/'))return file;
+    try{
+      const img=await createImageBitmap(file),max=1280,scale=Math.min(1,max/Math.max(img.width,img.height));
+      if(scale===1&&file.type==='image/jpeg'&&file.size<=360000){img.close?.();return file}
+      const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.width*scale));canvas.height=Math.max(1,Math.round(img.height*scale));
+      canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);img.close?.();
+      return await canvasJpegFile(canvas,file.name,360000);
+    }catch(_){return file}
   }
 
   async function uploadItemPhoto(itemId,file) {
