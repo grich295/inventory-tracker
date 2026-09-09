@@ -114,6 +114,27 @@
   const locationNameForId = id => byId(S.locations,id)?.location_name || '';
   const binRefForId = id => effectiveBinCode(byId(S.locations,id));
   const normalizeBin = v => String(v||'').trim();
+  const itemDefaultPosition = item => {
+    if(!item?.default_location_id) return null;
+    return byId(S.locations,item.default_location_id) || null;
+  };
+  const itemDefaultLabel = item => {
+    const p=itemDefaultPosition(item);
+    return p ? locationLabel(p) : 'Not set';
+  };
+  function applyItemDefaultDestination(item, locationSelectId, binInputId) {
+    const p=itemDefaultPosition(item);
+    if(!p || !p.active) return false;
+    const loc=document.getElementById(locationSelectId), bin=document.getElementById(binInputId);
+    if(!loc || !bin) return false;
+    const hasOption=[...loc.options].some(o=>o.value===p.location_name);
+    if(!hasOption) return false;
+    loc.value=p.location_name;
+    // Trigger suggestion refresh first, then restore the exact default bin.
+    loc.dispatchEvent(new Event('change',{bubbles:true}));
+    setTimeout(()=>{bin.value=effectiveBinCode(p)||'';bin.dispatchEvent(new Event('input',{bubbles:true}));},0);
+    return true;
+  }
   const itemTotal = itemId => S.balances.filter(b => b.item_id === itemId).reduce((a,b) => a + num(b.quantity), 0);
   const itemPositions = itemId => S.balances.filter(b => b.item_id === itemId && num(b.quantity) > 0).sort((a,b) => num(b.quantity)-num(a.quantity));
   const orderRemaining = o => Math.max(0, num(o.quantity_ordered) - num(o.quantity_received));
@@ -436,7 +457,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.6.1</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.7</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -1625,11 +1646,13 @@ Keep this file somewhere secure.
         <label>Received now</label><input id="receiveQty" type="number" inputmode="decimal" min="0.01" max="${esc(remaining)}" step="0.01" value="${esc(remaining)}" required>
         <label>Put into location</label><select id="receiveLocation" required>${locationNameOptions(activeLocations())}</select>
         <label>Bin Ref (optional)</label><input id="receiveBin" list="receiveBinList" placeholder="e.g. B12"><datalist id="receiveBinList"></datalist>
+        ${item?.default_location_id?`<div class="muted">Default storage: <strong>${esc(itemDefaultLabel(item))}</strong> · change it above if this delivery belongs somewhere else.</div>`:''}
         <label>Notes (optional)</label><textarea id="receiveNotes" rows="2" placeholder="Short delivery, damaged box, etc."></textarea>
         <div class="notice">If fewer than ${qty(remaining)} arrive, type the amount actually received. The balance will stay visible as <strong>Back order / Still on order</strong>.</div>
         <div class="actions"><button class="btn good" type="submit">Confirm receipt</button></div>
       </form>`);
     bindBinRefSuggestions('receiveLocation','receiveBin','receiveBinList',activeLocations());
+    if(item) applyItemDefaultDestination(item,'receiveLocation','receiveBin');
     document.getElementById('receiveOrderForm').onsubmit=async e=>{
       e.preventDefault();
       try{
@@ -1852,7 +1875,7 @@ Keep this file somewhere secure.
         <h3>Totals by location</h3>${locationTotals.size?[...locationTotals.entries()].map(([name,q])=>`<div class="location-chip"><strong>${esc(name)}</strong> · ${qty(q)}</div>`).join(''):'<span class="muted">No stock assigned.</span>'}
         <h3>Exact stock positions</h3>${pos.length?pos.map(b=>{const l=byId(S.locations,b.location_id);return `<div class="location-chip"><strong>${esc(l?.location_name||'Unknown')}</strong> → ${esc(effectiveBinCode(l)?`Bin Ref ${effectiveBinCode(l)}`:'No bin ref')} · ${qty(b.quantity)}</div>`;}).join(''):'<div class="notice">No stock location currently has a positive quantity.</div>'}
       </div><div>
-        <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div>${onOrder>0?`<div style="margin-top:.7rem"><span class="badge order">ON ORDER ${qty(onOrder)}</span></div>`:''}</div>
+        <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div><div><strong>Default storage</strong><br>${esc(itemDefaultLabel(i))}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div>${onOrder>0?`<div style="margin-top:.7rem"><span class="badge order">ON ORDER ${qty(onOrder)}</span></div>`:''}</div>
         ${i.active?`<div class="actions quick-actions"><button class="btn good" data-stock-action="ADD">+ Add stock</button><button class="btn warn" data-stock-action="USE">− Use stock</button><button class="btn secondary" data-stock-action="ADJUST">Adjust count</button><button class="btn ghost" data-stock-action="MOVE">Move stock</button></div>`:'<div class="notice">This item is archived. Restore it before recording new stock actions.</div>'}
         <div class="actions"><button class="btn ${pref?.favourite?'warn':'ghost'}" id="favouriteBtn">${pref?.favourite?'★ Favourite':'☆ Add favourite'}</button><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()&&i.active?'<button class="btn ghost" id="editItemBtn">Edit item</button><button class="btn ghost" id="suppliersBtn">Suppliers 1–3</button><button class="btn" id="orderItemBtn">Order item</button>':''}${canAdmin()?i.active?'<button class="btn danger" id="archiveItemBtn">Archive item</button>':'<button class="btn good" id="restoreItemBtn">Restore item</button>':''}</div>
       </div></div>
@@ -1933,7 +1956,7 @@ Keep this file somewhere secure.
     const allRows=activeLocations();
     const title={ADD:'Add stock',USE:'Use / remove stock',MOVE:'Move stock',ADJUST:'Adjust stock'}[type];
     const sourcePair=`<label>Location</label><select id="fromLocationName" required>${locationNameOptions(sourceRows)}</select><label>Bin Ref</label><input id="fromBinRef" list="fromBinList" placeholder="Type bin ref, e.g. B12"><datalist id="fromBinList"></datalist><div id="sourceAvailability" class="notice compact">Select the source bin to see available stock.</div>`;
-    const destinationPair=`<label>Location</label><select id="toLocationName" required>${locationNameOptions(allRows)}</select><label>Bin Ref (optional)</label><input id="toBinRef" list="toBinList" placeholder="Type bin ref, e.g. B12"><datalist id="toBinList"></datalist>`;
+    const destinationPair=`<label>Location</label><select id="toLocationName" required>${locationNameOptions(allRows)}</select><label>Bin Ref (optional)</label><input id="toBinRef" list="toBinList" placeholder="Type bin ref, e.g. B12"><datalist id="toBinList"></datalist>${item.default_location_id?`<div class="muted">Default storage: <strong>${esc(itemDefaultLabel(item))}</strong> · change it here if this stock is going elsewhere.</div>`:''}`;
     const adjustPair=`<label>Location</label><select id="fromLocationName" required>${locationNameOptions(allRows)}</select><label>Bin Ref (optional)</label><input id="fromBinRef" list="fromBinList" placeholder="Type bin ref, e.g. B12"><datalist id="fromBinList"></datalist>`;
     return `<header><div><h2>${title}</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header><form id="stockActionForm" data-type="${type}">
       ${type==='ADD'?`${destinationPair}<label>Quantity added</label><input id="actionQty" type="number" inputmode="decimal" min="0.01" step="0.01" required>`:''}
@@ -1954,7 +1977,10 @@ Keep this file somewhere secure.
     const positiveIds=new Set(pos.map(b=>b.location_id));
     const sourceRows=activeLocations().filter(l=>positiveIds.has(l.id));
     if(type==='USE'||type==='MOVE') bindBinRefSuggestions('fromLocationName','fromBinRef','fromBinList',sourceRows,item.id,true);
-    if(type==='ADD'||type==='MOVE') bindBinRefSuggestions('toLocationName','toBinRef','toBinList',activeLocations());
+    if(type==='ADD'||type==='MOVE') {
+      bindBinRefSuggestions('toLocationName','toBinRef','toBinList',activeLocations());
+      applyItemDefaultDestination(item,'toLocationName','toBinRef');
+    }
     if(type==='ADJUST') bindBinRefSuggestions('fromLocationName','fromBinRef','fromBinList',activeLocations(),item.id,false);
     if(type==='USE'||type==='MOVE'){
       const loc=document.getElementById('fromLocationName'), bin=document.getElementById('fromBinRef'), amount=document.getElementById('actionQty');
@@ -1978,10 +2004,11 @@ Keep this file somewhere secure.
       formMessage.className=`notice compact ${type==='error'?'error':'success'}`;
       formMessage.textContent=message;
     };
+    const actionTitle={ADD:'add stock',USE:'use / remove stock',MOVE:'move stock',ADJUST:'adjust stock'}[type]||'stock action';
     const setBusy=busy=>{
       if(!submitBtn)return;
       submitBtn.disabled=busy;
-      submitBtn.textContent=busy?'Saving…':`Confirm ${title.toLowerCase()}`;
+      submitBtn.textContent=busy?'Saving…':`Confirm ${actionTitle}`;
     };
     form.onsubmit=async e=>{
       e.preventDefault();
@@ -2163,6 +2190,8 @@ Keep this file somewhere secure.
       <div><label>Category</label><select id="newCategory"><option value="">Uncategorised</option>${categories.map(c=>`<option value="${esc(c)}" ${currentCategory===c?'selected':''}>${esc(c)}</option>`).join('')}</select></div>
       <div><label>Reorder level</label><input id="newReorder" type="number" inputmode="decimal" step="0.01" min="0" value="${esc(i?.reorder_level??0)}"></div>
       <div><label>Unit cost (£, optional)</label><input id="newCost" type="number" step="0.01" min="0" value="${esc(i?.unit_cost??'')}"></div>
+      <div><label>Default stock location</label><select id="defaultLocationName"><option value="">Not set</option>${locationNames().map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div>
+      <div><label>Default Bin Ref</label><input id="defaultBinRef" list="defaultBinList" placeholder="e.g. B12"><datalist id="defaultBinList"></datalist><div class="muted">Used automatically for Add Stock, Move destination and Receive Delivery. You can still change it each time.</div></div>
       <div class="full"><label>Item photo (optional)</label><input id="newPhoto" type="file" accept="image/*" capture="environment"><div id="photoEditStatus" class="muted photo-edit-status">Take/select a photo, then crop/rotate it before saving. The saved copy is automatically resized and compressed to reduce storage and mobile data.</div></div>
       ${i?'':`<div><label>Opening stock (optional)</label><input id="openingQty" type="number" inputmode="decimal" min="0" step="0.01" value="0"></div><div><label>Opening location</label><select id="openingLocationName"><option value="">None</option>${locationNames().map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div><div><label>Opening Bin Ref (optional)</label><input id="openingBinRef" list="openingBinList" placeholder="e.g. B12"><datalist id="openingBinList"></datalist></div>`}
       </div><div class="actions"><button class="btn" type="submit">${i?'Save changes':'Create item'}</button></div></form>`;
@@ -2174,6 +2203,7 @@ Keep this file somewhere secure.
 
   function bindItemForm(existing) {
     const name=document.getElementById('newName'),code=document.getElementById('newCode'),qr=document.getElementById('newQr');
+    const defaultLocation=document.getElementById('defaultLocationName'),defaultBin=document.getElementById('defaultBinRef');
     let editedPhoto=null;
     const photoInput=document.getElementById('newPhoto'),photoStatus=document.getElementById('photoEditStatus');
     if(photoInput) photoInput.onchange=async()=>{
@@ -2186,6 +2216,15 @@ Keep this file somewhere secure.
       }catch(err){photoInput.value='';if(photoStatus)photoStatus.textContent='Photo could not be edited. Choose or take another photo.';}
     };
     const gen=document.getElementById('generateQr'); if(gen) gen.onclick=()=>{const v=`ITM-${Date.now().toString(36).toUpperCase().slice(-7)}`;qr.value=v;if(!code.value.trim())code.value=v;};
+    bindBinRefSuggestions('defaultLocationName','defaultBinRef','defaultBinList',activeLocations());
+    if(existing){
+      const p=itemDefaultPosition(existing);
+      if(p){
+        defaultLocation.value=p.location_name;
+        defaultLocation.dispatchEvent(new Event('change',{bubbles:true}));
+        setTimeout(()=>{defaultBin.value=effectiveBinCode(p)||'';},0);
+      }
+    }
     if(!existing) {
       let codeTouched=false,qrTouched=false;
       code.oninput=()=>{codeTouched=true;if(!qrTouched)qr.value=code.value};qr.oninput=()=>qrTouched=true;name.oninput=()=>{if(!codeTouched){code.value=name.value;if(!qrTouched)qr.value=name.value;}};
@@ -2194,7 +2233,16 @@ Keep this file somewhere secure.
     }
     document.getElementById('itemForm').onsubmit=async e=>{
       e.preventDefault();
-      const row={name:name.value.trim(),item_code:code.value.trim(),qr_value:(qr.value.trim()||code.value.trim()),category:document.getElementById('newCategory').value||null,reorder_level:num(document.getElementById('newReorder').value),unit_cost:document.getElementById('newCost').value===''?null:num(document.getElementById('newCost').value)};
+      let defaultLocationId=null;
+      try{
+        const defaultName=defaultLocation?.value||'';
+        const defaultRef=defaultBin?.value||'';
+        if(defaultName) defaultLocationId=await ensurePosition(defaultName,defaultRef);
+      }catch(err){
+        setNotice(`Could not save the default stock location: ${parseError(err)}`,'error');
+        return;
+      }
+      const row={name:name.value.trim(),item_code:code.value.trim(),qr_value:(qr.value.trim()||code.value.trim()),category:document.getElementById('newCategory').value||null,reorder_level:num(document.getElementById('newReorder').value),unit_cost:document.getElementById('newCost').value===''?null:num(document.getElementById('newCost').value),default_location_id:defaultLocationId};
       let itemId=existing?.id;
       if(existing){const {error}=await sb.from('items').update(row).eq('id',existing.id);if(error){setNotice(parseError(error),'error');closeModal();render();return;}}
       else {row.created_by=S.profile.id;const {data,error}=await sb.from('items').insert(row).select('id').single();if(error){setNotice(parseError(error),'error');closeModal();render();return;}itemId=data.id;}
