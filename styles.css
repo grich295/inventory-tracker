@@ -62,3 +62,7 @@
 
 /* v7.7 default storage */
 #defaultBinRef + datalist + .muted{max-width:100%}
+
+/* v7.8 controlled bin dropdowns */
+.controlled-bin-select{width:100%;margin-bottom:.45rem}
+.controlled-bin-select[hidden]{display:none!important}

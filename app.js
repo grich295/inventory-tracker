@@ -114,6 +114,19 @@
   const locationNameForId = id => byId(S.locations,id)?.location_name || '';
   const binRefForId = id => effectiveBinCode(byId(S.locations,id));
   const normalizeBin = v => String(v||'').trim();
+  const controlledBinPresetRefs = locationName => {
+    const key=String(locationName||'').trim().toLowerCase();
+    if(key==='workshop main store') return Array.from({length:50},(_,i)=>`Bin ${i+1}`);
+    if(key==='workbench cupboard') return Array.from({length:15},(_,i)=>`C${i+1}`);
+    return null;
+  };
+  const controlledBinSummary = locationName => {
+    const key=String(locationName||'').trim().toLowerCase();
+    if(key==='workshop main store') return 'Controlled bins: Bin 1–Bin 50';
+    if(key==='workbench cupboard') return 'Controlled bins: C1–C15';
+    return '';
+  };
+  const naturalBinSort = (a,b) => String(a).localeCompare(String(b),undefined,{numeric:true,sensitivity:'base'});
   const itemDefaultPosition = item => {
     if(!item?.default_location_id) return null;
     return byId(S.locations,item.default_location_id) || null;
@@ -457,7 +470,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.7</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.8</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -589,10 +602,11 @@
       const balances=positive.filter(b=>ids.has(b.location_id));
       const units=balances.reduce((a,b)=>a+num(b.quantity),0);
       const items=new Set(balances.map(b=>b.item_id));
-      return `<div class="card"><div class="muted">Location</div><div class="item-title" style="margin:.2rem 0 .45rem">${esc(name)}</div><div class="stat">${qty(units)}</div><div class="muted">${items.size} item${items.size===1?'':'s'} · total units</div>${canManage()?`<div class="actions"><button class="btn ghost" data-rename-location="${esc(name)}">Rename</button><button class="btn danger" data-delete-location="${esc(name)}">Delete</button></div>`:''}</div>`;
+      const controlled=controlledBinSummary(name);
+      return `<div class="card"><div class="muted">Location</div><div class="item-title" style="margin:.2rem 0 .45rem">${esc(name)}</div><div class="stat">${qty(units)}</div><div class="muted">${items.size} item${items.size===1?'':'s'} · total units</div>${controlled?`<div class="badge good" style="margin-top:.55rem">${esc(controlled)}</div>`:''}${canManage()?`<div class="actions"><button class="btn ghost" data-rename-location="${esc(name)}">Rename</button><button class="btn danger" data-delete-location="${esc(name)}">Delete</button></div>`:''}</div>`;
     }).join('');
     return `<div class="toolbar">${canManage()?'<button class="btn" id="addLocationBtn">Add location</button>':''}</div>
-      <div class="card"><h2>Locations</h2><p class="muted">Create the main places where stock is held. <strong>Bin Ref is not set up here.</strong> When you add, move or adjust an item, choose the Location and type its Bin Ref manually.</p></div>
+      <div class="card"><h2>Locations</h2><p class="muted">Workshop main store and Workbench cupboard now use controlled bin dropdowns. Other locations keep the flexible manual Bin Ref option.</p><div class="meta"><span>Workshop main store: Bin 1–Bin 50</span><span>Workbench cupboard: C1–C15</span></div></div>
       <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Overall stock</div><div class="stat">${qty(overall)}</div></div>${locCards||'<div class="card">No active locations yet.</div>'}</div>`;
   }
 
@@ -1908,17 +1922,98 @@ Keep this file somewhere secure.
   function bindBinRefSuggestions(locationSelectId, inputId, datalistId, rows=activeLocations(), itemId=null, positiveOnly=false) {
     const locSel=document.getElementById(locationSelectId), input=document.getElementById(inputId), list=document.getElementById(datalistId);
     if(!locSel||!input||!list)return;
+
+    let preset=document.getElementById(`${inputId}Preset`);
+    if(!preset){
+      preset=document.createElement('select');
+      preset.id=`${inputId}Preset`;
+      preset.className='controlled-bin-select';
+      preset.hidden=true;
+      input.parentNode.insertBefore(preset,input);
+    }
+
+    const syncPresetFromInput=()=>{
+      if(preset.hidden)return;
+      const v=normalizeBin(input.value);
+      const has=[...preset.options].some(o=>o.value===v);
+      if(has){
+        preset.value=v;
+        input.hidden=true;
+      } else if(v){
+        preset.value='__OTHER__';
+        input.hidden=false;
+      }
+    };
+
     const refresh=()=>{
       let candidates=positionsForLocation(locSel.value,rows);
       if(itemId && positiveOnly){
         const positiveIds=new Set(itemPositions(itemId).map(b=>b.location_id));
         candidates=candidates.filter(l=>positiveIds.has(l.id));
       }
-      const refs=[...new Set(candidates.map(effectiveBinCode).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
-      list.innerHTML=refs.map(r=>`<option value="${esc(r)}"></option>`).join('');
-      if(refs.length===1 && !input.value.trim()) input.value=refs[0];
+
+      const actualRefs=[...new Set(candidates.map(effectiveBinCode).filter(Boolean))].sort(naturalBinSort);
+      const controlled=controlledBinPresetRefs(locSel.value);
+
+      if(controlled){
+        let refs;
+        if(positiveOnly){
+          // For Use / Move source, only show bins that actually contain stock.
+          refs=actualRefs;
+        } else {
+          // For destination/default selection show all preset bins, plus any older non-standard bin refs already in use.
+          refs=[...new Set([...controlled,...actualRefs])].sort(naturalBinSort);
+        }
+
+        const current=normalizeBin(input.value);
+        preset.innerHTML=
+          `<option value="">No bin / Unallocated</option>`+
+          refs.map(r=>`<option value="${esc(r)}">${esc(r)}</option>`).join('')+
+          (!positiveOnly?'<option value="__OTHER__">Other / manual entry</option>':'');
+
+        preset.hidden=false;
+        list.innerHTML='';
+
+        if(current && refs.includes(current)){
+          preset.value=current;
+          input.hidden=true;
+        } else if(current && !positiveOnly){
+          preset.value='__OTHER__';
+          input.hidden=false;
+        } else {
+          preset.value='';
+          input.value='';
+          input.hidden=true;
+        }
+
+        preset.onchange=()=>{
+          if(preset.value==='__OTHER__'){
+            input.value='';
+            input.hidden=false;
+            input.focus();
+            input.dispatchEvent(new Event('input',{bubbles:true}));
+            return;
+          }
+          input.hidden=true;
+          input.value=preset.value;
+          input.dispatchEvent(new Event('input',{bubbles:true}));
+          input.dispatchEvent(new Event('change',{bubbles:true}));
+        };
+      } else {
+        preset.hidden=true;
+        input.hidden=false;
+        const refs=actualRefs;
+        list.innerHTML=refs.map(r=>`<option value="${esc(r)}"></option>`).join('');
+        if(refs.length===1 && !input.value.trim()) input.value=refs[0];
+      }
     };
-    locSel.onchange=()=>{input.value='';refresh();};
+
+    locSel.onchange=()=>{
+      input.value='';
+      refresh();
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+    };
+    input.addEventListener('input',syncPresetFromInput);
     refresh();
   }
 
@@ -2083,7 +2178,7 @@ Keep this file somewhere secure.
   }
 
   function openAddLocation() {
-    showModal(`<header><h2>Add location</h2><button class="close" data-close>×</button></header><form id="locForm"><p class="muted">Add the main place where stock is kept. Bin Ref is typed on the item when stock is assigned.</p><label>Location name</label><input id="locName" placeholder="Workshop Store" required><label>Notes (optional)</label><textarea id="locNotes"></textarea><div class="actions"><button class="btn" type="submit">Save location</button></div></form>`);
+    showModal(`<header><h2>Add location</h2><button class="close" data-close>×</button></header><form id="locForm"><p class="muted">Add the main place where stock is kept. Workshop main store and Workbench cupboard use controlled bin lists; other locations allow manual Bin Ref entry.</p><label>Location name</label><input id="locName" placeholder="Workshop Store" required><label>Notes (optional)</label><textarea id="locNotes"></textarea><div class="actions"><button class="btn" type="submit">Save location</button></div></form>`);
     document.getElementById('locForm').onsubmit=async e=>{
       e.preventDefault();
       const name=document.getElementById('locName').value.trim();
@@ -2191,7 +2286,7 @@ Keep this file somewhere secure.
       <div><label>Reorder level</label><input id="newReorder" type="number" inputmode="decimal" step="0.01" min="0" value="${esc(i?.reorder_level??0)}"></div>
       <div><label>Unit cost (£, optional)</label><input id="newCost" type="number" step="0.01" min="0" value="${esc(i?.unit_cost??'')}"></div>
       <div><label>Default stock location</label><select id="defaultLocationName"><option value="">Not set</option>${locationNames().map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div>
-      <div><label>Default Bin Ref</label><input id="defaultBinRef" list="defaultBinList" placeholder="e.g. B12"><datalist id="defaultBinList"></datalist><div class="muted">Used automatically for Add Stock, Move destination and Receive Delivery. You can still change it each time.</div></div>
+      <div><label>Default Bin Ref</label><input id="defaultBinRef" list="defaultBinList" placeholder="e.g. B12"><datalist id="defaultBinList"></datalist><div class="muted">Used automatically for Add Stock, Move destination and Receive Delivery. Controlled locations use the preset bin dropdown; you can still change it each time.</div></div>
       <div class="full"><label>Item photo (optional)</label><input id="newPhoto" type="file" accept="image/*" capture="environment"><div id="photoEditStatus" class="muted photo-edit-status">Take/select a photo, then crop/rotate it before saving. The saved copy is automatically resized and compressed to reduce storage and mobile data.</div></div>
       ${i?'':`<div><label>Opening stock (optional)</label><input id="openingQty" type="number" inputmode="decimal" min="0" step="0.01" value="0"></div><div><label>Opening location</label><select id="openingLocationName"><option value="">None</option>${locationNames().map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div><div><label>Opening Bin Ref (optional)</label><input id="openingBinRef" list="openingBinList" placeholder="e.g. B12"><datalist id="openingBinList"></datalist></div>`}
       </div><div class="actions"><button class="btn" type="submit">${i?'Save changes':'Create item'}</button></div></form>`;
