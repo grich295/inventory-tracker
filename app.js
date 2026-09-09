@@ -44,6 +44,7 @@
     stocktakeItems: [],
     backupRunning: false,
     backupStatus: '',
+    binSetupLocation: '',
     orderTab: 'suggested',
     page: 'dashboard',
     search: '',
@@ -114,17 +115,45 @@
   const locationNameForId = id => byId(S.locations,id)?.location_name || '';
   const binRefForId = id => effectiveBinCode(byId(S.locations,id));
   const normalizeBin = v => String(v||'').trim();
+  const BIN_PRESET_MARKER='[[BIN_PRESET]]';
+  const isLegacyControlledBinNote = note => /^Controlled\s+.+\s+bin$/i.test(String(note||'').trim());
+  const isBinPresetRow = row => {
+    if(!row || !row.active || !effectiveBinCode(row)) return false;
+    const note=String(row.notes||'');
+    return note.includes(BIN_PRESET_MARKER) || isLegacyControlledBinNote(note);
+  };
+  const presetRowsForLocation = locationName => S.locations
+    .filter(l=>l.location_name===locationName && isBinPresetRow(l))
+    .sort((a,b)=>effectiveBinCode(a).localeCompare(effectiveBinCode(b),undefined,{numeric:true,sensitivity:'base'}));
   const controlledBinPresetRefs = locationName => {
-    const key=String(locationName||'').trim().toLowerCase();
-    if(key==='workshop main store') return Array.from({length:50},(_,i)=>`Bin ${i+1}`);
-    if(key==='workbench cupboard') return Array.from({length:15},(_,i)=>`C${i+1}`);
-    return null;
+    const refs=[...new Set(presetRowsForLocation(locationName).map(effectiveBinCode).filter(Boolean))].sort(naturalBinSort);
+    return refs.length ? refs : null;
   };
   const controlledBinSummary = locationName => {
-    const key=String(locationName||'').trim().toLowerCase();
-    if(key==='workshop main store') return 'Controlled bins: Bin 1–Bin 50';
-    if(key==='workbench cupboard') return 'Controlled bins: C1–C15';
-    return '';
+    const refs=controlledBinPresetRefs(locationName);
+    if(!refs?.length) return '';
+    const parsed=refs.map(r=>String(r).match(/^(.*?)(\d+)$/));
+    if(parsed.every(Boolean)){
+      const prefix=parsed[0][1];
+      const nums=parsed.map(x=>Number(x[2]));
+      const samePrefix=parsed.every(x=>x[1]===prefix);
+      const sorted=[...nums].sort((a,b)=>a-b);
+      const continuous=sorted.every((n,i)=>i===0||n===sorted[i-1]+1);
+      if(samePrefix&&continuous&&new Set(nums).size===refs.length){
+        return `Controlled bins: ${prefix}${sorted[0]}–${prefix}${sorted[sorted.length-1]}`;
+      }
+    }
+    return `Controlled bins: ${refs.length} configured`;
+  };
+  const addPresetMarker = note => {
+    const n=String(note||'').trim();
+    if(n.includes(BIN_PRESET_MARKER)||isLegacyControlledBinNote(n)) return n || BIN_PRESET_MARKER;
+    return n ? `${n} ${BIN_PRESET_MARKER}` : BIN_PRESET_MARKER;
+  };
+  const stripPresetMarker = note => {
+    const n=String(note||'').trim();
+    if(isLegacyControlledBinNote(n)) return '';
+    return n.replaceAll(BIN_PRESET_MARKER,'').replace(/\s{2,}/g,' ').trim();
   };
   const naturalBinSort = (a,b) => String(a).localeCompare(String(b),undefined,{numeric:true,sensitivity:'base'});
   const itemDefaultPosition = item => {
@@ -143,9 +172,14 @@
     const hasOption=[...loc.options].some(o=>o.value===p.location_name);
     if(!hasOption) return false;
     loc.value=p.location_name;
-    // Trigger suggestion refresh first, then restore the exact default bin.
+    // Refresh the location first, then actively sync the bin helper so the
+    // dropdown visibly selects the item's default bin.
     loc.dispatchEvent(new Event('change',{bubbles:true}));
-    setTimeout(()=>{bin.value=effectiveBinCode(p)||'';bin.dispatchEvent(new Event('input',{bubbles:true}));},0);
+    setTimeout(()=>{
+      bin.value=effectiveBinCode(p)||'';
+      bin.dispatchEvent(new Event('input',{bubbles:true}));
+      bin.dispatchEvent(new Event('change',{bubbles:true}));
+    },0);
     return true;
   }
   const itemTotal = itemId => S.balances.filter(b => b.item_id === itemId).reduce((a,b) => a + num(b.quantity), 0);
@@ -468,9 +502,9 @@
     const nav = [
       ['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['stocktake','Stocktake'],['reports','Reports'],['history','History'],['help','Help']
     ];
-    if (S.profile?.role === 'admin') nav.push(['users','Users'],['legacy','Legacy'],['backup','Backup']);
+    if (S.profile?.role === 'admin') nav.push(['users','Users'],['binsetup','Bin Setup'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.9</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.0</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -493,6 +527,7 @@
     if (S.page==='history') return historyHtml();
     if (S.page==='help') return helpHtml();
     if (S.page==='users') return usersHtml();
+    if (S.page==='binsetup') return binSetupHtml();
     if (S.page==='legacy') return legacyReviewHtml();
     if (S.page==='backup') return backupHtml();
     return dashboardHtml();
@@ -536,9 +571,9 @@
           <h3>Locations and bins</h3>
           <ul>
             <li>Select the main <strong>Location</strong>, then the Bin Ref.</li>
-            <li><strong>Workshop main store:</strong> controlled dropdown Bin 1–Bin 50.</li>
-            <li><strong>Workbench cupboard:</strong> controlled dropdown C1–C15.</li>
-            <li>Other locations can still use a manual Bin Ref where needed.</li>
+            <li>Locations can use an Admin-managed <strong>controlled bin dropdown</strong> or manual Bin Ref entry.</li>
+            <li>Controlled bin lists are shared with every user/device.</li>
+            <li>Admins can add ranges (for example Bin 1–50), individual bins, or convert existing bins to controlled choices.</li>
             <li><strong>No bin / Unallocated</strong> is available where appropriate.</li>
           </ul>
         </div>
@@ -617,8 +652,8 @@
           <h3>Locations</h3>
           <ul>
             <li>Add, rename and remove stock locations where permitted.</li>
-            <li>Controlled bins are currently Workshop main store Bin 1–50 and Workbench cupboard C1–C15.</li>
-            <li>Ask for an app update if more controlled/default bins are required.</li>
+            <li>Controlled bins are managed centrally by Admin in <strong>Bin Setup</strong>.</li>
+            <li>Managers can use the configured dropdowns but only Admin changes the standard bin lists.</li>
           </ul>
           <div class="help-tip">Renaming locations is preferable to creating duplicates where the physical location is the same.</div>
         </div>
@@ -646,6 +681,17 @@
     const admin=`
       <h2 class="help-heading">Admin guide</h2>
       <div class="help-grid">
+        <div class="card help-card">
+          <h3>Bin Setup</h3>
+          <ul>
+            <li>Open <strong>Bin Setup</strong> from the Admin navigation.</li>
+            <li>Select a location, then add a numbered range or individual Bin Refs.</li>
+            <li>Existing manual bins can be added to the controlled dropdown in one step.</li>
+            <li>Remove bins or clear a controlled setup without deleting stock history.</li>
+            <li>Item default bins are automatically selected and labelled <strong>(Default)</strong> on Add Stock, Move destination and Receive Delivery.</li>
+          </ul>
+        </div>
+
         <div class="card help-card">
           <h3>Users and roles</h3>
           <ul>
@@ -795,10 +841,10 @@
       const units=balances.reduce((a,b)=>a+num(b.quantity),0);
       const items=new Set(balances.map(b=>b.item_id));
       const controlled=controlledBinSummary(name);
-      return `<div class="card"><div class="muted">Location</div><div class="item-title" style="margin:.2rem 0 .45rem">${esc(name)}</div><div class="stat">${qty(units)}</div><div class="muted">${items.size} item${items.size===1?'':'s'} · total units</div>${controlled?`<div class="badge good" style="margin-top:.55rem">${esc(controlled)}</div>`:''}${canManage()?`<div class="actions"><button class="btn ghost" data-rename-location="${esc(name)}">Rename</button><button class="btn danger" data-delete-location="${esc(name)}">Delete</button></div>`:''}</div>`;
+      return `<div class="card"><div class="muted">Location</div><div class="item-title" style="margin:.2rem 0 .45rem">${esc(name)}</div><div class="stat">${qty(units)}</div><div class="muted">${items.size} item${items.size===1?'':'s'} · total units</div>${controlled?`<div class="badge good" style="margin-top:.55rem">${esc(controlled)}</div>`:'<div class="badge muted" style="margin-top:.55rem">Manual Bin Ref</div>'}${canManage()?`<div class="actions"><button class="btn ghost" data-rename-location="${esc(name)}">Rename</button><button class="btn danger" data-delete-location="${esc(name)}">Delete</button></div>`:''}</div>`;
     }).join('');
-    return `<div class="toolbar">${canManage()?'<button class="btn" id="addLocationBtn">Add location</button>':''}</div>
-      <div class="card"><h2>Locations</h2><p class="muted">Workshop main store and Workbench cupboard now use controlled bin dropdowns. Other locations keep the flexible manual Bin Ref option.</p><div class="meta"><span>Workshop main store: Bin 1–Bin 50</span><span>Workbench cupboard: C1–C15</span></div></div>
+    return `<div class="toolbar">${canManage()?'<button class="btn" id="addLocationBtn">Add location</button>':''}${canAdmin()?'<button class="btn secondary" data-go="binsetup">Bin Setup</button>':''}</div>
+      <div class="card"><h2>Locations</h2><p class="muted">Locations can use a controlled bin dropdown or a flexible manual Bin Ref. Admin can create and change controlled bin lists at any time from <strong>Bin Setup</strong>.</p></div>
       <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Overall stock</div><div class="stat">${qty(overall)}</div></div>${locCards||'<div class="card">No active locations yet.</div>'}</div>`;
   }
 
@@ -977,6 +1023,220 @@
     const rows=list.slice(0,500).map(t=>`<tr><td>${fmtDate(t.occurred_at)}</td><td>${esc(itemName(t.item_id))}</td><td><span class="badge">${esc(t.transaction_type)}</span></td><td>${qty(t.quantity)}</td><td>${esc(userName(t.user_id))}</td><td>${esc(locName(t.from_location_id))}</td><td>${esc(locName(t.to_location_id))}</td><td>${esc(t.reason||t.notes||'—')}</td></tr>`).join('');
     return `<div class="table-wrap"><table><thead><tr><th>Date/time</th><th>Item</th><th>Action</th><th>Qty</th><th>User</th><th>From</th><th>To</th><th>Reason / note</th></tr></thead><tbody>${rows||'<tr><td colspan="8">No transactions yet.</td></tr>'}</tbody></table></div>${list.length>500?'<p class="muted">Showing the newest 500 rows.</p>':''}`;
   }
+
+
+  function anyPosition(locationName, binRef) {
+    const ref=normalizeBin(binRef).toLowerCase();
+    return S.locations.find(l=>l.location_name===locationName && effectiveBinCode(l).trim().toLowerCase()===ref) || null;
+  }
+
+  function binPresetUsed(row) {
+    const stock=S.balances.filter(b=>b.location_id===row.id).reduce((a,b)=>a+num(b.quantity),0);
+    const defaultItems=S.items.filter(i=>i.default_location_id===row.id);
+    return {stock,defaultItems};
+  }
+
+  async function ensurePresetBin(locationName, binRef) {
+    const ref=normalizeBin(binRef);
+    if(!locationName||!ref) throw new Error('Choose a location and enter a bin reference.');
+    const existing=anyPosition(locationName,ref);
+    if(existing){
+      const notes=addPresetMarker(existing.notes);
+      const {error}=await sb.from('stock_locations').update({active:true,notes}).eq('id',existing.id);
+      if(error)throw error;
+      return existing.id;
+    }
+    const {data,error}=await sb.from('stock_locations')
+      .insert({location_name:locationName,area_name:'',bin_code:ref,active:true,notes:BIN_PRESET_MARKER})
+      .select('id').single();
+    if(error)throw error;
+    return data.id;
+  }
+
+  async function removePresetBin(row) {
+    const {stock,defaultItems}=binPresetUsed(row);
+    const notes=stripPresetMarker(row.notes)||null;
+    // Preserve a live/default position. It leaves the controlled preset list,
+    // but remains available as an existing bin until the stock/default is moved.
+    const keepActive=stock>0||defaultItems.length>0;
+    const {error}=await sb.from('stock_locations').update({active:keepActive,notes}).eq('id',row.id);
+    if(error)throw error;
+    return {kept:keepActive,stock,defaults:defaultItems.length};
+  }
+
+  function selectedBinSetupLocation() {
+    const names=locationNames();
+    if(!names.length)return '';
+    if(S.binSetupLocation&&names.includes(S.binSetupLocation))return S.binSetupLocation;
+    S.binSetupLocation=names[0];
+    return S.binSetupLocation;
+  }
+
+  function binSetupHtml() {
+    if(!canAdmin()) return '<div class="notice error">Admin access required.</div>';
+    const names=locationNames();
+    if(!names.length)return `<div class="card"><h2>Bin Setup</h2><p>Add a stock location first.</p><div class="actions"><button class="btn" data-go="locations">Open Locations</button></div></div>`;
+
+    const location=selectedBinSetupLocation();
+    const presets=presetRowsForLocation(location);
+    const actual=positionsForLocation(location).filter(l=>effectiveBinCode(l));
+    const actualRefs=[...new Set(actual.map(effectiveBinCode))].sort(naturalBinSort);
+    const controlled=presets.length>0;
+    const options=names.map(n=>`<option value="${esc(n)}" ${n===location?'selected':''}>${esc(n)}</option>`).join('');
+
+    const presetCards=presets.map(row=>{
+      const ref=effectiveBinCode(row),use=binPresetUsed(row);
+      const detail=[
+        use.stock>0?`${qty(use.stock)} in stock`:'',
+        use.defaultItems.length?`default for ${use.defaultItems.length} item${use.defaultItems.length===1?'':'s'}`:''
+      ].filter(Boolean).join(' · ');
+      return `<div class="bin-chip"><span><strong>${esc(ref)}</strong>${detail?`<small>${esc(detail)}</small>`:''}</span><button class="btn ghost small" data-remove-preset="${row.id}">Remove</button></div>`;
+    }).join('');
+
+    return `
+      <div class="card">
+        <div class="row-between"><div><h2>Admin Bin Setup</h2><p class="muted">Create and manage controlled bin dropdowns yourself. Changes are shared with every user/device.</p></div><button class="btn ghost" data-go="locations">Locations</button></div>
+        ${S.offline||!navigator.onLine?'<div class="notice warn"><strong>Online connection required.</strong> Bin Setup cannot be changed while offline.</div>':''}
+        <label>Location</label><select id="binSetupLocation">${options}</select>
+        <div class="grid cards" style="margin-top:1rem">
+          <div class="card"><div class="muted">Mode</div><div class="stat-text">${controlled?'Controlled dropdown':'Manual Bin Ref'}</div></div>
+          <div class="card"><div class="muted">Configured bins</div><div class="stat">${presets.length}</div></div>
+          <div class="card"><div class="muted">Existing bin positions</div><div class="stat">${actualRefs.length}</div></div>
+        </div>
+      </div>
+
+      <div class="split" style="margin-top:1rem">
+        <div class="card">
+          <h3>Generate a bin range</h3>
+          <p class="muted">Example: prefix <strong>Bin </strong>, start 1, end 50 creates Bin 1 to Bin 50. Prefix <strong>C</strong>, start 1, end 15 creates C1 to C15.</p>
+          <form id="binRangeForm" class="form-grid">
+            <div><label>Prefix</label><input id="binPrefix" value="Bin " placeholder="Bin "></div>
+            <div><label>Start number</label><input id="binStart" type="number" min="0" max="9999" value="1" required></div>
+            <div><label>End number</label><input id="binEnd" type="number" min="0" max="9999" value="50" required></div>
+            <div class="full"><div id="binRangePreview" class="notice compact">Preview: Bin 1 … Bin 50 (50 bins)</div></div>
+            <div class="full actions"><button class="btn" type="submit">Add range</button></div>
+          </form>
+        </div>
+
+        <div class="card">
+          <h3>Add individual bin</h3>
+          <form id="singleBinForm">
+            <label>Bin Ref</label><input id="singleBinRef" placeholder="e.g. Shelf A or C16" required>
+            <div class="actions"><button class="btn" type="submit">Add bin</button></div>
+          </form>
+          ${actualRefs.length?`<hr><h3>Use existing bins</h3><p class="muted">If this location already has manually-created bin positions, add them to the controlled dropdown in one step.</p><button class="btn secondary" id="presetExistingBins">Add all existing bins</button>`:''}
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:1rem">
+        <div class="row-between"><div><h3>Controlled bins for ${esc(location)}</h3><p class="muted">${controlled?'These are the standard choices users see in the bin dropdown.':'No controlled bins yet. Users currently get manual Bin Ref entry.'}</p></div>${presets.length?'<button class="btn danger" id="clearBinSetup">Clear controlled setup</button>':''}</div>
+        <div class="bin-chip-list">${presetCards||'<div class="empty">No controlled bins configured.</div>'}</div>
+        <div class="notice compact" style="margin-top:1rem"><strong>Safe removal:</strong> removing a configured bin never deletes transaction history. If a bin still contains stock or is an item's default, it remains available as an existing bin until that stock/default is changed.</div>
+      </div>`;
+  }
+
+  function bindBinSetup() {
+    if(!canAdmin())return;
+    const disabled=S.offline||!navigator.onLine;
+    const loc=document.getElementById('binSetupLocation');
+    if(loc)loc.onchange=()=>{S.binSetupLocation=loc.value;render();};
+
+    const preview=()=>{
+      const prefix=document.getElementById('binPrefix')?.value??'';
+      const start=Number(document.getElementById('binStart')?.value);
+      const end=Number(document.getElementById('binEnd')?.value);
+      const out=document.getElementById('binRangePreview');
+      if(!out)return;
+      if(!Number.isInteger(start)||!Number.isInteger(end)||end<start||end-start>499){
+        out.textContent='Choose a valid range of up to 500 bins.';
+        return;
+      }
+      out.textContent=`Preview: ${prefix}${start} … ${prefix}${end} (${end-start+1} bins)`;
+    };
+    ['binPrefix','binStart','binEnd'].forEach(id=>document.getElementById(id)?.addEventListener('input',preview));
+    preview();
+
+    const rangeForm=document.getElementById('binRangeForm');
+    if(rangeForm)rangeForm.onsubmit=async e=>{
+      e.preventDefault();
+      if(disabled){setNotice('Reconnect to the internet before changing Bin Setup.','error');render();return;}
+      const location=selectedBinSetupLocation();
+      const prefix=document.getElementById('binPrefix').value;
+      const start=Number(document.getElementById('binStart').value);
+      const end=Number(document.getElementById('binEnd').value);
+      if(!Number.isInteger(start)||!Number.isInteger(end)||end<start||end-start>499){
+        setNotice('Choose a valid bin range of up to 500 bins.','error');render();return;
+      }
+      try{
+        for(let n=start;n<=end;n++)await ensurePresetBin(location,`${prefix}${n}`);
+        await loadData({transactions:false});
+        S.binSetupLocation=location;
+        setNotice(`${end-start+1} bin${end-start===0?'':'s'} added to ${location}.`);
+        render();
+      }catch(err){setNotice(parseError(err),'error');render();}
+    };
+
+    const singleForm=document.getElementById('singleBinForm');
+    if(singleForm)singleForm.onsubmit=async e=>{
+      e.preventDefault();
+      if(disabled){setNotice('Reconnect to the internet before changing Bin Setup.','error');render();return;}
+      const location=selectedBinSetupLocation();
+      const ref=normalizeBin(document.getElementById('singleBinRef').value);
+      if(!ref){setNotice('Enter a Bin Ref.','error');render();return;}
+      try{
+        await ensurePresetBin(location,ref);
+        await loadData({transactions:false});
+        S.binSetupLocation=location;
+        setNotice(`${ref} added to the controlled bin list.`);
+        render();
+      }catch(err){setNotice(parseError(err),'error');render();}
+    };
+
+    const existing=document.getElementById('presetExistingBins');
+    if(existing)existing.onclick=async()=>{
+      if(disabled){setNotice('Reconnect to the internet before changing Bin Setup.','error');render();return;}
+      const location=selectedBinSetupLocation();
+      const refs=[...new Set(positionsForLocation(location).map(effectiveBinCode).filter(Boolean))].sort(naturalBinSort);
+      try{
+        for(const ref of refs)await ensurePresetBin(location,ref);
+        await loadData({transactions:false});
+        S.binSetupLocation=location;
+        setNotice(`${refs.length} existing bin${refs.length===1?'':'s'} added to the controlled list.`);
+        render();
+      }catch(err){setNotice(parseError(err),'error');render();}
+    };
+
+    document.querySelectorAll('[data-remove-preset]').forEach(btn=>btn.onclick=async()=>{
+      if(disabled){setNotice('Reconnect to the internet before changing Bin Setup.','error');render();return;}
+      const location=selectedBinSetupLocation();
+      const row=byId(S.locations,btn.dataset.removePreset);
+      if(!row)return;
+      try{
+        const result=await removePresetBin(row);
+        await loadData({transactions:false});
+        S.binSetupLocation=location;
+        setNotice(result.kept?`${effectiveBinCode(row)} removed from the controlled list. It remains available because it still has stock or is used as a default.`:`${effectiveBinCode(row)} removed from the controlled list.`);
+        render();
+      }catch(err){setNotice(parseError(err),'error');render();}
+    });
+
+    const clear=document.getElementById('clearBinSetup');
+    if(clear)clear.onclick=async()=>{
+      if(disabled){setNotice('Reconnect to the internet before changing Bin Setup.','error');render();return;}
+      const location=selectedBinSetupLocation();
+      if(!confirm(`Clear the controlled bin setup for ${location}? Stock and history will be preserved.`))return;
+      try{
+        const rows=presetRowsForLocation(location);
+        let kept=0;
+        for(const row of rows){const result=await removePresetBin(row);if(result.kept)kept++;}
+        await loadData({transactions:false});
+        S.binSetupLocation=location;
+        setNotice(kept?`Controlled setup cleared. ${kept} bin${kept===1?'':'s'} remain available because they contain stock or are item defaults.`:'Controlled setup cleared. This location now uses manual Bin Ref entry.');
+        render();
+      }catch(err){setNotice(parseError(err),'error');render();}
+    };
+  }
+
 
   function usersHtml() {
     if(!canAdmin()) return '<div class="notice error">Admin access required.</div>';
@@ -1343,6 +1603,7 @@ Keep this file somewhere secure.
     if(S.page==='stocktake') bindStocktake();
     if(S.page==='reports') bindReports();
     if(S.page==='users') bindUsers();
+    if(S.page==='binsetup') bindBinSetup();
     if(S.page==='legacy') bindLegacyReview();
     if(S.page==='backup') bindBackup();
     hydrateItemThumbnails(document);
@@ -1857,7 +2118,7 @@ Keep this file somewhere secure.
         <div class="notice">If fewer than ${qty(remaining)} arrive, type the amount actually received. The balance will stay visible as <strong>Back order / Still on order</strong>.</div>
         <div class="actions"><button class="btn good" type="submit">Confirm receipt</button></div>
       </form>`);
-    bindBinRefSuggestions('receiveLocation','receiveBin','receiveBinList',activeLocations());
+    bindBinRefSuggestions('receiveLocation','receiveBin','receiveBinList',activeLocations(),null,false,item?itemDefaultPosition(item):null);
     if(item) applyItemDefaultDestination(item,'receiveLocation','receiveBin');
     document.getElementById('receiveOrderForm').onsubmit=async e=>{
       e.preventDefault();
@@ -2111,7 +2372,7 @@ Keep this file somewhere secure.
     return [...new Set(positionsForLocation(name,rows).map(effectiveBinCode).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
   }
 
-  function bindBinRefSuggestions(locationSelectId, inputId, datalistId, rows=activeLocations(), itemId=null, positiveOnly=false) {
+  function bindBinRefSuggestions(locationSelectId, inputId, datalistId, rows=activeLocations(), itemId=null, positiveOnly=false, defaultPosition=null) {
     const locSel=document.getElementById(locationSelectId), input=document.getElementById(inputId), list=document.getElementById(datalistId);
     if(!locSel||!input||!list)return;
 
@@ -2124,6 +2385,11 @@ Keep this file somewhere secure.
       input.parentNode.insertBefore(preset,input);
     }
 
+    const defaultRefForCurrent=()=>{
+      if(!defaultPosition || !defaultPosition.active || defaultPosition.location_name!==locSel.value) return '';
+      return normalizeBin(effectiveBinCode(defaultPosition));
+    };
+
     const syncPresetFromInput=()=>{
       if(preset.hidden)return;
       const v=normalizeBin(input.value);
@@ -2132,8 +2398,11 @@ Keep this file somewhere secure.
         preset.value=v;
         input.hidden=true;
       } else if(v){
-        preset.value='__OTHER__';
-        input.hidden=false;
+        const other=[...preset.options].some(o=>o.value==='__OTHER__');
+        if(other){
+          preset.value='__OTHER__';
+          input.hidden=false;
+        }
       }
     };
 
@@ -2146,6 +2415,7 @@ Keep this file somewhere secure.
 
       const actualRefs=[...new Set(candidates.map(effectiveBinCode).filter(Boolean))].sort(naturalBinSort);
       const controlled=controlledBinPresetRefs(locSel.value);
+      const defaultRef=defaultRefForCurrent();
 
       if(controlled){
         let refs;
@@ -2153,14 +2423,15 @@ Keep this file somewhere secure.
           // For Use / Move source, only show bins that actually contain stock.
           refs=actualRefs;
         } else {
-          // For destination/default selection show all preset bins, plus any older non-standard bin refs already in use.
-          refs=[...new Set([...controlled,...actualRefs])].sort(naturalBinSort);
+          // Destination/default selection shows configured bins plus any older
+          // non-standard bin already in use, and always includes the item's default.
+          refs=[...new Set([...controlled,...actualRefs,...(defaultRef?[defaultRef]:[])])].sort(naturalBinSort);
         }
 
         const current=normalizeBin(input.value);
         preset.innerHTML=
           `<option value="">No bin / Unallocated</option>`+
-          refs.map(r=>`<option value="${esc(r)}">${esc(r)}</option>`).join('')+
+          refs.map(r=>`<option value="${esc(r)}">${esc(r)}${defaultRef&&r===defaultRef?' (Default)':''}</option>`).join('')+
           (!positiveOnly?'<option value="__OTHER__">Other / manual entry</option>':'');
 
         preset.hidden=false;
@@ -2172,6 +2443,10 @@ Keep this file somewhere secure.
         } else if(current && !positiveOnly){
           preset.value='__OTHER__';
           input.hidden=false;
+        } else if(defaultRef && !positiveOnly && refs.includes(defaultRef)){
+          preset.value=defaultRef;
+          input.value=defaultRef;
+          input.hidden=true;
         } else {
           preset.value='';
           input.value='';
@@ -2194,9 +2469,12 @@ Keep this file somewhere secure.
       } else {
         preset.hidden=true;
         input.hidden=false;
-        const refs=actualRefs;
-        list.innerHTML=refs.map(r=>`<option value="${esc(r)}"></option>`).join('');
-        if(refs.length===1 && !input.value.trim()) input.value=refs[0];
+        const refs=[...new Set([...actualRefs,...(defaultRef?[defaultRef]:[])])].sort(naturalBinSort);
+        list.innerHTML=refs.map(r=>`<option value="${esc(r)}"${defaultRef&&r===defaultRef?' label="Default"':''}></option>`).join('');
+        if(!input.value.trim()){
+          if(defaultRef) input.value=defaultRef;
+          else if(refs.length===1) input.value=refs[0];
+        }
       }
     };
 
@@ -2265,7 +2543,7 @@ Keep this file somewhere secure.
     const sourceRows=activeLocations().filter(l=>positiveIds.has(l.id));
     if(type==='USE'||type==='MOVE') bindBinRefSuggestions('fromLocationName','fromBinRef','fromBinList',sourceRows,item.id,true);
     if(type==='ADD'||type==='MOVE') {
-      bindBinRefSuggestions('toLocationName','toBinRef','toBinList',activeLocations());
+      bindBinRefSuggestions('toLocationName','toBinRef','toBinList',activeLocations(),null,false,itemDefaultPosition(item));
       applyItemDefaultDestination(item,'toLocationName','toBinRef');
     }
     if(type==='ADJUST') bindBinRefSuggestions('fromLocationName','fromBinRef','fromBinList',activeLocations(),item.id,false);
@@ -2370,7 +2648,7 @@ Keep this file somewhere secure.
   }
 
   function openAddLocation() {
-    showModal(`<header><h2>Add location</h2><button class="close" data-close>×</button></header><form id="locForm"><p class="muted">Add the main place where stock is kept. Workshop main store and Workbench cupboard use controlled bin lists; other locations allow manual Bin Ref entry.</p><label>Location name</label><input id="locName" placeholder="Workshop Store" required><label>Notes (optional)</label><textarea id="locNotes"></textarea><div class="actions"><button class="btn" type="submit">Save location</button></div></form>`);
+    showModal(`<header><h2>Add location</h2><button class="close" data-close>×</button></header><form id="locForm"><p class="muted">Add the main place where stock is kept. New locations start with manual Bin Ref entry. An Admin can create a controlled bin list afterwards in Bin Setup.</p><label>Location name</label><input id="locName" placeholder="Workshop Store" required><label>Notes (optional)</label><textarea id="locNotes"></textarea><div class="actions"><button class="btn" type="submit">Save location</button></div></form>`);
     document.getElementById('locForm').onsubmit=async e=>{
       e.preventDefault();
       const name=document.getElementById('locName').value.trim();
@@ -2503,13 +2781,13 @@ Keep this file somewhere secure.
       }catch(err){photoInput.value='';if(photoStatus)photoStatus.textContent='Photo could not be edited. Choose or take another photo.';}
     };
     const gen=document.getElementById('generateQr'); if(gen) gen.onclick=()=>{const v=`ITM-${Date.now().toString(36).toUpperCase().slice(-7)}`;qr.value=v;if(!code.value.trim())code.value=v;};
-    bindBinRefSuggestions('defaultLocationName','defaultBinRef','defaultBinList',activeLocations());
+    bindBinRefSuggestions('defaultLocationName','defaultBinRef','defaultBinList',activeLocations(),null,false,existing?itemDefaultPosition(existing):null);
     if(existing){
       const p=itemDefaultPosition(existing);
       if(p){
         defaultLocation.value=p.location_name;
         defaultLocation.dispatchEvent(new Event('change',{bubbles:true}));
-        setTimeout(()=>{defaultBin.value=effectiveBinCode(p)||'';},0);
+        setTimeout(()=>{defaultBin.value=effectiveBinCode(p)||'';defaultBin.dispatchEvent(new Event('input',{bubbles:true}));defaultBin.dispatchEvent(new Event('change',{bubbles:true}));},0);
       }
     }
     if(!existing) {

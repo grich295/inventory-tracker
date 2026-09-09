@@ -77,3 +77,12 @@
 .help-card li{margin:.4rem 0;line-height:1.45}
 .help-tip{padding:.7rem .8rem;border-left:4px solid var(--accent,#4f7da3);background:rgba(79,125,163,.08);border-radius:.5rem;margin-top:.75rem}
 .help-warning{padding:.7rem .8rem;border-left:4px solid #b7791f;background:rgba(183,121,31,.10);border-radius:.5rem;margin-top:.75rem}
+
+
+/* v8.0 Admin Bin Setup */
+.bin-chip-list{display:grid;gap:.55rem;margin-top:.8rem}
+.bin-chip{display:flex;align-items:center;justify-content:space-between;gap:.75rem;padding:.65rem .75rem;border:1px solid var(--border,#d1d5db);border-radius:.65rem;background:var(--card,#fff)}
+.bin-chip span{display:flex;flex-direction:column;gap:.15rem}
+.bin-chip small{font-size:.78rem;color:var(--muted,#6b7280)}
+.stat-text{font-size:1.15rem;font-weight:800;margin-top:.35rem}
+@media (min-width:700px){.bin-chip-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
