@@ -1,5 +1,5 @@
-const SHELL_CACHE='inventory-shell-v780-controlled-bins';
-const RUNTIME_CACHE='inventory-runtime-v780-controlled-bins';
+const SHELL_CACHE='inventory-shell-v790-help';
+const RUNTIME_CACHE='inventory-runtime-v790-help';
 const SHELL=['./','./index.html','./styles.css','./app.js','./manifest.webmanifest','./icon.svg','./config.js'];
 const RUNTIME_ASSETS=[
   'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2',

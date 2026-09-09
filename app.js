@@ -466,11 +466,11 @@
 
   function shellHtml(content) {
     const nav = [
-      ['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['stocktake','Stocktake'],['reports','Reports'],['history','History']
+      ['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['stocktake','Stocktake'],['reports','Reports'],['history','History'],['help','Help']
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.8</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v7.9</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -491,10 +491,202 @@
     if (S.page==='stocktake') return stocktakeHtml();
     if (S.page==='reports') return reportsHtml();
     if (S.page==='history') return historyHtml();
+    if (S.page==='help') return helpHtml();
     if (S.page==='users') return usersHtml();
     if (S.page==='legacy') return legacyReviewHtml();
     if (S.page==='backup') return backupHtml();
     return dashboardHtml();
+  }
+
+
+  function helpHtml() {
+    const role=String(S.profile?.role||'staff');
+    const roleName=esc(roleLabel(role));
+
+    const common=`
+      <div class="card help-role-banner">
+        <h2>Help</h2>
+        <p><strong>Your role: ${roleName}</strong></p>
+        <p class="muted">Use your own login so stock actions and audit history are recorded against the correct person.</p>
+      </div>
+
+      <h2 class="help-heading">Everyday use</h2>
+      <div class="help-grid">
+        <div class="card help-card">
+          <h3>Find an item</h3>
+          <ul>
+            <li>Use <strong>Scan</strong> to scan the QR label on the bin/item.</li>
+            <li>Or open <strong>Items</strong> and search by item name, item code, category, location or Bin Ref.</li>
+            <li>Favourites, recent items and frequently used items make repeat jobs quicker.</li>
+          </ul>
+        </div>
+
+        <div class="card help-card">
+          <h3>Add / Use / Move / Adjust</h3>
+          <ul>
+            <li><strong>Add:</strong> stock has physically arrived or been added.</li>
+            <li><strong>Use:</strong> stock has been consumed/used. This counts towards usage reports and Suggested Orders.</li>
+            <li><strong>Move:</strong> transfer stock between locations/bins. Overall stock does not change and it is not usage.</li>
+            <li><strong>Adjust:</strong> correct a stock-count error. Adjustments do not count as usage.</li>
+          </ul>
+          <div class="help-warning"><strong>Important:</strong> if stock is missing because it was actually used but somebody forgot to record it, record it as <strong>Use</strong>, not Adjust. This keeps usage and Suggested Orders accurate.</div>
+        </div>
+
+        <div class="card help-card">
+          <h3>Locations and bins</h3>
+          <ul>
+            <li>Select the main <strong>Location</strong>, then the Bin Ref.</li>
+            <li><strong>Workshop main store:</strong> controlled dropdown Bin 1–Bin 50.</li>
+            <li><strong>Workbench cupboard:</strong> controlled dropdown C1–C15.</li>
+            <li>Other locations can still use a manual Bin Ref where needed.</li>
+            <li><strong>No bin / Unallocated</strong> is available where appropriate.</li>
+          </ul>
+        </div>
+
+        <div class="card help-card">
+          <h3>Default storage</h3>
+          <ul>
+            <li>An item can have a Default Location and Bin Ref.</li>
+            <li>Add Stock, Move destination and Receive Delivery use that default automatically.</li>
+            <li>You can override the destination for an individual transaction.</li>
+            <li>Changing an item's default does not move existing stock.</li>
+          </ul>
+        </div>
+
+        <div class="card help-card">
+          <h3>Offline mode</h3>
+          <ul>
+            <li>After a successful online login/load, saved stock data can be used when the connection drops.</li>
+            <li>Scan/search and Add, Use, Move and Adjust can be queued offline.</li>
+            <li>Queued actions sync automatically when the connection returns.</li>
+            <li>Check the offline banner for pending actions or sync errors.</li>
+          </ul>
+          <div class="help-tip">Stock shown offline may be older than the live database until the device reconnects and syncs.</div>
+        </div>
+
+        <div class="card help-card">
+          <h3>Stocktake</h3>
+          <ul>
+            <li>Open <strong>Stocktake</strong> when a task is assigned to you.</li>
+            <li>Count the physical stock in each listed Location/Bin.</li>
+            <li>Enter the actual count, not the expected count.</li>
+            <li>Completing the task creates audited stock corrections for differences.</li>
+          </ul>
+        </div>
+      </div>
+
+      <h2 class="help-heading">User guide</h2>
+      <div class="help-grid">
+        <div class="card help-card">
+          <h3>What a User can do</h3>
+          <ul>
+            <li>Scan and search stock.</li>
+            <li>View quantities and stock positions.</li>
+            <li>Add, Use, Move and Adjust stock.</li>
+            <li>Receive deliveries against open orders.</li>
+            <li>Complete assigned stocktakes.</li>
+            <li>View Orders, Reports and History.</li>
+          </ul>
+        </div>
+
+        <div class="card help-card">
+          <h3>Receiving an order</h3>
+          <ul>
+            <li>Open <strong>Orders → On Order</strong>.</li>
+            <li>Open the relevant order and receive the quantity actually delivered.</li>
+            <li>Choose/check the destination location and bin.</li>
+            <li>Part deliveries remain open for the outstanding balance.</li>
+          </ul>
+        </div>
+      </div>`;
+
+    const manager=`
+      <h2 class="help-heading">Manager guide</h2>
+      <div class="help-grid">
+        <div class="card help-card">
+          <h3>Items</h3>
+          <ul>
+            <li>Create and edit inventory items.</li>
+            <li>Set category, reorder level, default storage and suppliers.</li>
+            <li>Add/change item photos. Photos are cropped then resized/compressed before storage.</li>
+            <li>Archive items rather than losing useful history.</li>
+          </ul>
+        </div>
+
+        <div class="card help-card">
+          <h3>Locations</h3>
+          <ul>
+            <li>Add, rename and remove stock locations where permitted.</li>
+            <li>Controlled bins are currently Workshop main store Bin 1–50 and Workbench cupboard C1–C15.</li>
+            <li>Ask for an app update if more controlled/default bins are required.</li>
+          </ul>
+          <div class="help-tip">Renaming locations is preferable to creating duplicates where the physical location is the same.</div>
+        </div>
+
+        <div class="card help-card">
+          <h3>Orders and suppliers</h3>
+          <ul>
+            <li>Suggested Orders use actual <strong>Use</strong> transactions from the previous 3 completed months.</li>
+            <li>Current stock and stock already On Order are subtracted.</li>
+            <li>Managers/Admins can create, edit and close purchase orders.</li>
+            <li>Use supplier details against each item so ordering is quicker and consistent.</li>
+          </ul>
+        </div>
+
+        <div class="card help-card">
+          <h3>Reports and audit history</h3>
+          <ul>
+            <li><strong>Reports</strong> shows usage and activity by item, user, location, bin and date range.</li>
+            <li><strong>History</strong> records Add, Use, Move and Adjust actions with user/location details.</li>
+            <li>Use reports to check unusual usage and help plan orders.</li>
+          </ul>
+        </div>
+      </div>`;
+
+    const admin=`
+      <h2 class="help-heading">Admin guide</h2>
+      <div class="help-grid">
+        <div class="card help-card">
+          <h3>Users and roles</h3>
+          <ul>
+            <li>Open <strong>Users</strong> to invite people and set User, Manager or Admin roles.</li>
+            <li>Change a registered email without losing the user's password, role or stock history.</li>
+            <li>Disable users rather than deleting them so audit history is retained.</li>
+            <li>Re-enable an account if the person needs access again later.</li>
+          </ul>
+        </div>
+
+        <div class="card help-card">
+          <h3>Backups</h3>
+          <ul>
+            <li>Open <strong>Backup → Back up now</strong>.</li>
+            <li>The ZIP contains inventory database records and can include item photos.</li>
+            <li>It does not contain passwords or Supabase secrets.</li>
+            <li>A weekly backup is a sensible default and a fresh backup should be taken before major database/app changes.</li>
+          </ul>
+        </div>
+
+        <div class="card help-card">
+          <h3>Stocktake administration</h3>
+          <ul>
+            <li>Admins can enable/disable automatic stocktakes.</li>
+            <li>Set the interval, number of items per task and due period.</li>
+            <li>Create the next stocktake immediately when needed.</li>
+            <li>Reassign open stocktake tasks to another active user.</li>
+          </ul>
+        </div>
+
+        <div class="card help-card">
+          <h3>Legacy review</h3>
+          <ul>
+            <li>Use <strong>Legacy</strong> to review imported historical transactions.</li>
+            <li>Classify/exclude old records where needed so historical imports do not distort real usage and Suggested Orders.</li>
+            <li>Do not change legacy classifications simply to make reports look better; use the best available evidence.</li>
+          </ul>
+        </div>
+      </div>`;
+
+    return common + (canManage()?manager:'') + (canAdmin()?admin:'');
   }
 
   function dashboardHtml() {

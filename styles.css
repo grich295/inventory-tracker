@@ -66,3 +66,14 @@
 /* v7.8 controlled bin dropdowns */
 .controlled-bin-select{width:100%;margin-bottom:.45rem}
 .controlled-bin-select[hidden]{display:none!important}
+
+
+/* v7.9 role-aware Help */
+.help-role-banner{margin-bottom:1rem}
+.help-heading{margin:1.4rem 0 .7rem}
+.help-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem}
+.help-card h3{margin-top:0}
+.help-card ul,.help-card ol{padding-left:1.25rem;margin:.55rem 0}
+.help-card li{margin:.4rem 0;line-height:1.45}
+.help-tip{padding:.7rem .8rem;border-left:4px solid var(--accent,#4f7da3);background:rgba(79,125,163,.08);border-radius:.5rem;margin-top:.75rem}
+.help-warning{padding:.7rem .8rem;border-left:4px solid #b7791f;background:rgba(183,121,31,.10);border-radius:.5rem;margin-top:.75rem}
