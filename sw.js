@@ -1,5 +1,5 @@
-const SHELL_CACHE='inventory-shell-v810-report-graph-selector';
-const RUNTIME_CACHE='inventory-runtime-v810-report-graph-selector';
+const SHELL_CACHE='inventory-shell-v820-ui-refresh';
+const RUNTIME_CACHE='inventory-runtime-v820-ui-refresh';
 const SHELL=['./','./index.html','./styles.css','./app.js','./manifest.webmanifest','./icon.svg','./config.js'];
 const RUNTIME_ASSETS=[
   'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2',
