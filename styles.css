@@ -86,3 +86,15 @@
 .bin-chip small{font-size:.78rem;color:var(--muted,#6b7280)}
 .stat-text{font-size:1.15rem;font-weight:800;margin-top:.35rem}
 @media (min-width:700px){.bin-chip-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+
+/* v8.1 report graph item selector */
+.graph-item-picker{margin:.15rem 0 .35rem}
+.graph-item-picker label{margin-top:0}
+.graph-help{margin:.45rem 0 .8rem}
+.usage-item-table .graph-item-row{cursor:pointer}
+.usage-item-table .graph-item-row:hover td{background:#f8fafc}
+.usage-item-table .graph-item-row.selected td{background:#e0f2fe;font-weight:750}
+.usage-item-table .graph-item-row.selected td:first-child{box-shadow:inset 4px 0 0 #0284c7}
+.usage-item-table .graph-item-row:focus{outline:2px solid #0284c7;outline-offset:-2px}
+@media(max-width:720px){.graph-item-picker select{font-size:1rem;min-height:46px}.usage-item-table .graph-item-row td{padding:.85rem .7rem}}

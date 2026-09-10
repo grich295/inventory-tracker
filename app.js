@@ -72,7 +72,7 @@
     offlineSnapshotAt: null,
     syncingOffline: false,
     offlineSyncError: null,
-    report: { period: 'month', item: '', user: '', location: '', bin: '', from: '', to: '' }
+    report: { period: 'month', item: '', graphItem: '', user: '', location: '', bin: '', from: '', to: '' }
   };
 
   const esc = v => String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
@@ -504,7 +504,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['binsetup','Bin Setup'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.0</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.1</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -988,6 +988,8 @@
     const summary=[...totals.entries()].map(([id,q])=>({id,q,name:itemName(id)})).sort((a,b)=>b.q-a.q);
     const totalUsage=list.reduce((a,t)=>a+num(t.quantity),0);
     const reportName=S.report.period==='month'?'This month':S.report.period==='all'?'All time':'Custom dates';
+    const activeItems=S.items.filter(i=>i.active).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));
+    const graphSelected=S.report.graphItem || S.report.item || summary[0]?.id || '';
 
     const userActivity=new Map();
     for(const t of activity){
@@ -1010,7 +1012,7 @@
       <div class="actions"><button class="btn secondary" id="exportReport">Usage CSV</button><button class="btn" id="exportReportExcel">Usage Excel</button><button class="btn ghost" id="exportActivity">Activity CSV</button><button class="btn ghost" id="exportActivityExcel">Activity Excel</button></div>
     </div>
     <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">${esc(reportName)} usage</div><div class="stat">${qty(totalUsage)}</div></div><div class="card"><div class="muted">Usage transactions</div><div class="stat">${list.length}</div></div><div class="card"><div class="muted">Different items used</div><div class="stat">${summary.length}</div></div><div class="card"><div class="muted">All stock actions</div><div class="stat">${activity.length}</div></div></div>
-    <div class="split" style="margin-top:1rem"><div class="card"><h3>Usage by item</h3><div class="table-wrap"><table><thead><tr><th>Item</th><th>Used</th></tr></thead><tbody>${summary.map(x=>`<tr data-item="${x.id}"><td>${esc(x.name)}</td><td>${qty(x.q)}</td></tr>`).join('')||'<tr><td colspan="2">No usage in this period.</td></tr>'}</tbody></table></div></div><div class="card"><h3>12-month usage trend</h3><p class="muted">Choose an item in the filter to analyse whether usage is increasing or decreasing.</p><canvas id="trendChart" height="250"></canvas></div></div>
+    <div class="split" style="margin-top:1rem"><div class="card"><h3>Usage by item</h3><p class="muted">Tap an item below to show it on the 12-month graph.</p><div class="table-wrap usage-item-table"><table><thead><tr><th>Item</th><th>Used</th></tr></thead><tbody>${summary.map(x=>`<tr class="graph-item-row ${graphSelected===x.id?'selected':''}" data-graph-item="${x.id}" tabindex="0" role="button" aria-label="Show ${esc(x.name)} on 12-month usage graph"><td>${esc(x.name)}</td><td>${qty(x.q)}</td></tr>`).join('')||'<tr><td colspan="2">No usage in this period.</td></tr>'}</tbody></table></div></div><div class="card"><h3>12-month usage trend</h3><div class="graph-item-picker"><label for="graphItem">Graph item</label><select id="graphItem"><option value="">Select an item…</option>${activeItems.map(i=>`<option value="${i.id}" ${graphSelected===i.id?'selected':''}>${esc(i.name)}</option>`).join('')}</select></div><p class="muted graph-help">Choose an item here, or tap an item in the usage table.</p><canvas id="trendChart" height="250"></canvas></div></div>
     <div class="card" style="margin-top:1rem"><h3>Who added, used, moved or adjusted stock</h3><div class="table-wrap"><table><thead><tr><th>User</th><th>Added</th><th>Used</th><th>Moved</th><th>Adjusted</th><th>Actions</th></tr></thead><tbody>${activityRows||'<tr><td colspan="6">No activity in this period.</td></tr>'}</tbody></table></div></div>
     <div class="card" style="margin-top:1rem"><h3>Detailed usage</h3>${transactionTable(list)}</div>`;
   }
@@ -2190,8 +2192,21 @@ Keep this file somewhere secure.
   }
 
   function bindReports() {
-    const ids=[['reportPeriod','period'],['reportItem','item'],['reportUser','user'],['reportFrom','from'],['reportTo','to']];
+    const ids=[['reportPeriod','period'],['reportUser','user'],['reportFrom','from'],['reportTo','to']];
     ids.forEach(([id,key])=>{const el=document.getElementById(id); if(el) el.onchange=()=>{S.report[key]=el.value; render();};});
+    const reportItem=document.getElementById('reportItem');
+    if(reportItem) reportItem.onchange=()=>{
+      S.report.item=reportItem.value;
+      if(reportItem.value) S.report.graphItem=reportItem.value;
+      render();
+    };
+    const graphItem=document.getElementById('graphItem');
+    if(graphItem) graphItem.onchange=()=>{S.report.graphItem=graphItem.value;render();};
+    document.querySelectorAll('[data-graph-item]').forEach(row=>{
+      const selectRow=()=>{S.report.graphItem=row.dataset.graphItem||'';render();};
+      row.onclick=selectRow;
+      row.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();selectRow();}};
+    });
     const rl=document.getElementById('reportLocation'); if(rl) rl.onchange=()=>{S.report.location=rl.value;S.report.bin='';render();};
     const rb=document.getElementById('reportBin'); if(rb){rb.onchange=()=>{S.report.bin=rb.value.trim();render();};rb.onkeydown=e=>{if(e.key==='Enter'){S.report.bin=rb.value.trim();render();}};}
     document.getElementById('exportReport').onclick=exportUsageCSV;
@@ -2203,7 +2218,7 @@ Keep this file somewhere secure.
 
   function drawTrendChart() {
     const canvas=document.getElementById('trendChart'); if(!canvas || !window.Chart) return;
-    const selected=S.report.item || (reportTransactions()[0]?.item_id || '');
+    const selected=S.report.graphItem || S.report.item || (reportTransactions()[0]?.item_id || '');
     if(!selected) return;
     const now=new Date(); const labels=[], vals=[];
     for(let k=11;k>=0;k--) {
