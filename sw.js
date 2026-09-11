@@ -1,5 +1,5 @@
-const SHELL_CACHE='inventory-shell-v831-category-suggestions';
-const RUNTIME_CACHE='inventory-runtime-v831-category-suggestions';
+const SHELL_CACHE='inventory-shell-v832-category-suggestions';
+const RUNTIME_CACHE='inventory-runtime-v832-category-suggestions';
 const SHELL=['./','./index.html','./styles.css','./app.js','./manifest.webmanifest','./icon.svg','./config.js'];
 const RUNTIME_ASSETS=[
   'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2',

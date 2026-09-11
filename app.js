@@ -506,7 +506,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['binsetup','Bin Setup'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.3.1</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.3.2</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -818,7 +818,7 @@
   }
 
 
-  // v8.3.1 Category Suggestions
+  // v8.3.2 Category Suggestions
   // Suggestions are calculated from the current inventory, so existing items are
   // automatically included every time data syncs. Nothing is changed until a
   // manager/admin approves the suggested category.
@@ -866,14 +866,16 @@
 
   function getCategoryModel() {
     if(S.categoryModel)return S.categoryModel;
-    const categories=categoryNames();
+    // Legacy placeholders such as "Imported" mean "not categorised yet".
+    // They must never be learned from and must never become a suggestion target.
+    const categories=categoryNames().filter(c=>!categoryIsPlaceholder(c));
     const tokenStats=new Map(),bigramStats=new Map();
     const add=(map,key,category)=>{
       if(!key)return;
       if(!map.has(key))map.set(key,new Map());
       const row=map.get(key);row.set(category,(row.get(category)||0)+1);
     };
-    S.items.filter(i=>i.active&&String(i.category||'').trim()).forEach(i=>{
+    S.items.filter(i=>i.active&&!categoryIsPlaceholder(i.category)).forEach(i=>{
       const category=String(i.category||'').trim();
       const tokens=[...new Set(categoryTokenise(`${i.name||''} ${i.item_code||''}`))];
       const bigrams=[...new Set(categoryBigrams(categoryTokenise(i.name||'')))];
@@ -1641,7 +1643,7 @@
       backup_format:'inventory-tracker-backup-v1',
       created_at:new Date().toISOString(),
       created_by:{id:S.profile?.id||null,name:S.profile?.display_name||null,role:S.profile?.role||null},
-      app_version:'8.3',
+      app_version:'8.3.2',
       project_url:cfg.supabaseUrl,
       tables:{},
       uploaded_files:{requested:!!includeFiles,downloaded:0,failed:[]}
@@ -3031,6 +3033,8 @@ Keep this file somewhere secure.
   function openCategoryReview() {
     if(!canManage())return;
     const rows=categoryReviewRows();
+    const activeItems=S.items.filter(i=>i.active);
+    const legacyItems=activeItems.filter(i=>categoryIsPlaceholder(i.category));
     const uncategorised=rows.filter(r=>r.kind==='uncategorised');
     const mismatches=rows.filter(r=>r.kind==='mismatch');
     const highUncat=uncategorised.filter(r=>r.suggestion.confidence==='High');
@@ -3044,7 +3048,7 @@ Keep this file somewhere secure.
       <div class="category-review-actions"><button class="btn small" data-approve-category="${r.item.id}" data-category="${esc(r.suggestion.category)}">${r.kind==='mismatch'?'Approve change':'Approve'}</button><button class="btn ghost small" data-edit-category-item="${r.item.id}">Edit</button></div>
     </div>`).join('');
     showModal(`<header><div><h2>Category Review</h2><div class="muted">Automatic suggestions for stock already in Inventory.</div></div><button class="close" data-close>×</button></header>
-      <div class="notice compact"><strong>Live auto-sync:</strong> every active item already stored in Supabase is rescanned whenever inventory data refreshes. Existing categories are never overwritten automatically. Approved categories become examples for future suggestions.</div>
+      <div class="notice compact"><strong>Live auto-sync:</strong> ${activeItems.length} active items scanned · ${legacyItems.length} legacy/uncategorised. Legacy category <strong>Imported</strong> is ignored as learning data and can never be suggested. Existing genuine categories are never overwritten automatically.</div>
       <div class="grid cards category-review-stats"><div class="card"><div class="muted">Needs review</div><div class="stat">${rows.length}</div></div><div class="card"><div class="muted">Uncategorised</div><div class="stat">${uncategorised.length}</div></div><div class="card"><div class="muted">Possible mismatch</div><div class="stat">${mismatches.length}</div></div></div>
       <div class="actions category-review-tools">${highUncat.length?`<button class="btn good" id="approveHighCategories">Approve ${highUncat.length} high-confidence uncategorised</button>`:''}<button class="btn ghost" id="refreshCategoryReview">Refresh scan</button></div>
       <div class="category-review-list">${body||'<div class="notice success"><strong>All clear.</strong> No category suggestions currently need approval.</div>'}</div>`);
