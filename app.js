@@ -549,7 +549,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['binsetup','Bin Setup'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.3.4</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.3.5</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -802,8 +802,8 @@
       <div class="grid cards">
         <div class="card"><div class="muted">Active items</div><div class="stat">${active.length}</div></div>
         <div class="card"><div class="muted">Units in stock</div><div class="stat">${qty(totalUnits)}</div></div>
-        <div class="card"><div class="muted">Low-stock items</div><div class="stat">${low.length}</div></div>
-        <div class="card" data-go="orders"><div class="muted">Units on order</div><div class="stat">${qty(onOrderUnits)}</div></div>
+        <div class="card" data-go="orders" data-order-tab-go="suggested" title="Open Suggested Orders"><div class="muted">Low-stock items</div><div class="stat">${low.length}</div></div>
+        <div class="card" data-go="orders" data-order-tab-go="open" title="Open On Order"><div class="muted">Units on order</div><div class="stat">${qty(onOrderUnits)}</div></div>
         <div class="card"><div class="muted">Used this month</div><div class="stat">${qty(usedMonth)}</div></div>
       </div>
       <div class="toolbar" style="margin-top:1rem"><button class="btn good" data-go="scan">Scan Stock QR</button><button class="btn" data-go="items">Manual search</button>${canManage()?'<button class="btn secondary" id="dashAddItem">Add new item</button>':''}</div>
@@ -1795,7 +1795,7 @@ Keep this file somewhere secure.
   }
 
   function bindPage() {
-    document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>navigatePage(b.dataset.go));
+    document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>{if(b.dataset.orderTabGo)S.orderTab=b.dataset.orderTabGo;navigatePage(b.dataset.go);});
     document.querySelectorAll('[data-item]').forEach(el=>el.onclick=()=>openItem(el.dataset.item));
     if(S.page==='dashboard') {
       const b=document.getElementById('dashAddItem'); if(b) b.onclick=openAddItem;
