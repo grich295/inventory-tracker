@@ -371,3 +371,9 @@ tbody tr:last-child td{border-bottom:0}
   .category-review-actions .btn{flex:1 1 45%}
   .category-review-tools .btn{flex:1 1 100%}
 }
+
+/* v8.4.0 Safety Bridge trial */
+.safety-gap-list{display:grid;gap:.7rem;margin:1rem 0}
+.safety-gap-row{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.8rem;border:1px solid var(--border,#4b5563);border-radius:12px;background:rgba(255,255,255,.03)}
+.align-end{align-items:flex-end;align-self:end}
+@media(max-width:700px){.safety-gap-row{align-items:flex-start;flex-direction:column}.safety-gap-row .btn{width:100%}.align-end{align-items:stretch}}

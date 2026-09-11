@@ -42,6 +42,12 @@
     stocktakeSettings: null,
     stocktakeTasks: [],
     stocktakeItems: [],
+    safetyBridgeSettings: null,
+    safetyBridgeLinks: [],
+    safetyCatalogue: [],
+    safetyCatalogueLoading: false,
+    safetyBridgeEvents: [],
+    safetyGate: null,
     backupRunning: false,
     backupStatus: '',
     binSetupLocation: '',
@@ -381,7 +387,7 @@
   }
 
   async function loadData({transactions=true}={}) {
-    const [profiles,items,locations,balances,itemSuppliers,purchaseOrders,categories,userPrefs,stocktakeSettingsRows,stocktakeTasks,stocktakeItems] = await Promise.all([
+    const [profiles,items,locations,balances,itemSuppliers,purchaseOrders,categories,userPrefs,stocktakeSettingsRows,stocktakeTasks,stocktakeItems,safetyBridgeSettingsRows,safetyBridgeLinks] = await Promise.all([
       fetchAll('profiles','*','display_name',true),
       fetchAll('items','*','name',true),
       fetchAll('stock_locations','*','location_name',true),
@@ -392,12 +398,15 @@
       fetchAll('user_item_preferences','*','last_viewed_at',false),
       fetchAll('stocktake_settings','*'),
       fetchAll('stocktake_tasks','*','created_at',false),
-      fetchAll('stocktake_task_items','*')
+      fetchAll('stocktake_task_items','*'),
+      fetchAll('safety_bridge_settings','*'),
+      fetchAll('safety_bridge_item_links','*','linked_at',false)
     ]);
     S.profiles=profiles; S.items=items; S.locations=locations; S.balances=balances;
     S.itemSuppliers=itemSuppliers; S.purchaseOrders=purchaseOrders; S.categories=categories; S.userPrefs=userPrefs;
     S.categoryModel=null;
     S.stocktakeSettings=stocktakeSettingsRows[0]||null; S.stocktakeTasks=stocktakeTasks; S.stocktakeItems=stocktakeItems;
+    S.safetyBridgeSettings=safetyBridgeSettingsRows[0]||{enabled:false,safety_tracker_url:'https://grich295.github.io/Safety-tracker/'}; S.safetyBridgeLinks=safetyBridgeLinks||[];
     S.profile=byId(S.profiles,S.session?.user?.id)||S.profile;
     if(transactions) S.transactions=await fetchAll('transactions','*','occurred_at',false);
     S.offline=false; S.offlineSyncError=null; saveOfflineSnapshot();
@@ -547,9 +556,9 @@
     const nav = [
       ['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['stocktake','Stocktake'],['reports','Reports'],['history','History'],['help','Help']
     ];
-    if (S.profile?.role === 'admin') nav.push(['users','Users'],['binsetup','Bin Setup'],['legacy','Legacy'],['backup','Backup']);
+    if (S.profile?.role === 'admin') nav.push(['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.3.5</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.4.0</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -573,6 +582,7 @@
     if (S.page==='help') return helpHtml();
     if (S.page==='users') return usersHtml();
     if (S.page==='binsetup') return binSetupHtml();
+    if (S.page==='safetybridge') return safetyBridgeHtml();
     if (S.page==='legacy') return legacyReviewHtml();
     if (S.page==='backup') return backupHtml();
     return dashboardHtml();
@@ -605,7 +615,7 @@
           <h3>Add / Use / Move / Adjust</h3>
           <ul>
             <li><strong>Add:</strong> stock has physically arrived or been added.</li>
-            <li><strong>Use:</strong> stock has been consumed/used. This counts towards usage reports and Suggested Orders.</li>
+            <li><strong>Use:</strong> stock has been consumed/used. This counts towards usage reports and Suggested Orders. If the optional Safety Bridge trial is enabled for that item, your current Safety Tracker training is checked before the Use form opens.</li>
             <li><strong>Move:</strong> transfer stock between locations/bins. Overall stock does not change and it is not usage.</li>
             <li><strong>Adjust:</strong> correct a stock-count error. Adjustments do not count as usage.</li>
           </ul>
@@ -1589,6 +1599,46 @@
     return rows;
   }
 
+
+  function safetyBridgeHtml(){
+    if(!canAdmin())return '<div class="notice error">Admin access required.</div>';
+    const settings=S.safetyBridgeSettings||{enabled:false,safety_tracker_url:'https://grich295.github.io/Safety-tracker/'};
+    const activeItems=S.items.filter(i=>i.active).sort((a,b)=>a.name.localeCompare(b.name));
+    const selected=S.selectedItemId&&activeItems.some(i=>i.id===S.selectedItemId)?S.selectedItemId:(activeItems[0]?.id||'');
+    S.selectedItemId=selected||null;
+    const links=selected?safetyLinksForItem(selected):[];
+    const catalogue=S.safetyCatalogue||[];
+    const linkedIds=new Set(links.map(x=>`${x.target_kind}:${x.safety_target_id}`));
+    const options=catalogue.filter(x=>!linkedIds.has(`${x.target_kind}:${x.target_id}`)).map(x=>`<option value="${esc(x.target_kind)}|${esc(x.target_id)}">${esc((x.reference?x.reference+' - ':'')+x.title)} · ${esc(x.type||x.target_kind)}</option>`).join('');
+    const linkRows=links.map(x=>`<div class="item-row"><div><strong>${esc((x.safety_reference?x.safety_reference+' - ':'')+x.safety_title)}</strong><div class="muted">${esc(x.safety_type||x.target_kind)}</div></div><button class="btn danger small" data-remove-safety-link="${x.id}">Remove</button></div>`).join('')||'<p class="muted">No Safety Tracker records linked to this item.</p>';
+    const eventRows=(S.safetyBridgeEvents||[]).map(e=>`<tr><td>${fmtDate(e.created_at)}</td><td>${esc(e.user_name||'Unknown')}</td><td>${esc(e.item_name||'Unknown')}</td><td>${esc(e.event_type.replaceAll('_',' '))}</td><td>${e.attempted_quantity==null?'—':qty(e.attempted_quantity)}</td><td>${esc((e.safety_snapshot?.lacking||[]).map(x=>x.reference||x.title).filter(Boolean).join(', ')||e.safety_snapshot?.message||'—')}</td></tr>`).join('');
+    return `<div class="card"><h2>Safety Bridge <span class="badge ${settings.enabled?'good':''}">${settings.enabled?'ENABLED':'DISABLED'}</span></h2><p class="muted">Trial link between Inventory Tracker and Safety Tracker. It only checks safety training when a user taps <strong>Use stock</strong>. Add, Move and Adjust are never checked.</p><div class="notice ${settings.enabled?'warn':''}">${settings.enabled?'<strong>Trial is ON.</strong> Linked items will stop a Use action when required Safety Tracker training is missing or out of date.':'<strong>Trial is OFF.</strong> Inventory works exactly as before; saved links and reports are retained.'}</div><form id="safetyBridgeSettingsForm"><label class="ack-check"><input id="safetyBridgeEnabled" type="checkbox" ${settings.enabled?'checked':''}> Enable Safety Bridge trial</label><label>Safety Tracker web address<input id="safetyBridgeUrl" value="${esc(settings.safety_tracker_url||'https://grich295.github.io/Safety-tracker/')}"></label><div class="actions"><button class="btn" type="submit">Save setting</button></div></form></div>
+    <div class="card" style="margin-top:1rem"><h3>Link inventory items to safety requirements</h3><p class="muted">Choose an item, then link the approved/current RA, COSHH RA, SSW or Toolbox Talk that applies when that item is used.</p><label>Inventory item<select id="safetyBridgeItem">${activeItems.map(i=>`<option value="${i.id}" ${i.id===selected?'selected':''}>${esc(i.name)}</option>`).join('')}</select></label><div id="safetyBridgeLinks" style="margin-top:.8rem">${linkRows}</div><div class="form-grid" style="margin-top:1rem"><label>Safety requirement<select id="safetyCatalogueSelect"><option value="">${S.safetyCatalogueLoading?'Loading Safety Tracker…':'Select approved safety record'}</option>${options}</select></label><div class="actions align-end"><button class="btn secondary" id="refreshSafetyCatalogue" type="button">Refresh list</button><button class="btn" id="addSafetyLink" type="button" ${!options?'disabled':''}>Link to item</button></div></div></div>
+    <div class="card" style="margin-top:1rem"><h3>Stopped / cancelled Use attempts</h3><p class="muted">This report records when a linked Use action is blocked, cancelled, rechecked successfully or cannot reach Safety Tracker. It does not alter stock.</p><div class="table-wrap"><table><thead><tr><th>When</th><th>User</th><th>Item</th><th>Event</th><th>Qty</th><th>Safety requirement</th></tr></thead><tbody>${eventRows||'<tr><td colspan="6">No Safety Bridge events yet.</td></tr>'}</tbody></table></div></div>`;
+  }
+
+  async function loadSafetyCatalogue(force=false){
+    if(S.safetyCatalogueLoading)return;
+    if(S.safetyCatalogue.length&&!force)return;
+    S.safetyCatalogueLoading=true;if(S.page==='safetybridge')render();
+    try{const out=await callSafetyBridge({action:'catalogue'});S.safetyCatalogue=out.catalogue||[];if(out.safety_app_url&&!S.safetyBridgeSettings?.safety_tracker_url)S.safetyBridgeSettings={...(S.safetyBridgeSettings||{}),safety_tracker_url:out.safety_app_url};}
+    catch(e){setNotice(`Could not load Safety Tracker catalogue: ${parseError(e)}`,'error');}
+    finally{S.safetyCatalogueLoading=false;if(S.page==='safetybridge')render();}
+  }
+  async function loadSafetyBridgeEvents(){
+    try{const {data,error}=await sb.rpc('safety_bridge_event_report_v836',{p_limit:150});if(error)throw error;S.safetyBridgeEvents=data||[];}catch(e){console.warn('Safety Bridge report unavailable',e);S.safetyBridgeEvents=[];}
+  }
+  function bindSafetyBridge(){
+    if(!canAdmin())return;
+    const settings=document.getElementById('safetyBridgeSettingsForm');if(settings)settings.onsubmit=async e=>{e.preventDefault();try{const {error}=await sb.rpc('save_safety_bridge_settings_v836',{p_enabled:document.getElementById('safetyBridgeEnabled').checked,p_safety_tracker_url:document.getElementById('safetyBridgeUrl').value.trim()});if(error)throw error;await loadData({transactions:false});setNotice(`Safety Bridge ${S.safetyBridgeSettings?.enabled?'enabled':'disabled'}.`);render();}catch(err){setNotice(parseError(err),'error');render();}};
+    const item=document.getElementById('safetyBridgeItem');if(item)item.onchange=()=>{S.selectedItemId=item.value;render();};
+    document.querySelectorAll('[data-remove-safety-link]').forEach(b=>b.onclick=async()=>{try{const {error}=await sb.rpc('set_safety_bridge_item_link_active_v836',{p_link_id:b.dataset.removeSafetyLink,p_active:false});if(error)throw error;await loadData({transactions:false});setNotice('Safety link removed.');render();}catch(e){setNotice(parseError(e),'error');render();}});
+    const refresh=document.getElementById('refreshSafetyCatalogue');if(refresh)refresh.onclick=()=>loadSafetyCatalogue(true);
+    const add=document.getElementById('addSafetyLink');if(add)add.onclick=async()=>{const sel=document.getElementById('safetyCatalogueSelect');if(!sel?.value||!S.selectedItemId)return;const [kind,id]=sel.value.split('|');const entry=S.safetyCatalogue.find(x=>x.target_kind===kind&&x.target_id===id);if(!entry)return;try{const {error}=await sb.rpc('save_safety_bridge_item_link_v836',{p_item_id:S.selectedItemId,p_target_kind:entry.target_kind,p_safety_target_id:entry.target_id,p_safety_reference:entry.reference||null,p_safety_title:entry.title,p_safety_type:entry.type||null});if(error)throw error;await loadData({transactions:false});setNotice('Safety requirement linked to inventory item.');render();}catch(e){setNotice(parseError(e),'error');render();}};
+    if(!S.safetyCatalogue.length&&!S.safetyCatalogueLoading)setTimeout(()=>loadSafetyCatalogue(),0);
+    if(!S.safetyBridgeEvents.length)setTimeout(async()=>{await loadSafetyBridgeEvents();if(S.page==='safetybridge')render();},0);
+  }
+
   function legacyReviewHtml() {
     if(!canAdmin())return '<div class="notice error">Admin access required.</div>';
     const rows=legacyFilteredRows();
@@ -1808,6 +1858,7 @@ Keep this file somewhere secure.
     if(S.page==='reports') bindReports();
     if(S.page==='users') bindUsers();
     if(S.page==='binsetup') bindBinSetup();
+    if(S.page==='safetybridge') bindSafetyBridge();
     if(S.page==='legacy') bindLegacyReview();
     if(S.page==='backup') bindBackup();
     hydrateItemThumbnails(document);
@@ -2539,7 +2590,54 @@ Keep this file somewhere secure.
 
 
 
-  function requestStockAction(item,type) { return openStockAction(item,type); }
+  const SAFETY_BRIDGE_FUNCTION_URL='https://qvgcralroduuoptbnctt.supabase.co/functions/v1/inventory-safety-bridge';
+  const safetyBridgeEnabled=()=>S.safetyBridgeSettings?.enabled===true;
+  const safetyLinksForItem=itemId=>S.safetyBridgeLinks.filter(x=>x.item_id===itemId&&x.active!==false);
+  const safetySnapshot=result=>({code:result?.code||null,message:result?.message||null,lacking:(result?.lacking||[]).map(x=>({reference:x.reference||'',title:x.title||'',status:x.status||'',due_date:x.due_date||null}))});
+
+  async function callSafetyBridge(body){
+    const {data:{session}}=await sb.auth.getSession();
+    if(!session?.access_token)throw new Error('Session expired. Sign out and sign back in.');
+    const res=await fetch(SAFETY_BRIDGE_FUNCTION_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${session.access_token}`},body:JSON.stringify(body)});
+    const raw=await res.text();let out={};try{out=raw?JSON.parse(raw):{}}catch{out={error:raw}}
+    if(!res.ok)throw new Error(out.error||out.message||`Safety check failed (HTTP ${res.status})`);
+    return out;
+  }
+  async function recordSafetyBridgeEvent(itemId,eventType,snapshot={},attemptedQuantity=null){
+    if(S.offline||!navigator.onLine)return;
+    try{await sb.rpc('record_safety_bridge_event_v836',{p_item_id:itemId,p_event_type:eventType,p_attempted_quantity:attemptedQuantity,p_safety_snapshot:snapshot||{}});}catch(e){console.warn('Could not record safety bridge event',e)}
+  }
+  function safetyTargetsForItem(itemId){return safetyLinksForItem(itemId).map(x=>({target_kind:x.target_kind,target_id:x.safety_target_id,reference:x.safety_reference||'',title:x.safety_title||'',type:x.safety_type||''}));}
+  async function checkSafetyBeforeUse(item){
+    const targets=safetyTargetsForItem(item.id);
+    if(!safetyBridgeEnabled()||!targets.length)return {ok:true,required:false,lacking:[]};
+    if(S.offline||!navigator.onLine)throw new Error('Safety training cannot be checked while offline. No stock has been removed.');
+    return callSafetyBridge({action:'check',item_id:item.id,targets});
+  }
+  function showSafetyTrainingGate(item,result){
+    const lacking=result?.lacking||[];
+    const list=lacking.map(x=>`<div class="safety-gap-row"><div><strong>${esc(x.reference?x.reference+' - '+x.title:x.title||'Required safety training')}</strong><div class="muted">${esc(x.status||'Training action required')}${x.due_date?` · due ${esc(fmtShortDate(x.due_date))}`:''}</div></div>${x.document_url?`<a class="btn ghost small" href="${esc(x.document_url)}" target="_blank" rel="noopener">Open document</a>`:''}</div>`).join('');
+    const appUrl=result?.safety_app_url||S.safetyBridgeSettings?.safety_tracker_url||'https://grich295.github.io/Safety-tracker/';
+    S.safetyGate={itemId:item.id,snapshot:safetySnapshot(result)};
+    showModal(`<header><div><h2>Safety training required</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header><div class="notice warn"><strong>Stock has not been removed.</strong> Your Safety Tracker record shows required training that is missing or out of date. Complete/sign off the training before using this item.</div><div class="safety-gap-list">${list||'<div class="muted">Safety training needs attention.</div>'}</div><div class="actions"><a class="btn" href="${esc(appUrl)}" target="_blank" rel="noopener">Open Safety Tracker</a><button class="btn secondary" id="safetyRecheckBtn" type="button">Check again</button><button class="btn ghost" data-close type="button">Cancel use</button></div><p class="muted">If you cancel instead of completing required training, the cancelled stock-use attempt is recorded for manager/admin reporting.</p>`);
+    const b=document.getElementById('safetyRecheckBtn');
+    if(b)b.onclick=async()=>{
+      b.disabled=true;b.textContent='Checking…';
+      try{const fresh=await checkSafetyBeforeUse(item);if(fresh.ok){await recordSafetyBridgeEvent(item.id,'RECHECK_PASSED',safetySnapshot(fresh));S.safetyGate=null;openStockAction(item,'USE');return;}await recordSafetyBridgeEvent(item.id,'TRAINING_BLOCKED',safetySnapshot(fresh));showSafetyTrainingGate(item,fresh);}catch(e){setNotice(parseError(e),'error');S.safetyGate=null;closeModal();render();}
+    };
+  }
+  async function requestStockAction(item,type){
+    if(type!=='USE'||!safetyBridgeEnabled()||!safetyLinksForItem(item.id).length)return openStockAction(item,type);
+    try{
+      const result=await checkSafetyBeforeUse(item);
+      if(result.ok)return openStockAction(item,type);
+      await recordSafetyBridgeEvent(item.id,'TRAINING_BLOCKED',safetySnapshot(result));
+      showSafetyTrainingGate(item,result);
+    }catch(e){
+      await recordSafetyBridgeEvent(item.id,'CHECK_ERROR',{message:parseError(e)});
+      showModal(`<header><h2>Safety check unavailable</h2><button class="close" data-close>×</button></header><div class="notice error"><strong>No stock has been removed.</strong> ${esc(parseError(e))}</div><p class="muted">Try again when the Safety Tracker connection is available. An Admin can disable the trial Safety Bridge from Admin → Safety Bridge if necessary.</p><div class="actions"><button class="btn ghost" data-close>Close</button></div>`);
+    }
+  }
 
 
 
@@ -3226,6 +3324,7 @@ Keep this file somewhere secure.
   function closeModal(fromPopstate=false){
     const modal=document.getElementById('modalBackdrop');
     if(!modal) return;
+    if(S.safetyGate){const gate=S.safetyGate;S.safetyGate=null;recordSafetyBridgeEvent(gate.itemId,'USE_CANCELLED',gate.snapshot).catch(()=>{});}
     modal.remove();
     if(!fromPopstate && history.state?.inventoryTracker && history.state.modal){
       suppressNextPopstate=true;
