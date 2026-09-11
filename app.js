@@ -49,6 +49,9 @@
     safetyCatalogueLoading: false,
     safetyCatalogueAttempted: false,
     safetyBridgeEvents: [],
+    safetyBridgeFeedback: [],
+    safetySuggestions: [],
+    safetySuggestionsGenerated: false,
     safetyGate: null,
     backupRunning: false,
     backupStatus: '',
@@ -389,7 +392,7 @@
   }
 
   async function loadData({transactions=true}={}) {
-    const [profiles,items,locations,balances,itemSuppliers,purchaseOrders,categories,userPrefs,stocktakeSettingsRows,stocktakeTasks,stocktakeItems,safetyBridgeSettingsRows,safetyBridgeLinks] = await Promise.all([
+    const [profiles,items,locations,balances,itemSuppliers,purchaseOrders,categories,userPrefs,stocktakeSettingsRows,stocktakeTasks,stocktakeItems,safetyBridgeSettingsRows,safetyBridgeLinks,safetyBridgeFeedback] = await Promise.all([
       fetchAll('profiles','*','display_name',true),
       fetchAll('items','*','name',true),
       fetchAll('stock_locations','*','location_name',true),
@@ -402,13 +405,14 @@
       fetchAll('stocktake_tasks','*','created_at',false),
       fetchAll('stocktake_task_items','*'),
       fetchAll('safety_bridge_settings','*'),
-      fetchAll('safety_bridge_item_links','*','linked_at',false)
+      fetchAll('safety_bridge_item_links','*','linked_at',false),
+      fetchAll('safety_bridge_link_feedback','*','decided_at',false)
     ]);
     S.profiles=profiles; S.items=items; S.locations=locations; S.balances=balances;
     S.itemSuppliers=itemSuppliers; S.purchaseOrders=purchaseOrders; S.categories=categories; S.userPrefs=userPrefs;
     S.categoryModel=null;
     S.stocktakeSettings=stocktakeSettingsRows[0]||null; S.stocktakeTasks=stocktakeTasks; S.stocktakeItems=stocktakeItems;
-    S.safetyBridgeSettings=safetyBridgeSettingsRows[0]||{enabled:false,safety_tracker_url:'https://grich295.github.io/Safety-tracker/'}; S.safetyBridgeLinks=safetyBridgeLinks||[];
+    S.safetyBridgeSettings=safetyBridgeSettingsRows[0]||{enabled:false,safety_tracker_url:'https://grich295.github.io/Safety-tracker/'}; S.safetyBridgeLinks=safetyBridgeLinks||[]; S.safetyBridgeFeedback=safetyBridgeFeedback||[];
     S.profile=byId(S.profiles,S.session?.user?.id)||S.profile;
     if(transactions) S.transactions=await fetchAll('transactions','*','occurred_at',false);
     S.offline=false; S.offlineSyncError=null; saveOfflineSnapshot();
@@ -560,7 +564,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.4.2</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.4.3</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -1602,21 +1606,43 @@
   }
 
 
+  function safetyWordTokens(v){
+    const stop=new Set(['the','and','for','with','from','using','use','general','replacement','of','to','in','a','an','guest','room','rooms','item','items']);
+    return [...new Set(String(v||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').split(/\s+/).filter(x=>x.length>2&&!stop.has(x)))];
+  }
+  function safetySuggestionScore(item,entry){
+    const name=String(item?.name||'').toLowerCase(),cat=String(item?.category||'').toLowerCase();
+    const hay=`${String(entry?.reference||'')} ${String(entry?.title||'')} ${String(entry?.type||'')}`.toLowerCase();
+    const itemTokens=safetyWordTokens(`${item?.name||''} ${item?.category||''}`),docTokens=new Set(safetyWordTokens(hay));
+    let score=0,reasons=[];const overlap=itemTokens.filter(t=>docTokens.has(t));
+    if(overlap.length){score+=overlap.length*18;reasons.push(`matching terms: ${overlap.slice(0,4).join(', ')}`);}
+    const rules=[[/electrical|socket|switch|transformer|driver|light fitting|fuse|contactor|relay/,/electrical|isolation|lockout|tagout/,42,'electrical item'],[/bulb|lamp|gu10|mr16|led/,/electrical|light fittings|isolation/,28,'lighting/electrical item'],[/fan coil|fcu|valve actuator|thermostat|air filter|motor/,/fan coil|safe isolation|lockout|tagout/,45,'fan-coil item'],[/plumb|tap|hose|shower rail|waste|trap|valve/,/plumbing|shower|water/,36,'plumbing item'],[/paint|hammerite/,/paint|hazardous paint/,44,'paint item'],[/wd.?40/,/wd.?40|lubricating hinges/,65,'WD-40 product'],[/grout|mapei|ultracolor/,/grout|mapei|tiling/,65,'grout/tiling product'],[/spray adhesive|stick2|adhesive/,/adhesive|stick2|flooring/,60,'adhesive product'],[/diesel/,/diesel|sprinkler engine/,60,'diesel item'],[/solder/,/solder/,60,'soldering item'],[/shower head|descaler/,/shower head|descaler|sanitiser/,60,'shower-head/descaling item'],[/whirlpool|spa|hot tub/,/whirlpool|spa|hot tub|pro-kleen/,60,'whirlpool cleaner'],[/ahu.*belt|drive belt/,/ahu|drive belt/,60,'AHU belt item'],[/glass.*screen|shower screen/,/glass|shower.*screen/,55,'glass screen item'],[/tool|cutter|drill|saw|grinder/,/hand tools|powered hand tools|equipment/,30,'tool/equipment item']];
+    for(const [a,b,pts,label] of rules){if((a.test(name)||a.test(cat))&&b.test(hay)){score+=pts;reasons.push(label);}}
+    for(const f of (S.safetyBridgeFeedback||[])){if(f.target_kind!==entry.target_kind||f.safety_target_id!==entry.target_id)continue;const sameCat=String(f.item_category_snapshot||'').toLowerCase()===cat&&cat;const fTokens=safetyWordTokens(f.item_name_snapshot||'');const common=fTokens.filter(t=>itemTokens.includes(t)).length;if(f.decision==='APPROVED'){if(sameCat){score+=35;reasons.push('learned from approved item in same category');}if(common){score+=Math.min(35,common*15);reasons.push('learned from similar approved item');}}else if(f.decision==='REJECTED'){if(sameCat)score-=45;if(common)score-=Math.min(55,common*20);}}
+    return {score,reasons:[...new Set(reasons)]};
+  }
+  function generateSafetySuggestions(){
+    const linked=new Set((S.safetyBridgeLinks||[]).filter(x=>x.active!==false).map(x=>`${x.item_id}|${x.target_kind}|${x.safety_target_id}`));
+    const rejected=new Set((S.safetyBridgeFeedback||[]).filter(x=>x.decision==='REJECTED').map(x=>`${x.item_id}|${x.target_kind}|${x.safety_target_id}`));
+    const out=[];for(const item of S.items.filter(x=>x.active)){for(const entry of (S.safetyCatalogue||[])){const key=`${item.id}|${entry.target_kind}|${entry.target_id}`;if(linked.has(key)||rejected.has(key))continue;const r=safetySuggestionScore(item,entry);if(r.score>=45)out.push({item_id:item.id,item_name:item.name,item_category:item.category||'',entry,score:r.score,reasons:r.reasons});}}
+    out.sort((a,b)=>b.score-a.score||a.item_name.localeCompare(b.item_name));const per=new Map(),trim=[];for(const x of out){const n=per.get(x.item_id)||0;if(n>=4)continue;per.set(x.item_id,n+1);trim.push(x);}S.safetySuggestions=trim;S.safetySuggestionsGenerated=true;return trim;
+  }
+  async function saveSafetyFeedback(s,decision){const e=s.entry;const {error}=await sb.rpc('save_safety_bridge_feedback_v843',{p_item_id:s.item_id,p_target_kind:e.target_kind,p_safety_target_id:e.target_id,p_safety_reference:e.reference||null,p_safety_title:e.title,p_safety_type:e.type||null,p_decision:decision});if(error)throw error;}
+
   function safetyBridgeHtml(){
     if(!canAdmin())return '<div class="notice error">Admin access required.</div>';
-    const settings=S.safetyBridgeSettings||{enabled:false,safety_tracker_url:'https://grich295.github.io/Safety-tracker/'};
-    const activeItems=S.items.filter(i=>i.active).sort((a,b)=>a.name.localeCompare(b.name));
-    const selected=S.selectedItemId&&activeItems.some(i=>i.id===S.selectedItemId)?S.selectedItemId:(activeItems[0]?.id||'');
-    S.selectedItemId=selected||null;
-    const links=selected?safetyLinksForItem(selected):[];
-    const catalogue=S.safetyCatalogue||[];
-    const linkedIds=new Set(links.map(x=>`${x.target_kind}:${x.safety_target_id}`));
+    const settings=S.safetyBridgeSettings||{enabled:false},activeItems=S.items.filter(i=>i.active).sort((a,b)=>a.name.localeCompare(b.name));
+    const selected=S.selectedItemId&&activeItems.some(i=>i.id===S.selectedItemId)?S.selectedItemId:(activeItems[0]?.id||'');if(selected&&!S.selectedItemId)S.selectedItemId=selected;
+    const links=selected?safetyLinksForItem(selected):[],catalogue=S.safetyCatalogue||[],linkedIds=new Set(links.map(x=>`${x.target_kind}:${x.safety_target_id}`));
     const options=catalogue.filter(x=>!linkedIds.has(`${x.target_kind}:${x.target_id}`)).map(x=>`<option value="${esc(x.target_kind)}|${esc(x.target_id)}">${esc((x.reference?x.reference+' - ':'')+x.title)} · ${esc(x.type||x.target_kind)}</option>`).join('');
-    const linkRows=links.map(x=>`<div class="item-row"><div><strong>${esc((x.safety_reference?x.safety_reference+' - ':'')+x.safety_title)}</strong><div class="muted">${esc(x.safety_type||x.target_kind)}</div></div><button class="btn danger small" data-remove-safety-link="${x.id}">Remove</button></div>`).join('')||'<p class="muted">No Safety Tracker records linked to this item.</p>';
+    const linkRows=links.map(x=>`<div class="item-row"><div><strong>${esc((x.safety_reference?x.safety_reference+' - ':'')+x.safety_title)}</strong><div class="muted">${esc(x.safety_type||x.target_kind)}</div></div><button class="btn danger small" data-remove-safety-link="${x.id}">Remove</button></div>`).join('')||'<p class="muted">No approved Safety Tracker links for this item yet.</p>';
+    const suggestions=S.safetySuggestionsGenerated?S.safetySuggestions:[];
+    const suggestionRows=suggestions.slice(0,120).map((x,idx)=>`<div class="item-row safety-suggestion"><div><strong>${esc(x.item_name)}</strong><div>${esc((x.entry.reference?x.entry.reference+' - ':'')+x.entry.title)}</div><div class="muted">${esc(x.entry.type||x.entry.target_kind)} · confidence ${Math.min(99,Math.max(1,Math.round(x.score)))}${x.reasons.length?` · ${esc(x.reasons.slice(0,2).join('; '))}`:''}</div></div><div class="actions compact"><button class="btn small" data-approve-safety-suggestion="${idx}">Approve</button><button class="btn ghost small" data-reject-safety-suggestion="${idx}">Not relevant</button></div></div>`).join('')||'<p class="muted">No unreviewed suggestions at the moment.</p>';
     const eventRows=(S.safetyBridgeEvents||[]).map(e=>`<tr><td>${fmtDate(e.created_at)}</td><td>${esc(e.user_name||'Unknown')}</td><td>${esc(e.item_name||'Unknown')}</td><td>${esc(e.event_type.replaceAll('_',' '))}</td><td>${e.attempted_quantity==null?'—':qty(e.attempted_quantity)}</td><td>${esc((e.safety_snapshot?.lacking||[]).map(x=>x.reference||x.title).filter(Boolean).join(', ')||e.safety_snapshot?.message||'—')}</td></tr>`).join('');
-    return `<div class="card"><h2>Safety Bridge <span class="badge ${settings.enabled?'good':''}">${settings.enabled?'ENABLED':'DISABLED'}</span></h2><p class="muted">Trial link between Inventory Tracker and Safety Tracker. It only checks safety training when a user taps <strong>Use stock</strong>. Add, Move and Adjust are never checked.</p><div class="notice ${settings.enabled?'warn':''}">${settings.enabled?'<strong>Trial is ON.</strong> Linked items will stop a Use action when required Safety Tracker training is missing or out of date.':'<strong>Trial is OFF.</strong> Inventory works exactly as before; saved links and reports are retained.'}</div><form id="safetyBridgeSettingsForm"><label class="ack-check"><input id="safetyBridgeEnabled" type="checkbox" ${settings.enabled?'checked':''}> Enable Safety Bridge trial</label><label>Safety Tracker web address<input id="safetyBridgeUrl" value="${esc(settings.safety_tracker_url||'https://grich295.github.io/Safety-tracker/')}"></label><div class="actions"><button class="btn" type="submit">Save setting</button></div></form></div>
-    <div class="card" style="margin-top:1rem"><h3>Link inventory items to safety requirements</h3><p class="muted">Choose an item, then link the approved/current RA, COSHH RA, SSW or Toolbox Talk that applies when that item is used.</p><label>Inventory item<select id="safetyBridgeItem">${activeItems.map(i=>`<option value="${i.id}" ${i.id===selected?'selected':''}>${esc(i.name)}</option>`).join('')}</select></label><div id="safetyBridgeLinks" style="margin-top:.8rem">${linkRows}</div><div class="form-grid" style="margin-top:1rem"><label>Safety requirement<select id="safetyCatalogueSelect"><option value="">${S.safetyCatalogueLoading?'Loading Safety Tracker…':'Select approved safety record'}</option>${options}</select></label><div class="actions align-end"><button class="btn secondary" id="refreshSafetyCatalogue" type="button">Refresh list</button><button class="btn" id="addSafetyLink" type="button" ${!options?'disabled':''}>Link to item</button></div></div></div>
-    <div class="card" style="margin-top:1rem"><h3>Stopped / cancelled Use attempts</h3><p class="muted">This report records when a linked Use action is blocked, cancelled, rechecked successfully or cannot reach Safety Tracker. It does not alter stock.</p><div class="table-wrap"><table><thead><tr><th>When</th><th>User</th><th>Item</th><th>Event</th><th>Qty</th><th>Safety requirement</th></tr></thead><tbody>${eventRows||'<tr><td colspan="6">No Safety Bridge events yet.</td></tr>'}</tbody></table></div></div>`;
+    return `<div class="card"><h2>Safety Bridge <span class="badge ${settings.enabled?'good':''}">${settings.enabled?'ENABLED':'DISABLED'}</span></h2><p class="muted">Optional link between Inventory Tracker and Safety Tracker. Checks happen only when a user taps <strong>Use stock</strong>. Add, Move and Adjust are never checked.</p><div class="notice ${settings.enabled?'warn':''}">${settings.enabled?'<strong>Bridge is ON.</strong> Approved links can stop Use when required training is missing or out of date.':'<strong>Bridge is OFF.</strong> Inventory works exactly as before while you review suggested links.'}</div><label class="ack-check"><input id="safetyBridgeEnabled" type="checkbox" ${settings.enabled?'checked':''}> Enable Safety Bridge</label><p class="muted">This switch saves immediately. Turning it off does not delete links or reports.</p></div>
+    <div class="card" style="margin-top:1rem"><h3>Suggested links — review first</h3><p class="muted">Inventory compares item names and categories with approved Safety Tracker records. Nothing becomes active until you approve it. Approvals and “Not relevant” decisions are remembered and improve later suggestions.</p><div class="actions"><button class="btn" id="generateSafetySuggestions" type="button">${S.safetySuggestionsGenerated?'Refresh suggestions':'Find suggested links'}</button><button class="btn secondary" id="refreshSafetyCatalogue" type="button">Refresh Safety documents</button></div><div style="margin-top:1rem">${S.safetySuggestionsGenerated?suggestionRows:'<p class="muted">Press Find suggested links to create a review list.</p>'}</div></div>
+    <div class="card" style="margin-top:1rem"><h3>Review / manually link an item</h3><label>Inventory item<select id="safetyBridgeItem">${activeItems.map(i=>`<option value="${i.id}" ${i.id===selected?'selected':''}>${esc(i.name)}</option>`).join('')}</select></label><div id="safetyBridgeLinks" style="margin-top:.8rem">${linkRows}</div><div class="form-grid" style="margin-top:1rem"><label>Safety requirement<select id="safetyCatalogueSelect"><option value="">${S.safetyCatalogueLoading?'Loading Safety Tracker…':'Select approved safety record'}</option>${options}</select></label><div class="actions align-end"><button class="btn" id="addSafetyLink" type="button" ${!options?'disabled':''}>Approve link</button></div></div></div>
+    <div class="card" style="margin-top:1rem"><h3>Stopped / cancelled Use attempts</h3><p class="muted">Records blocked, cancelled, successful rechecks and connection failures. It does not alter stock.</p><div class="table-wrap"><table><thead><tr><th>When</th><th>User</th><th>Item</th><th>Event</th><th>Qty</th><th>Safety requirement</th></tr></thead><tbody>${eventRows||'<tr><td colspan="6">No Safety Bridge events yet.</td></tr>'}</tbody></table></div></div>`;
   }
 
   async function loadSafetyCatalogue(force=false){
@@ -1625,7 +1651,7 @@
     if(force)S.safetyCatalogue=[];
     S.safetyCatalogueAttempted=true;
     S.safetyCatalogueLoading=true;if(S.page==='safetybridge')render();
-    try{const out=await callSafetyBridge({action:'catalogue'});S.safetyCatalogue=out.catalogue||[];if(out.safety_app_url&&!S.safetyBridgeSettings?.safety_tracker_url)S.safetyBridgeSettings={...(S.safetyBridgeSettings||{}),safety_tracker_url:out.safety_app_url};}
+    try{const out=await callSafetyBridge({action:'catalogue'});S.safetyCatalogue=out.catalogue||[];if(out.safety_app_url&&!S.safetyBridgeSettings?.safety_tracker_url)S.safetyBridgeSettings={...(S.safetyBridgeSettings||{}),safety_tracker_url:out.safety_app_url};if(canAdmin())generateSafetySuggestions();}
     catch(e){setNotice(`Could not load Safety Tracker catalogue: ${parseError(e)}`,'error');}
     finally{S.safetyCatalogueLoading=false;if(S.page==='safetybridge')render();}
   }
@@ -1634,11 +1660,14 @@
   }
   function bindSafetyBridge(){
     if(!canAdmin())return;
-    const settings=document.getElementById('safetyBridgeSettingsForm');if(settings)settings.onsubmit=async e=>{e.preventDefault();try{const {error}=await sb.rpc('save_safety_bridge_settings_v836',{p_enabled:document.getElementById('safetyBridgeEnabled').checked,p_safety_tracker_url:document.getElementById('safetyBridgeUrl').value.trim()});if(error)throw error;await loadData({transactions:false});setNotice(`Safety Bridge ${S.safetyBridgeSettings?.enabled?'enabled':'disabled'}.`);render();}catch(err){setNotice(parseError(err),'error');render();}};
+    const toggle=document.getElementById('safetyBridgeEnabled');if(toggle)toggle.onchange=async()=>{const wanted=toggle.checked;toggle.disabled=true;try{const {data,error}=await sb.rpc('set_safety_bridge_enabled_v843',{p_enabled:wanted});if(error)throw error;S.safetyBridgeSettings={...(S.safetyBridgeSettings||{}),enabled:data===true};setNotice(`Safety Bridge ${data===true?'enabled':'disabled'}.`);render();}catch(err){setNotice(`Could not change Safety Bridge: ${parseError(err)}`,'error');await loadData({transactions:false});render();}};
     const item=document.getElementById('safetyBridgeItem');if(item)item.onchange=()=>{S.selectedItemId=item.value;render();};
-    document.querySelectorAll('[data-remove-safety-link]').forEach(b=>b.onclick=async()=>{try{const {error}=await sb.rpc('set_safety_bridge_item_link_active_v836',{p_link_id:b.dataset.removeSafetyLink,p_active:false});if(error)throw error;await loadData({transactions:false});setNotice('Safety link removed.');render();}catch(e){setNotice(parseError(e),'error');render();}});
-    const refresh=document.getElementById('refreshSafetyCatalogue');if(refresh)refresh.onclick=()=>{S.safetyCatalogueAttempted=false;loadSafetyCatalogue(true);};
-    const add=document.getElementById('addSafetyLink');if(add)add.onclick=async()=>{const sel=document.getElementById('safetyCatalogueSelect');if(!sel?.value||!S.selectedItemId)return;const [kind,id]=sel.value.split('|');const entry=S.safetyCatalogue.find(x=>x.target_kind===kind&&x.target_id===id);if(!entry)return;try{const {error}=await sb.rpc('save_safety_bridge_item_link_v836',{p_item_id:S.selectedItemId,p_target_kind:entry.target_kind,p_safety_target_id:entry.target_id,p_safety_reference:entry.reference||null,p_safety_title:entry.title,p_safety_type:entry.type||null});if(error)throw error;await loadData({transactions:false});setNotice('Safety requirement linked to inventory item.');render();}catch(e){setNotice(parseError(e),'error');render();}};
+    document.querySelectorAll('[data-remove-safety-link]').forEach(b=>b.onclick=async()=>{try{const {error}=await sb.rpc('set_safety_bridge_item_link_active_v836',{p_link_id:b.dataset.removeSafetyLink,p_active:false});if(error)throw error;await loadData({transactions:false});S.safetySuggestionsGenerated=false;setNotice('Safety link removed.');render();}catch(e){setNotice(parseError(e),'error');render();}});
+    const refresh=document.getElementById('refreshSafetyCatalogue');if(refresh)refresh.onclick=async()=>{S.safetyCatalogueAttempted=false;S.safetySuggestionsGenerated=false;await loadSafetyCatalogue(true);if(S.page==='safetybridge')render();};
+    const gen=document.getElementById('generateSafetySuggestions');if(gen)gen.onclick=async()=>{if(!S.safetyCatalogue.length)await loadSafetyCatalogue(true);generateSafetySuggestions();render();};
+    document.querySelectorAll('[data-approve-safety-suggestion]').forEach(b=>b.onclick=async()=>{const x=S.safetySuggestions[Number(b.dataset.approveSafetySuggestion)];if(!x)return;try{const e=x.entry;const {error}=await sb.rpc('save_safety_bridge_item_link_v836',{p_item_id:x.item_id,p_target_kind:e.target_kind,p_safety_target_id:e.target_id,p_safety_reference:e.reference||null,p_safety_title:e.title,p_safety_type:e.type||null});if(error)throw error;await saveSafetyFeedback(x,'APPROVED');await loadData({transactions:false});generateSafetySuggestions();setNotice(`Approved safety link for ${x.item_name}.`);render();}catch(e){setNotice(parseError(e),'error');render();}});
+    document.querySelectorAll('[data-reject-safety-suggestion]').forEach(b=>b.onclick=async()=>{const x=S.safetySuggestions[Number(b.dataset.rejectSafetySuggestion)];if(!x)return;try{await saveSafetyFeedback(x,'REJECTED');await loadData({transactions:false});generateSafetySuggestions();setNotice('Marked not relevant. Future suggestions will learn from this.');render();}catch(e){setNotice(parseError(e),'error');render();}});
+    const add=document.getElementById('addSafetyLink');if(add)add.onclick=async()=>{const sel=document.getElementById('safetyCatalogueSelect');if(!sel?.value||!S.selectedItemId)return;const [kind,id]=sel.value.split('|');const entry=S.safetyCatalogue.find(x=>x.target_kind===kind&&x.target_id===id);if(!entry)return;const x={item_id:S.selectedItemId,entry};try{const {error}=await sb.rpc('save_safety_bridge_item_link_v836',{p_item_id:S.selectedItemId,p_target_kind:entry.target_kind,p_safety_target_id:entry.target_id,p_safety_reference:entry.reference||null,p_safety_title:entry.title,p_safety_type:entry.type||null});if(error)throw error;await saveSafetyFeedback(x,'APPROVED');await loadData({transactions:false});S.safetySuggestionsGenerated=false;setNotice('Safety requirement approved and linked to inventory item.');render();}catch(e){setNotice(parseError(e),'error');render();}};
     if(!S.safetyCatalogue.length&&!S.safetyCatalogueLoading&&!S.safetyCatalogueAttempted)setTimeout(()=>loadSafetyCatalogue(),0);
     if(!S.safetyBridgeEvents.length)setTimeout(async()=>{await loadSafetyBridgeEvents();if(S.page==='safetybridge')render();},0);
   }

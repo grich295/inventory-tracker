@@ -1,5 +1,5 @@
-const SHELL_CACHE='inventory-shell-v842-invite-redirect-fix';
-const RUNTIME_CACHE='inventory-runtime-v842-invite-redirect-fix';
+const SHELL_CACHE='inventory-shell-v843-safety-learning';
+const RUNTIME_CACHE='inventory-runtime-v843-safety-learning';
 const SHELL=['./','./index.html','./styles.css','./app.js','./manifest.webmanifest','./icon.svg','./config.js'];
 const RUNTIME_ASSETS=[
   'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2',
