@@ -377,3 +377,22 @@ tbody tr:last-child td{border-bottom:0}
 .safety-gap-row{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.8rem;border:1px solid var(--border,#4b5563);border-radius:12px;background:rgba(255,255,255,.03)}
 .align-end{align-items:flex-end;align-self:end}
 @media(max-width:700px){.safety-gap-row{align-items:flex-start;flex-direction:column}.safety-gap-row .btn{width:100%}.align-end{align-items:stretch}}
+
+
+/* v8.4.4 Mobile Users page — prevent wide desktop table forcing page zoom/overflow */
+.users-table-wrap{max-width:100%}
+@media(max-width:720px){
+  .users-table-wrap{overflow:visible;border:0;background:transparent;box-shadow:none}
+  .users-table{display:block;min-width:0!important;width:100%;background:transparent}
+  .users-table thead{display:none}
+  .users-table tbody{display:grid;gap:.7rem;width:100%}
+  .users-table tr{display:block;width:100%;min-width:0;padding:.78rem;border:1px solid var(--border);border-radius:12px;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,.03)}
+  .users-table td{display:flex;align-items:center;justify-content:space-between;gap:.8rem;width:100%;min-width:0;padding:.38rem 0;border:0;background:transparent!important;font-size:.9rem}
+  .users-table td.user-identity{display:block;padding:0 0 .58rem;margin-bottom:.18rem;border-bottom:1px solid #edf1f5;font-size:.98rem;font-weight:750;overflow-wrap:anywhere}
+  .users-table td.user-identity .muted{margin-top:.12rem;font-weight:500;overflow-wrap:anywhere}
+  .users-table td[data-label]::before{content:attr(data-label);flex:0 0 92px;color:var(--muted);font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
+  .users-table td[data-label]>select{min-width:0;max-width:190px;margin-left:auto}
+  .users-table td[data-label="Account"]{align-items:flex-start}
+  .users-table td[data-label="Account"] .user-actions{margin:0;justify-content:flex-end;flex:1}
+  .users-table td[data-label="Account"] .btn{min-height:39px;flex:1 1 120px}
+}

@@ -307,10 +307,21 @@
   function applyLocalStockOperation(op){
     const now=op.created_at||new Date().toISOString();
     let fromPos=null,toPos=null,old=0;
-    if(op.from_location_name){fromPos=localPosition(op.from_location_name,op.from_bin_ref||'');op.from_local_id=fromPos.id;}
+    if(op.from_location_name && !(op.type==='USE'&&op.auto_source_location)){fromPos=localPosition(op.from_location_name,op.from_bin_ref||'');op.from_local_id=fromPos.id;}
     if(op.to_location_name){toPos=localPosition(op.to_location_name,op.to_bin_ref||'');op.to_local_id=toPos.id;}
     if(op.type==='ADD'){
       const b=localBalance(op.item_id,toPos.id);old=num(b.quantity);b.quantity=old+num(op.quantity);b.updated_at=now;
+    }else if(op.type==='USE'&&op.auto_source_location){
+      const plan=localUseAllocations(op.item_id,op.from_location_name,num(op.quantity));
+      if(plan.remaining>0) throw new Error('Insufficient stock at this location.');
+      for(const part of plan.allocations){
+        const b=localBalance(op.item_id,part.location.id);
+        old+=num(part.quantity);
+        b.quantity=Math.max(0,num(b.quantity)-num(part.quantity));
+        b.updated_at=now;
+        if(!fromPos)fromPos=part.location;
+      }
+      op.from_local_id=fromPos?.id||null;
     }else if(op.type==='USE'){
       const b=localBalance(op.item_id,fromPos.id);old=num(b.quantity);b.quantity=Math.max(0,old-num(op.quantity));b.updated_at=now;
     }else if(op.type==='MOVE'){
@@ -332,6 +343,18 @@
     const {data,error}=await sb.rpc('get_or_create_stock_position',{p_location_name:name,p_bin_ref:normalizeBin(binRef)});if(error)throw error;return data;
   }
   async function sendClientStockOperation(op){
+    if(op.type==='USE'&&op.auto_source_location){
+      const {error}=await sb.rpc('apply_use_stock_from_location_v845',{
+        p_item_id:op.item_id,
+        p_location_name:op.from_location_name,
+        p_quantity:num(op.quantity),
+        p_reason:op.reason||null,
+        p_client_reference:clientRef(op.id),
+        p_notes:op.notes||null
+      });
+      if(error)throw error;
+      return;
+    }
     let from=null,to=null;
     if(op.from_location_name)from=await resolveServerPosition(op.from_location_name,op.from_bin_ref||'');
     if(op.to_location_name)to=await resolveServerPosition(op.to_location_name,op.to_bin_ref||'');
@@ -564,7 +587,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.4.3</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.4.5</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -1466,9 +1489,9 @@
         : p.active===false
           ? `<button class="btn good small" data-user-enable="${p.id}">Re-enable</button>`
           : `<button class="btn danger small" data-user-disable="${p.id}">Disable</button>`;
-      return `<tr><td>${esc(p.display_name)}<div class="muted">${esc(p.email||'')}</div></td><td>${esc(roleLabel(p.role))}</td><td>${p.active===false?'<span class="badge muted">Disabled</span>':'<span class="badge good">Active</span>'}</td><td><select data-role-user="${p.id}" ${p.id===S.profile.id?'disabled':''}><option value="staff" ${p.role==='staff'?'selected':''}>User</option><option value="manager" ${p.role==='manager'?'selected':''}>Manager</option><option value="admin" ${p.role==='admin'?'selected':''}>Admin</option></select></td><td><div class="actions user-actions">${access}<button class="btn ghost small" data-user-email="${p.id}">Change email</button></div></td></tr>`;
+      return `<tr><td class="user-identity">${esc(p.display_name)}<div class="muted">${esc(p.email||'')}</div></td><td data-label="Role">${esc(roleLabel(p.role))}</td><td data-label="Status">${p.active===false?'<span class="badge muted">Disabled</span>':'<span class="badge good">Active</span>'}</td><td data-label="Change role"><select data-role-user="${p.id}" ${p.id===S.profile.id?'disabled':''}><option value="staff" ${p.role==='staff'?'selected':''}>User</option><option value="manager" ${p.role==='manager'?'selected':''}>Manager</option><option value="admin" ${p.role==='admin'?'selected':''}>Admin</option></select></td><td data-label="Account"><div class="actions user-actions">${access}<button class="btn ghost small" data-user-email="${p.id}">Change email</button></div></td></tr>`;
     }).join('');
-    return `<div class="split"><div class="card"><h2>Users</h2><p class="muted">Correct a registered email without deleting the account. Password, role and stock history are preserved. Disable users instead of deleting them when they leave.</p><div class="table-wrap"><table><thead><tr><th>Name / email</th><th>Role</th><th>Status</th><th>Change role</th><th>Account</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+    return `<div class="split"><div class="card"><h2>Users</h2><p class="muted">Correct a registered email without deleting the account. Password, role and stock history are preserved. Disable users instead of deleting them when they leave.</p><div class="table-wrap users-table-wrap"><table class="users-table"><thead><tr><th>Name / email</th><th>Role</th><th>Status</th><th>Change role</th><th>Account</th></tr></thead><tbody>${rows}</tbody></table></div></div>
       <div class="card"><h2>Invite user</h2><p class="muted">The invited person receives an email and must set their own password before entering the tracker. The v7.4.1 invite-user Edge Function must be deployed in Supabase.</p><form id="inviteForm"><label>Name</label><input id="inviteName" required><label>Email</label><input id="inviteEmail" type="email" required><label>Role</label><select id="inviteRole"><option value="staff">User</option><option value="manager">Manager</option><option value="admin">Admin</option></select><div class="actions"><button class="btn" type="submit">Send invite</button></div></form></div></div>`;
   }
 
@@ -1769,7 +1792,7 @@
       backup_format:'inventory-tracker-backup-v1',
       created_at:new Date().toISOString(),
       created_by:{id:S.profile?.id||null,name:S.profile?.display_name||null,role:S.profile?.role||null},
-      app_version:'8.3.4',
+      app_version:'8.4.5',
       project_url:cfg.supabaseUrl,
       tables:{},
       uploaded_files:{requested:!!includeFiles,downloaded:0,failed:[]}
@@ -2869,6 +2892,34 @@ Keep this file somewhere secure.
     return num(S.balances.find(x=>x.item_id===itemId&&x.location_id===p.id)?.quantity);
   }
 
+  function sourceAvailableAtLocation(itemId, locationName) {
+    return itemPositions(itemId).reduce((total,b)=>{
+      const loc=byId(S.locations,b.location_id);
+      return total + (loc?.location_name===locationName ? num(b.quantity) : 0);
+    },0);
+  }
+
+  function localUseAllocations(itemId, locationName, requested) {
+    let remaining=num(requested);
+    const item=byId(S.items,itemId);
+    const rows=itemPositions(itemId)
+      .map(b=>({balance:b,location:byId(S.locations,b.location_id)}))
+      .filter(x=>x.location?.location_name===locationName && num(x.balance.quantity)>0)
+      .sort((a,b)=>{
+        const ad=a.location.id===item?.default_location_id?0:1;
+        const bd=b.location.id===item?.default_location_id?0:1;
+        if(ad!==bd)return ad-bd;
+        return effectiveBinCode(a.location).localeCompare(effectiveBinCode(b.location),undefined,{numeric:true,sensitivity:'base'});
+      });
+    const allocations=[];
+    for(const row of rows){
+      if(remaining<=0)break;
+      const take=Math.min(remaining,num(row.balance.quantity));
+      if(take>0){allocations.push({location:row.location,balance:row.balance,quantity:take});remaining-=take;}
+    }
+    return {allocations,remaining};
+  }
+
   function stockActionForm(item,type) {
     const pos=itemPositions(item.id);
     const positiveIds=new Set(pos.map(b=>b.location_id));
@@ -2876,11 +2927,12 @@ Keep this file somewhere secure.
     const allRows=activeLocations();
     const title={ADD:'Add stock',USE:'Use / remove stock',MOVE:'Move stock',ADJUST:'Adjust stock'}[type];
     const sourcePair=`<label>Location</label><select id="fromLocationName" required>${locationNameOptions(sourceRows)}</select><label>Bin Ref</label><input id="fromBinRef" list="fromBinList" placeholder="Type bin ref, e.g. B12"><datalist id="fromBinList"></datalist><div id="sourceAvailability" class="notice compact">Select the source bin to see available stock.</div>`;
+    const useSourcePair=`<label>Location</label><select id="fromLocationName" required>${locationNameOptions(sourceRows)}</select><div id="sourceAvailability" class="notice compact">Stock will be removed automatically from the stored bin(s) in this location.</div>`;
     const destinationPair=`<label>Location</label><select id="toLocationName" required>${locationNameOptions(allRows)}</select><label>Bin Ref (optional)</label><input id="toBinRef" list="toBinList" placeholder="Type bin ref, e.g. B12"><datalist id="toBinList"></datalist>${item.default_location_id?`<div class="muted">Default storage: <strong>${esc(itemDefaultLabel(item))}</strong> · change it here if this stock is going elsewhere.</div>`:''}`;
     const adjustPair=`<label>Location</label><select id="fromLocationName" required>${locationNameOptions(allRows)}</select><label>Bin Ref (optional)</label><input id="fromBinRef" list="fromBinList" placeholder="Type bin ref, e.g. B12"><datalist id="fromBinList"></datalist>`;
     return `<header><div><h2>${title}</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header><form id="stockActionForm" data-type="${type}">
       ${type==='ADD'?`${destinationPair}<label>Quantity added</label><input id="actionQty" type="number" inputmode="decimal" min="0.01" step="0.01" required>`:''}
-      ${type==='USE'?`${sourcePair}<label>Quantity used / removed</label><input id="actionQty" type="number" inputmode="decimal" min="0.01" step="0.01" required>`:''}
+      ${type==='USE'?`${useSourcePair}<label>Quantity used / removed</label><input id="actionQty" type="number" inputmode="decimal" min="0.01" step="0.01" required>`:''}
       ${type==='MOVE'?`<h3>Move from</h3>${sourcePair}<h3>Move to</h3>${destinationPair}<label class="ack-check"><input id="moveAllCheck" type="checkbox"> Move all stock from this bin</label><label>Quantity moved</label><input id="actionQty" type="number" inputmode="decimal" min="0.01" step="0.01" required><div id="movePreview" class="muted"></div>`:''}
       ${type==='ADJUST'?`${adjustPair}<label>Correct quantity at this location / bin ref</label><input id="newQty" type="number" inputmode="decimal" min="0" step="0.01" required><label>Reason</label><select id="reason" required><option value="Stock count correction">Stock count correction</option><option value="Damaged">Damaged</option><option value="Lost">Lost</option><option value="Found">Found</option><option value="Data correction">Data correction</option><option value="Other">Other</option></select>`:''}
       ${type!=='ADJUST'?`<label>Reason / reference (optional)</label><input id="reason" placeholder="Delivery, job, damaged, etc.">`:''}
@@ -2896,13 +2948,22 @@ Keep this file somewhere secure.
     const pos=itemPositions(item.id);
     const positiveIds=new Set(pos.map(b=>b.location_id));
     const sourceRows=activeLocations().filter(l=>positiveIds.has(l.id));
-    if(type==='USE'||type==='MOVE') bindBinRefSuggestions('fromLocationName','fromBinRef','fromBinList',sourceRows,item.id,true);
+    if(type==='MOVE') bindBinRefSuggestions('fromLocationName','fromBinRef','fromBinList',sourceRows,item.id,true);
     if(type==='ADD'||type==='MOVE') {
       bindBinRefSuggestions('toLocationName','toBinRef','toBinList',activeLocations(),null,false,itemDefaultPosition(item));
       applyItemDefaultDestination(item,'toLocationName','toBinRef');
     }
     if(type==='ADJUST') bindBinRefSuggestions('fromLocationName','fromBinRef','fromBinList',activeLocations(),item.id,false);
-    if(type==='USE'||type==='MOVE'){
+    if(type==='USE'){
+      const loc=document.getElementById('fromLocationName'), amount=document.getElementById('actionQty'), availableEl=document.getElementById('sourceAvailability');
+      const update=()=>{
+        const available=sourceAvailableAtLocation(item.id,loc.value);
+        if(availableEl) availableEl.innerHTML=`<strong>Available here: ${qty(available)}</strong><div class="muted" style="margin-top:.25rem">Bin selection is automatic when stock is used.</div>`;
+        if(amount) amount.max=available>0?String(available):'';
+      };
+      loc.addEventListener('change',update); amount?.addEventListener('input',update); setTimeout(update,0);
+    }
+    if(type==='MOVE'){
       const loc=document.getElementById('fromLocationName'), bin=document.getElementById('fromBinRef'), amount=document.getElementById('actionQty');
       const all=document.getElementById('moveAllCheck'), preview=document.getElementById('movePreview'), availableEl=document.getElementById('sourceAvailability');
       const update=()=>{
@@ -2937,14 +2998,21 @@ Keep this file somewhere secure.
       let op=null;
       try{
         let fromName=null,fromRef='',toName=null,toRef='';
-        if(type==='USE'||type==='MOVE'){
+        if(type==='USE'){
+          fromName=document.getElementById('fromLocationName').value;
+          const available=sourceAvailableAtLocation(item.id,fromName);
+          const requested=num(document.getElementById('actionQty')?.value);
+          if(requested<=0){showFormMessage('Enter a quantity greater than zero.');return;}
+          if(requested>available){showFormMessage(`Only ${qty(available)} is available at that location.`);return;}
+        }
+        if(type==='MOVE'){
           fromName=document.getElementById('fromLocationName').value;
           fromRef=document.getElementById('fromBinRef').value;
           const p=sourcePosition(item.id,fromName,fromRef);
           if(!p){showFormMessage('No stock was found at that Location / Bin Ref. Check the bin reference and try again.');return;}
           const available=sourceAvailable(item.id,fromName,fromRef);
           const qEl=document.getElementById('actionQty');
-          if(type==='MOVE'&&document.getElementById('moveAllCheck')?.checked) qEl.value=String(available);
+          if(document.getElementById('moveAllCheck')?.checked) qEl.value=String(available);
           const requested=num(qEl?.value);
           if(requested<=0){showFormMessage('Enter a quantity greater than zero.');return;}
           if(requested>available){showFormMessage(`Only ${qty(available)} is available at that source.`);return;}
@@ -2968,7 +3036,7 @@ Keep this file somewhere secure.
 
         const reason=document.getElementById('reason')?.value||null;
         const notes=document.getElementById('notes')?.value||null;
-        op={id:makeClientId(),user_id:S.profile.id,item_id:item.id,type,quantity,from_location_name:fromName,from_bin_ref:normalizeBin(fromRef),to_location_name:toName,to_bin_ref:normalizeBin(toRef),new_quantity:newQuantity,reason,notes,created_at:new Date().toISOString()};
+        op={id:makeClientId(),user_id:S.profile.id,item_id:item.id,type,quantity,from_location_name:fromName,from_bin_ref:normalizeBin(fromRef),to_location_name:toName,to_bin_ref:normalizeBin(toRef),new_quantity:newQuantity,reason,notes,created_at:new Date().toISOString(),auto_source_location:type==='USE'};
 
         if(S.offline||!navigator.onLine){
           queueStockOperation(op);
