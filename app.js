@@ -76,6 +76,35 @@
     report: { period: 'month', item: '', graphItem: '', user: '', location: '', bin: '', from: '', to: '' }
   };
 
+  // Browser/PWA navigation history. Android's Back button should move back
+  // through Inventory Tracker before it is allowed to leave the app.
+  let suppressNextPopstate = false;
+  const navState = (extra={}) => ({ inventoryTracker:true, page:S.page, ...extra });
+  function ensureNavigationHistory() {
+    if(!S.session || S.passwordMode) return;
+    const state=history.state;
+    if(!state?.inventoryTracker) history.replaceState(navState({modal:false}),'',location.href);
+    else history.replaceState({...state,...navState(),modal:!!state.modal},'',location.href);
+  }
+  function navigatePage(page,{replace=false}={}) {
+    if(!page) return;
+    const modal=document.getElementById('modalBackdrop');
+    if(modal) modal.remove();
+    S.page=page;
+    S.selectedItemId=null;
+    const state=navState({modal:false});
+    if(replace) history.replaceState(state,'',location.href);
+    else history.pushState(state,'',location.href);
+    render();
+  }
+  function pushModalHistory() {
+    if(!S.session || S.passwordMode) return;
+    // A chain of modal actions counts as one screen for Back. This prevents
+    // repeated modal replacements from creating a long stack of dead views.
+    if(history.state?.inventoryTracker && history.state.modal) return;
+    history.pushState(navState({modal:true}),'',location.href);
+  }
+
   const esc = v => String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const num = v => Number(v || 0);
   const qty = v => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 3 });
@@ -409,6 +438,7 @@
         }else setNotice(navigator.onLine?parseError(e):'No connection and no saved offline inventory is available on this device.','error');
       }
     }
+    ensureNavigationHistory();
     render();
   }
 
@@ -430,6 +460,7 @@
       stopRealtime();
       S.profile = null; S.profiles=[]; S.items=[]; S.locations=[]; S.balances=[]; S.transactions=[];
     }
+    ensureNavigationHistory();
     render();
   });
 
@@ -506,7 +537,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['binsetup','Bin Setup'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.3.2</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.3.3</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -514,7 +545,7 @@
 
   function bindShell() {
     document.getElementById('logoutBtn').onclick = () => sb.auth.signOut();
-    document.querySelectorAll('[data-page]').forEach(b => b.onclick = () => { S.page=b.dataset.page; S.selectedItemId=null; render(); });
+    document.querySelectorAll('[data-page]').forEach(b => b.onclick = () => navigatePage(b.dataset.page));
     const sync=document.getElementById('syncOfflineBtn');if(sync)sync.onclick=()=>syncOfflineQueue();
     const review=document.getElementById('reviewOfflineBtn');if(review)review.onclick=()=>showOfflineQueue();
   }
@@ -1643,7 +1674,7 @@
       backup_format:'inventory-tracker-backup-v1',
       created_at:new Date().toISOString(),
       created_by:{id:S.profile?.id||null,name:S.profile?.display_name||null,role:S.profile?.role||null},
-      app_version:'8.3.2',
+      app_version:'8.3.3',
       project_url:cfg.supabaseUrl,
       tables:{},
       uploaded_files:{requested:!!includeFiles,downloaded:0,failed:[]}
@@ -1752,7 +1783,7 @@ Keep this file somewhere secure.
   }
 
   function bindPage() {
-    document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>{S.page=b.dataset.go; render();});
+    document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>navigatePage(b.dataset.go));
     document.querySelectorAll('[data-item]').forEach(el=>el.onclick=()=>openItem(el.dataset.item));
     if(S.page==='dashboard') {
       const b=document.getElementById('dashAddItem'); if(b) b.onclick=openAddItem;
@@ -2170,7 +2201,7 @@ Keep this file somewhere secure.
     const v=value.trim().toLowerCase();
     const exact=S.items.find(i=>i.active && [i.qr_value,i.item_code,i.name].some(x=>String(x||'').trim().toLowerCase()===v));
     if(exact) return openItem(exact.id);
-    S.search=value; S.page='items'; setNotice('No exact QR match. Showing manual search results.','error'); render();
+    S.search=value; setNotice('No exact QR match. Showing manual search results.','error'); navigatePage('items');
   }
 
   function bindItems() {
@@ -3174,10 +3205,44 @@ Keep this file somewhere secure.
   }
 
   function showModal(html) {
-    let old=document.getElementById('modalBackdrop'); if(old)old.remove();
+    const old=document.getElementById('modalBackdrop');
+    const replacing=!!old;
+    if(old) old.remove();
     const div=document.createElement('div');div.id='modalBackdrop';div.className='modal-backdrop';div.innerHTML=`<div class="modal">${html}</div>`;document.body.appendChild(div);div.onclick=e=>{if(e.target===div||e.target.closest('[data-close]'))closeModal();};
+    if(!replacing) pushModalHistory();
   }
-  function closeModal(){document.getElementById('modalBackdrop')?.remove();}
+  function closeModal(fromPopstate=false){
+    const modal=document.getElementById('modalBackdrop');
+    if(!modal) return;
+    modal.remove();
+    if(!fromPopstate && history.state?.inventoryTracker && history.state.modal){
+      suppressNextPopstate=true;
+      history.back();
+    }
+  }
+
+  window.addEventListener('popstate',e=>{
+    if(suppressNextPopstate){
+      suppressNextPopstate=false;
+      return;
+    }
+    if(!S.session || S.passwordMode) return;
+
+    // If a modal is open, Back closes it first and reveals the page beneath.
+    if(document.getElementById('modalBackdrop')){
+      closeModal(true);
+    }
+
+    const state=e.state;
+    if(state?.inventoryTracker){
+      S.page=state.page||'dashboard';
+      S.selectedItemId=null;
+      render();
+      return;
+    }
+    // Reaching a non-app history entry means the user has backed out of the
+    // Inventory Tracker. Do not trap them at the dashboard.
+  });
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
