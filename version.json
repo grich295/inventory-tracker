@@ -1,0 +1,6 @@
+{
+  "version": "2.2.6",
+  "build": "standalone-final-v226-20260911",
+  "clean_build": true,
+  "notes": "Final standalone hardening build: filter-consistent pending queue, stronger SDS Section 1.1 naming, Supporting vs Required training links, safe permanent delete for never-used documents, and orphaned storage cleanup. No Inventory/Safety integration included."
+}
