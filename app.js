@@ -4,6 +4,7 @@
 
   const app = document.getElementById('app');
   const cfg = window.APP_CONFIG || {};
+  const LIVE_APP_URL = 'https://grich295.github.io/inventory-tracker/';
   const configured = cfg.supabaseUrl && cfg.anonKey && !cfg.supabaseUrl.includes('YOUR_PROJECT') && !cfg.anonKey.includes('YOUR_SUPABASE');
 
   if (!configured || !window.supabase) {
@@ -46,6 +47,7 @@
     safetyBridgeLinks: [],
     safetyCatalogue: [],
     safetyCatalogueLoading: false,
+    safetyCatalogueAttempted: false,
     safetyBridgeEvents: [],
     safetyGate: null,
     backupRunning: false,
@@ -517,7 +519,7 @@
     document.getElementById('forgotBtn').onclick = async () => {
       const email = document.getElementById('loginEmail').value.trim();
       if (!email) { S.notice={message:'Enter your email address first.',type:'error'}; return renderLogin(); }
-      const redirectTo = `${location.origin}${location.pathname}`;
+      const redirectTo = LIVE_APP_URL;
       const { error } = await sb.auth.resetPasswordForEmail(email,{redirectTo});
       S.notice = error ? {message:parseError(error),type:'error'} : {message:'Password reset email sent.',type:'success'};
       renderLogin();
@@ -558,7 +560,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.4.0</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.4.2</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -1619,7 +1621,9 @@
 
   async function loadSafetyCatalogue(force=false){
     if(S.safetyCatalogueLoading)return;
-    if(S.safetyCatalogue.length&&!force)return;
+    if(!force&&(S.safetyCatalogue.length||S.safetyCatalogueAttempted))return;
+    if(force)S.safetyCatalogue=[];
+    S.safetyCatalogueAttempted=true;
     S.safetyCatalogueLoading=true;if(S.page==='safetybridge')render();
     try{const out=await callSafetyBridge({action:'catalogue'});S.safetyCatalogue=out.catalogue||[];if(out.safety_app_url&&!S.safetyBridgeSettings?.safety_tracker_url)S.safetyBridgeSettings={...(S.safetyBridgeSettings||{}),safety_tracker_url:out.safety_app_url};}
     catch(e){setNotice(`Could not load Safety Tracker catalogue: ${parseError(e)}`,'error');}
@@ -1633,9 +1637,9 @@
     const settings=document.getElementById('safetyBridgeSettingsForm');if(settings)settings.onsubmit=async e=>{e.preventDefault();try{const {error}=await sb.rpc('save_safety_bridge_settings_v836',{p_enabled:document.getElementById('safetyBridgeEnabled').checked,p_safety_tracker_url:document.getElementById('safetyBridgeUrl').value.trim()});if(error)throw error;await loadData({transactions:false});setNotice(`Safety Bridge ${S.safetyBridgeSettings?.enabled?'enabled':'disabled'}.`);render();}catch(err){setNotice(parseError(err),'error');render();}};
     const item=document.getElementById('safetyBridgeItem');if(item)item.onchange=()=>{S.selectedItemId=item.value;render();};
     document.querySelectorAll('[data-remove-safety-link]').forEach(b=>b.onclick=async()=>{try{const {error}=await sb.rpc('set_safety_bridge_item_link_active_v836',{p_link_id:b.dataset.removeSafetyLink,p_active:false});if(error)throw error;await loadData({transactions:false});setNotice('Safety link removed.');render();}catch(e){setNotice(parseError(e),'error');render();}});
-    const refresh=document.getElementById('refreshSafetyCatalogue');if(refresh)refresh.onclick=()=>loadSafetyCatalogue(true);
+    const refresh=document.getElementById('refreshSafetyCatalogue');if(refresh)refresh.onclick=()=>{S.safetyCatalogueAttempted=false;loadSafetyCatalogue(true);};
     const add=document.getElementById('addSafetyLink');if(add)add.onclick=async()=>{const sel=document.getElementById('safetyCatalogueSelect');if(!sel?.value||!S.selectedItemId)return;const [kind,id]=sel.value.split('|');const entry=S.safetyCatalogue.find(x=>x.target_kind===kind&&x.target_id===id);if(!entry)return;try{const {error}=await sb.rpc('save_safety_bridge_item_link_v836',{p_item_id:S.selectedItemId,p_target_kind:entry.target_kind,p_safety_target_id:entry.target_id,p_safety_reference:entry.reference||null,p_safety_title:entry.title,p_safety_type:entry.type||null});if(error)throw error;await loadData({transactions:false});setNotice('Safety requirement linked to inventory item.');render();}catch(e){setNotice(parseError(e),'error');render();}};
-    if(!S.safetyCatalogue.length&&!S.safetyCatalogueLoading)setTimeout(()=>loadSafetyCatalogue(),0);
+    if(!S.safetyCatalogue.length&&!S.safetyCatalogueLoading&&!S.safetyCatalogueAttempted)setTimeout(()=>loadSafetyCatalogue(),0);
     if(!S.safetyBridgeEvents.length)setTimeout(async()=>{await loadSafetyBridgeEvents();if(S.page==='safetybridge')render();},0);
   }
 
@@ -2576,7 +2580,7 @@ Keep this file somewhere secure.
     });
     const f=document.getElementById('inviteForm'); if(f) f.onsubmit=async e=>{
       e.preventDefault();
-      const body={action:'invite',display_name:document.getElementById('inviteName').value.trim(),email:document.getElementById('inviteEmail').value.trim(),role:document.getElementById('inviteRole').value,redirect_to:location.origin+location.pathname};
+      const body={action:'invite',display_name:document.getElementById('inviteName').value.trim(),email:document.getElementById('inviteEmail').value.trim(),role:document.getElementById('inviteRole').value,redirect_to:LIVE_APP_URL};
       try{await invoke(body);setNotice('Invitation sent. The user must set their password before entering the tracker.');await loadData({transactions:false});render();}
       catch(e){setNotice(`Invite failed: ${parseError(e)}. If this is the first invite, deploy the included invite-user Edge Function from your laptop.`, 'error');render();}
     };
