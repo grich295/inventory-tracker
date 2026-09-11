@@ -1,3418 +1,1473 @@
-/* Inventory Tracker - static PWA frontend for Supabase */
-(() => {
-  'use strict';
+/* Safety Tracker v2.3.3 - cache-bust fix for user editing and resend access email. */
+'use strict';
 
-  const app = document.getElementById('app');
-  const cfg = window.APP_CONFIG || {};
-  const LIVE_APP_URL = 'https://grich295.github.io/inventory-tracker/';
-  const configured = cfg.supabaseUrl && cfg.anonKey && !cfg.supabaseUrl.includes('YOUR_PROJECT') && !cfg.anonKey.includes('YOUR_SUPABASE');
+const APP_VERSION='2.3.3';
+const BUILD_ID='people-edit-resend-access-v232-20260911';
+const CFG=window.SAFETY_TRACKER_CONFIG||{};
+const configured=!!(CFG.supabaseUrl&&CFG.supabaseKey&&!String(CFG.supabaseUrl).includes('PASTE_')&&!String(CFG.supabaseKey).includes('PASTE_'));
+const sb=configured?window.supabase.createClient(CFG.supabaseUrl,CFG.supabaseKey):null;
 
-  if (!configured || !window.supabase) {
-    app.innerHTML = `
-      <div class="setup card">
-        <h1>Inventory Tracker</h1>
-        <p class="muted">The app is built. Connect it to Supabase to start using shared multi-user inventory.</p>
-        <ol>
-          <li>Create a free Supabase project.</li>
-          <li>Run <code>supabase/schema.sql</code> in the Supabase SQL Editor.</li>
-          <li>Copy <code>config.example.js</code> to <code>config.js</code> and paste your Project URL and anon key.</li>
-          <li>Optionally run <code>supabase/seed_instock.sql</code> to import the supplied InStock history.</li>
-          <li>Serve this folder over HTTPS (Cloudflare Pages, Netlify, GitHub Pages, or similar).</li>
-        </ol>
-        <p>See <strong>README.md</strong> for the complete setup, user-invite and password-reset instructions.</p>
-      </div>`;
+const state={
+  user:null,profile:null,people:[],documents:[],versions:[],documentLinks:[],documentReviews:[],
+  training:[],trainingAssignments:[],trainingSignoffs:[],trainingExceptions:[],trainingConfirmations:[],trainingFiles:[],trainingDocumentLinks:[],
+  historicalDocAssignments:[],historicalDocSignoffs:[],historicalDocConfirmations:[],documentActivity:[],
+  awarenessItems:[],awarenessAssignments:[],awarenessActivity:[],ppeItems:[],ppeAssignments:[],ppeChecks:[],ppeCheckItems:[],ppeAlertQueue:[],reportSchedules:[],generatedReports:[],reportEmailLog:[],
+  departments:[],userDepartments:[],documentAudiences:[],
+  settings:[],loadErrors:{},syncBusy:false,documentIndex:'ALL',storageOrphans:[]
+};
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+const clean=s=>String(s||'').replace(/\s+/g,' ').trim();
+const todayISO=()=>new Date().toISOString().slice(0,10);
+const daysFromNow=n=>{const d=new Date();d.setDate(d.getDate()+n);return d.toISOString().slice(0,10)};
+const plusYear=iso=>{const d=new Date((iso||todayISO())+'T12:00:00');d.setFullYear(d.getFullYear()+1);return d.toISOString().slice(0,10)};
+const fmtDate=d=>d?new Date(String(d).length===10?d+'T00:00:00':d).toLocaleDateString('en-GB'):'—';
+const fmtDateTime=d=>d?new Date(d).toLocaleString('en-GB'):'—';
+const isManager=()=>['admin','manager'].includes(state.profile?.role)&&state.profile?.report_only!==true;
+const isAdmin=()=>state.profile?.role==='admin'&&state.profile?.report_only!==true;
+const isReportViewer=()=>state.profile?.report_only===true;
+const canViewReports=()=>isManager()||isReportViewer();
+const activePeople=()=>state.people.filter(p=>p.active!==false&&p.report_only!==true);
+const activeDepartments=()=>state.departments.filter(d=>d.active!==false).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));
+const departmentName=id=>state.departments.find(d=>d.id===id)?.name||'No department';
+const userDepartmentRow=userId=>state.userDepartments.find(x=>x.user_id===userId)||null;
+const userDepartmentId=userId=>userDepartmentRow(userId)?.department_id||null;
+const userDepartmentName=userId=>{const id=userDepartmentId(userId);return id?departmentName(id):'No department'};
+const audienceRowsForDocument=documentId=>state.documentAudiences.filter(x=>x.document_id===documentId);
+const audienceTargetsForDocument=documentId=>{const rows=audienceRowsForDocument(documentId);return {everyone:rows.some(x=>x.target_type==='EVERYONE'),departmentIds:new Set(rows.filter(x=>x.target_type==='DEPARTMENT'&&x.department_id).map(x=>x.department_id)),userIds:new Set(rows.filter(x=>x.target_type==='PERSON'&&x.user_id).map(x=>x.user_id)),dueDays:Number(rows.find(x=>x.due_days)?.due_days||14)}};
+function documentAudiencePeople(documentId){const a=audienceTargetsForDocument(documentId),people=activePeople();if(a.everyone)return people;return people.filter(p=>a.userIds.has(p.id)||(userDepartmentId(p.id)&&a.departmentIds.has(userDepartmentId(p.id))))}
+function documentAudienceSummary(documentId){const a=audienceTargetsForDocument(documentId);if(!audienceRowsForDocument(documentId).length)return 'No automatic audience';if(a.everyone)return `Everyone · ${documentAudiencePeople(documentId).length} active user${documentAudiencePeople(documentId).length===1?'':'s'}`;const parts=[];if(a.departmentIds.size)parts.push(`${a.departmentIds.size} department${a.departmentIds.size===1?'':'s'}`);if(a.userIds.size)parts.push(`${a.userIds.size} person${a.userIds.size===1?'':'s'}`);parts.push(`${documentAudiencePeople(documentId).length} matched user${documentAudiencePeople(documentId).length===1?'':'s'}`);return parts.join(' · ')}
+const sourceDocTypes=new Set(['RISK_ASSESSMENT','COSHH','SSW']);
+const trainingKinds=['RISK_ASSESSMENT','COSHH','SSW','TOOLBOX_TALK','INDUCTION','REFRESHER','AD_HOC','OTHER'];
+const refRx=/\b(?:COSHH\s*RA|COSHHRA|COSHH|RA|SSW|TBT|PROC|SDS|MSDS)[\s_-]*\d{1,4}\b/gi;
+const documentIndexDefs={
+  RISK_ASSESSMENT:{title:'Risk Assessment Index',short:'Risk Assessments',description:'Controlled risk assessments, current versions and review dates.'},
+  COSHH:{title:'COSHH Risk Assessment Index',short:'COSHH Risk Assessments',description:'COSHH assessments only — kept separate from manufacturer MSDS/Safety Data Sheets.'},
+  SSW:{title:'Safe System of Work Index',short:'Safe Systems of Work',description:'Controlled SSW documents and current versions.'},
+  SDS:{title:'MSDS / Safety Data Sheet Index',short:'MSDS / Safety Data Sheets',description:'Manufacturer safety data sheets only. These are reference documents, not COSHH risk assessments.'},
+  TOOLBOX_TALK:{title:'Toolbox Talk Index',short:'Toolbox Talks',description:'Toolbox Talk source files are indexed here while completion and sign-off stay in Training.'}
+};
+
+function toast(msg){const t=$('toast');if(!t)return;t.textContent=msg;t.hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>t.hidden=true,4200)}
+function showAuthMessage(msg){$('authMessage').textContent=msg;$('authMessage').hidden=false}
+function btn(label,cls='secondary',attrs=''){return `<button type="button" class="${cls}" ${attrs}>${esc(label)}</button>`}
+
+// Installed Android PWAs can open with only one browser-history entry. Keep a
+// protected in-app root plus normal view/modal entries so Back navigates within
+// Safety Tracker instead of immediately closing the installed app.
+let navigationReady=false;
+let currentViewName='mySafety';
+const safetyNavState=(extra={})=>({safetyTracker:true,view:currentViewName,modal:false,guard:false,...extra});
+function seedSafetyNavigation(initialView){
+  currentViewName=initialView||'mySafety';
+  const st=history.state;
+  if(!st?.safetyTracker){
+    history.replaceState(safetyNavState({view:currentViewName,guard:true,modal:false}),'',location.href);
+    history.pushState(safetyNavState({view:currentViewName,guard:false,modal:false}),'',location.href);
+  }else if(st.guard){
+    history.pushState(safetyNavState({view:currentViewName,guard:false,modal:false}),'',location.href);
+  }else{
+    history.replaceState({...st,...safetyNavState({view:currentViewName,guard:false,modal:false})},'',location.href);
+  }
+  navigationReady=true;
+}
+function openModal(title,html){
+  const modal=$('modal');
+  const wasOpen=!!modal?.open;
+  $('modalTitle').textContent=title;
+  $('modalBody').innerHTML=html;
+  if(!wasOpen)modal.showModal();
+  if(navigationReady&&!wasOpen&&!history.state?.modal){
+    history.pushState(safetyNavState({view:currentViewName,modal:true,guard:false}),'',location.href);
+  }
+}
+function closeModal(fromPopstate=false){
+  if($('modal')?.open)$('modal').close();
+  if(!fromPopstate&&navigationReady&&history.state?.safetyTracker&&history.state.modal)history.back();
+}
+function handleSafetyPopstate(e){
+  if(!navigationReady)return;
+  if($('modal')?.open)closeModal(true);
+  const st=e.state;
+  const root=isReportViewer()?'reports':'mySafety';
+  if(st?.safetyTracker){
+    if(st.guard){
+      currentViewName=root;
+      showView(root,{push:false});
+      history.pushState(safetyNavState({view:root,modal:false,guard:false}),'',location.href);
+      return;
+    }
+    currentViewName=st.view||root;
+    showView(currentViewName,{push:false});
     return;
   }
+  currentViewName=root;
+  showView(root,{push:false});
+  history.pushState(safetyNavState({view:root,modal:false,guard:false}),'',location.href);
+}
+function docTypeLabel(type){return ({RISK_ASSESSMENT:'Risk Assessment',COSHH:'COSHH Risk Assessment',SSW:'Safe System of Work',SDS:'MSDS / Safety Data Sheet',POLICY:'Policy',PROCEDURE:'Procedure',OTHER:'Other'})[type]||String(type||'')}
+function kindLabel(type){return ({RISK_ASSESSMENT:'Risk Assessment',COSHH:'COSHH Risk Assessment',SSW:'Safe System of Work',TOOLBOX_TALK:'Toolbox Talk',INDUCTION:'Induction',REFRESHER:'Refresher',AD_HOC:'Ad-hoc training',OTHER:'Other'})[type]||String(type||'Training').replaceAll('_',' ')}
+function deliveryText(v){return v==='INSTRUCTOR_LED'?'Instructor-led':'Self-training'}
+function defaultTrainingDelivery(type){return ['SSW','TOOLBOX_TALK','INDUCTION'].includes(type)?'INSTRUCTOR_LED':'SELF_TRAINING'}
+function sourceDelivery(docType){return docType==='SSW'?'INSTRUCTOR_LED':'SELF_TRAINING'}
+function defaultSourceRenewal(docType){return ['RISK_ASSESSMENT','COSHH'].includes(docType)?{value:12,unit:'MONTHS'}:{value:null,unit:null}}
+function renewalText(v,u,onChangeOnly=false){return v&&u?`Every ${v} ${String(u).toLowerCase()}`:(onChangeOnly?'On change only':'One-off')}
+function addRenewal(date,v,u){if(!date||!v||!u)return null;const d=new Date(date);if(u==='DAYS')d.setDate(d.getDate()+Number(v));if(u==='MONTHS')d.setMonth(d.getMonth()+Number(v));if(u==='YEARS')d.setFullYear(d.getFullYear()+Number(v));return d.toISOString()}
+function versionApprovalStatus(v){return String(v?.approval_status||'APPROVED').toUpperCase()}
+function isVersionApproved(v){return !!v&&versionApprovalStatus(v)==='APPROVED'}
+function currentVersion(docId){return state.versions.find(v=>v.document_id===docId&&v.status==='CURRENT')||null}
+function approvedCurrentVersion(docId){const v=currentVersion(docId);return isVersionApproved(v)?v:null}
+function latestVersion(docId){return state.versions.filter(v=>v.document_id===docId).sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0))[0]||null}
+function pendingApprovalVersions(docId){return state.versions.filter(v=>v.document_id===docId&&versionApprovalStatus(v)==='PENDING').sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0))}
+function pendingApprovalVersion(docId){return pendingApprovalVersions(docId)[0]||null}
+function rejectedVersion(docId){return state.versions.filter(v=>v.document_id===docId&&versionApprovalStatus(v)==='REJECTED').sort((a,b)=>new Date(b.approval_at||b.created_at||0)-new Date(a.approval_at||a.created_at||0))[0]||null}
+function documentHasApprovedCurrent(d){return !!d&&d.status!=='ARCHIVED'&&!!approvedCurrentVersion(d.id)}
+function trainingSourceVersion(t){return t?.source_document_version_id?state.versions.find(v=>v.id===t.source_document_version_id)||null:null}
+function trainingSourceApproved(t){const v=trainingSourceVersion(t);return !v||isVersionApproved(v)}
+function versionApprovalLabel(v,d=null){const st=versionApprovalStatus(v);if(st==='APPROVED')return d?.doc_type==='SDS'?'Accepted/current':'Approved/current';if(st==='PENDING')return d?.doc_type==='SDS'?'Pending acceptance':'Pending approval';if(st==='REJECTED')return d?.doc_type==='SDS'?'Not accepted':'Not approved';return st}
+function documentTraffic(d){if(!d||d.status==='ARCHIVED')return 'neutral';const approved=approvedCurrentVersion(d.id),pending=pendingApprovalVersion(d.id),rejected=rejectedVersion(d.id);if(!approved&&rejected&&!pending)return 'red';if(pending)return 'amber';if(!approved)return 'red';if(approved.review_date&&approved.review_date<todayISO())return 'red';if(d.review_required||(approved.review_date&&approved.review_date>=todayISO()&&approved.review_date<=daysFromNow(30)))return 'amber';return 'green'}
+function personName(id){const p=state.people.find(x=>x.id===id);return p?.display_name||p?.email||'Unknown user'}
+function trainingReference(t){return t?.reference||(String(t?.name||'').match(/\bTBT-\d{3}\b/i)?.[0]?.toUpperCase()||'')}
+function trainingKind(t){return t?.source_kind||t?.session_type||'OTHER'}
+function sourceForTraining(t){return state.documents.find(d=>d.id===t?.source_document_id)||null}
+function trainingLinks(tid){return state.trainingDocumentLinks.filter(l=>l.training_session_id===tid)}
+function linkedTrainingDocs(tid){return trainingLinks(tid).map(l=>({link:l,doc:state.documents.find(d=>d.id===l.document_id)})).filter(x=>x.doc)}
+function defaultTrainingLinkRole(doc,sourceId=null){if(!doc)return 'RELATED';if(doc.id===sourceId)return 'SOURCE';return ['COSHH','SSW'].includes(doc.doc_type)?'REQUIRED':'RELATED'}
+function documentApprovalSummary(d){
+  const approved=approvedCurrentVersion(d?.id),pending=pendingApprovalVersion(d?.id);
+  if(approved&&pending)return {ready:true,label:`${d?.doc_type==='SDS'?'Accepted':'Approved'} current · replacement pending`,traffic:'amber',version:approved};
+  if(approved)return {ready:true,label:d?.doc_type==='SDS'?'Accepted/current':'Approved/current',traffic:'green',version:approved};
+  if(pending)return {ready:false,label:d?.doc_type==='SDS'?'Pending acceptance':'Pending approval',traffic:'amber',version:pending};
+  return {ready:false,label:'No approved/current version',traffic:'red',version:latestVersion(d?.id)};
+}
+function trainingDependencyState(t){
+  const reasons=[];
+  if(!t)return {ready:false,reasons:['Training record not found'],required:[]};
+  if(t.source_document_id){
+    const src=state.documents.find(d=>d.id===t.source_document_id),approved=approvedCurrentVersion(t.source_document_id);
+    if(!approved||approved.id!==t.source_document_version_id)reasons.push(`${src?.reference||src?.title||'Controlled source'} is not approved/current`);
+  }
+  return {ready:reasons.length===0,reasons,required:[]};
+}
+function trainingDependencyMessage(t){const d=trainingDependencyState(t);return d.ready?'':`Training is not live until its controlled source is approved/current: ${d.reasons.join('; ')}`}
+function linksForDocument(did){return state.documentLinks.filter(l=>l.source_document_id===did||l.target_document_id===did)}
+function otherDocForLink(link,did){return state.documents.find(d=>d.id===(link.source_document_id===did?link.target_document_id:link.source_document_id))}
+function pairExists(a,b){return state.documentLinks.some(l=>(l.source_document_id===a&&l.target_document_id===b)||(l.source_document_id===b&&l.target_document_id===a))}
+function inferLinkType(a,b){
+  if(a?.doc_type==='SDS'&&b?.doc_type==='COSHH')return {source:a,target:b,type:'SDS_TO_COSHH'};
+  if(a?.doc_type==='COSHH'&&b?.doc_type==='SDS')return {source:b,target:a,type:'SDS_TO_COSHH'};
+  if(a?.doc_type==='COSHH'&&b?.doc_type==='SSW')return {source:a,target:b,type:'COSHH_TO_SSW'};
+  if(a?.doc_type==='SSW'&&b?.doc_type==='COSHH')return {source:b,target:a,type:'COSHH_TO_SSW'};
+  if(a?.doc_type==='RISK_ASSESSMENT'&&b?.doc_type==='SSW')return {source:a,target:b,type:'RA_TO_SSW'};
+  if(a?.doc_type==='SSW'&&b?.doc_type==='RISK_ASSESSMENT')return {source:b,target:a,type:'RA_TO_SSW'};
+  return {source:a,target:b,type:'RELATED'};
+}
+function linkTypeLabel(t){return ({SDS_TO_COSHH:'SDS/MSDS → COSHH',COSHH_TO_SSW:'COSHH → SSW',RA_TO_SSW:'RA → SSW',RELATED:'Related document'})[t]||t}
 
-  const sb = window.supabase.createClient(cfg.supabaseUrl, cfg.anonKey, {
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
-  });
-
-  const S = {
-    session: null,
-    profile: null,
-    profiles: [],
-    items: [],
-    locations: [],
-    balances: [],
-    transactions: [],
-    categories: [],
-    itemSuppliers: [],
-    purchaseOrders: [],
-    userPrefs: [],
-    stocktakeSettings: null,
-    stocktakeTasks: [],
-    stocktakeItems: [],
-    safetyBridgeSettings: null,
-    safetyBridgeLinks: [],
-    safetyCatalogue: [],
-    safetyCatalogueLoading: false,
-    safetyCatalogueAttempted: false,
-    safetyBridgeEvents: [],
-    safetyBridgeFeedback: [],
-    safetySuggestions: [],
-    safetySuggestionsGenerated: false,
-    safetyGate: null,
-    backupRunning: false,
-    backupStatus: '',
-    binSetupLocation: '',
-    orderTab: 'suggested',
-    page: 'dashboard',
-    search: '',
-    categoryFilter: '',
-    categoryModel: null,
-    selectedItemId: null,
-    showArchived: false,
-    legacyItemFilter: '',
-    legacyFrom: '',
-    legacyTo: '',
-    scanner: null,
-    cameraStream: null,
-    cameraTrack: null,
-    scanFrame: null,
-    smallQrMode: false,
-    torchOn: false,
-    cameraBaseZoom: null,
-    cameraCaps: null,
-    cameraZoom: null,
-    chart: null,
-    liveChannel: null,
-    liveTimer: null,
-    notice: null,
-    passwordMode: false,
-    offline: !navigator.onLine,
-    offlineSnapshotAt: null,
-    syncingOffline: false,
-    offlineSyncError: null,
-    report: { period: 'month', item: '', graphItem: '', user: '', location: '', bin: '', from: '', to: '' }
-  };
-
-  // Browser/PWA navigation history. Android's Back button should move back
-  // through Inventory Tracker before it is allowed to leave the app.
-  let suppressNextPopstate = false;
-  const navState = (extra={}) => ({ inventoryTracker:true, page:S.page, ...extra });
-  function ensureNavigationHistory() {
-    if(!S.session || S.passwordMode) return;
-    const state=history.state;
-    const current=navState({modal:false,guard:false});
-    // Installed PWAs often launch with a single history entry. Seed a protected
-    // root entry plus the current app entry so Android Back always has an
-    // in-app destination instead of immediately closing the PWA.
-    if(!state?.inventoryTracker){
-      history.replaceState(navState({modal:false,guard:true,page:'dashboard'}),'',location.href);
-      history.pushState(current,'',location.href);
-      return;
+function canonicalRef(raw){
+  const s=clean(raw).toUpperCase().replace(/_/g,' ').replace(/\s+/g,' ').replace(/^COSHH\s*RA\b/,'COSHH ').replace(/^COSHHRA\b/,'COSHH ');
+  const m=s.match(/^(COSHH|RA|SSW|TBT|PROC|SDS|MSDS)[\s-]*(\d{1,4})$/);
+  if(!m)return clean(raw).toUpperCase();
+  const digits=m[2].length<3?m[2].padStart(3,'0'):m[2];
+  const prefix=m[1]==='MSDS'?'SDS':m[1];
+  return `${prefix}-${digits}`;
+}
+function normalisedPhrase(s){
+  return clean(s).toLowerCase().replace(/&/g,' and ').replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();
+}
+function normalisedProductName(s){
+  return normalisedPhrase(s)
+    .replace(/\b(?:safety|data|sheet|sds|msds|coshh|risk|assessment|current|official|manufacturer|supplier|product|name|identifier|trade|brand|version|revision|date|gb|uk|en|eu|as|used)\b/g,' ')
+    .replace(/\b\d+(?:\.\d+)?\s*(?:ml|millilitres?|l|litres?|g|grams?|kg|kilograms?)\b/g,' ')
+    .replace(/\s+/g,' ').trim();
+}
+function productMatchTokens(s){
+  const stop=new Set(['safety','data','sheet','sds','msds','coshh','risk','assessment','current','official','manufacturer','supplier','product','name','identifier','trade','brand','version','revision','date','the','and','for','with','from','this','that','use','using','of','to','in','on','a','an','gb','uk','en','eu','as','used']);
+  return normalisedPhrase(s).split(' ').filter(w=>w.length>1&&!stop.has(w)&&!/^(?:ml|kg|mg|litre|litres|gram|grams)$/.test(w));
+}
+function productNameMatchScore(a,b){
+  const A=productMatchTokens(a),B=productMatchTokens(b);
+  if(!A.length||!B.length)return 0;
+  const na=normalisedProductName(a),nb=normalisedProductName(b);
+  if(na&&nb&&(na===nb||na.includes(nb)||nb.includes(na)))return 1;
+  const bs=new Set(B),common=[...new Set(A.filter(x=>bs.has(x)))];
+  const coverage=common.length/Math.max(1,Math.min(new Set(A).size,new Set(B).size));
+  const union=new Set([...A,...B]).size;
+  const jaccard=common.length/Math.max(1,union);
+  const distinctive=common.some(x=>x.length>=5||/\d/.test(x));
+  if(!distinctive)return 0;
+  return Math.min(0.99,coverage*0.78+jaccard*0.22);
+}
+function extractCoshhProductCandidates(text,owner=null){
+  const raw=clean(text),out=[];
+  if(owner?.title)out.push(owner.title);
+  const patterns=[
+    /\bName of Substance\s*:?\s*([\s\S]{3,140}?)(?=\s+Brand\s*:|\s+Where is SDS|\s+Substance Details|\s+Form\s*:)/ig,
+    /\bCurrent\s+(?:[A-Za-z0-9&./'() -]+?\s+)?(?:GB(?:-en)?|UK|EU)?\s*SDS\s*:\s*([\s\S]{3,120}?)(?=\s+(?:product codes?|UFI|revision|version|classification|signal word|precautions|\bH\d{3}\b)|[.;])/ig,
+    /\b(?:SDS|MSDS|Safety Data Sheet)\s+(?:for|covering)\s+([\s\S]{3,100}?)(?=[.;]|\s+(?:version|revision|dated|date)\b)/ig
+  ];
+  for(const rx of patterns){let m;while((m=rx.exec(raw))!==null){const c=cleanSdsCandidate(m[1]);if(c&&!isBadSdsTitle(c))out.push(c);if(out.length>=12)break}}
+  return [...new Set(out.map(clean).filter(Boolean))];
+}
+function coshhMatchesSds(text,owner,sdsDoc){
+  const aliases=[sdsDoc?.title,documentDisplayTitle(sdsDoc),stripPdfName(originalBulkSourceName(currentVersion(sdsDoc?.id)))].map(clean).filter(Boolean);
+  const hay=normalisedProductName(text);
+  let best=0;
+  for(const alias of aliases){
+    const na=normalisedProductName(alias);
+    if(na&&na.length>=4&&hay.includes(na))best=Math.max(best,1);
+  }
+  const candidates=extractCoshhProductCandidates(text,owner);
+  for(const c of candidates)for(const alias of aliases)best=Math.max(best,productNameMatchScore(c,alias));
+  return best;
+}
+function significantLinkWords(s){
+  const stop=new Set(['risk','assessment','coshh','safe','system','work','safety','data','sheet','msds','sds','document','documents','procedure','policy','version','the','and','for','with','from','this','that','use','using','of','to','in','on','a','an']);
+  return normalisedPhrase(s).split(' ').filter(w=>w.length>2&&!stop.has(w));
+}
+function linkContextText(text){
+  const raw=clean(text);
+  // Only use text around wording that actually declares a relationship. This avoids
+  // creating links merely because another document type is mentioned somewhere.
+  const markers=/\b(?:RELATED DOCUMENTS?|LINKED DOCUMENTS?|ASSOCIATED DOCUMENTS?|REFERENCE DOCUMENTS?|REFERENCES?|SUPPORTING DOCUMENTS?|RELEVANT DOCUMENTS?|APPLICABLE DOCUMENTS?|DOCUMENTS? REFERENCED|SEE ALSO|REFER TO|REFERRED TO|LINKED TO|ASSOCIATED WITH|RELATED CONTROLS?|SUPPORTING CONTROLS?|RELATED ASSESSMENTS?|RELEVANT RA(?:S)?|RELEVANT RISK ASSESSMENTS?|RELEVANT COSHH(?: RISK ASSESSMENTS?)?|APPLICABLE RA(?:S)?|APPLICABLE RISK ASSESSMENTS?|APPLICABLE COSHH(?: RISK ASSESSMENTS?)?|SUPPORTING (?:RA|RISK ASSESSMENTS?|COSHH(?: RISK ASSESSMENTS?)?|SSW|SAFE SYSTEMS? OF WORK|TBT|TOOLBOX TALKS?|DOCUMENTS?|CONTROLS?)|RELATED (?:RA|RISK ASSESSMENTS?|COSHH(?: RISK ASSESSMENTS?)?|SSW|SAFE SYSTEMS? OF WORK|TBT|TOOLBOX TALKS?|CONTROLS?)|LINKED (?:RA|RISK ASSESSMENTS?|COSHH(?: RISK ASSESSMENTS?)?|SSW|SAFE SYSTEMS? OF WORK|TBT|TOOLBOX TALKS?)|(?:RA|RISK ASSESSMENT|COSHH|SSW|SAFE SYSTEM OF WORK|TBT|TOOLBOX TALK) REFERENCES?)\b/gi;
+  const chunks=[]; let m;
+  while((m=markers.exec(raw))!==null){
+    chunks.push(raw.slice(Math.max(0,m.index-140),Math.min(raw.length,m.index+760)));
+    if(chunks.length>=50)break;
+  }
+  return chunks.join(' | ');
+}
+function declaredRefsForLinking(text,owner=null){
+  const refs=new Set(refsInText(linkContextText(text)));
+  const ownerRef=canonicalRef(owner?.reference||'');
+  if(ownerRef)refs.delete(ownerRef);
+  return [...refs];
+}
+function referencedTrainingByRef(ref){
+  const c=canonicalRef(ref);
+  return activeTraining().find(t=>canonicalRef(trainingReference(t))===c)||null;
+}
+function referencedDocumentByRef(ref){
+  const c=canonicalRef(ref);
+  return state.documents.find(d=>d.status!=='ARCHIVED'&&canonicalRef(d.reference||'')===c)||null;
+}
+function missingDeclaredRefs(text,owner=null){
+  return declaredRefsForLinking(text,owner).filter(ref=>!referencedDocumentByRef(ref)&&!referencedTrainingByRef(ref));
+}
+function textMentionsDocumentTitle(text,title){
+  const hay=normalisedPhrase(text), needle=normalisedPhrase(title);
+  if(!hay||!needle||needle.length<4)return false;
+  const words=significantLinkWords(title);
+  const distinctive=words.length>=2 || /\d/.test(needle) || needle.length>=12;
+  return distinctive && hay.includes(needle);
+}
+function declaredDocumentMatches(text,owner=null){
+  // Link discovery is independent of approval. Pending controlled documents can be
+  // related immediately; approval controls whether Training is allowed to go live.
+  const active=state.documents.filter(d=>d.status!=='ARCHIVED'&&d.id!==owner?.id);
+  const refs=new Set(declaredRefsForLinking(text,owner));
+  const contexts=linkContextText(text);
+  const hasSdsCue=/\b(?:SDS|MSDS|SAFETY DATA SHEET|MATERIAL SAFETY DATA SHEET)\b/i.test(text);
+  const out=[];
+  for(const d of active){
+    const cref=canonicalRef(d.reference||'');
+    let reason='';
+    if(cref&&refs.has(cref))reason='reference stated in linked/reference section';
+    else if(textMentionsDocumentTitle(contexts,documentDisplayTitle(d)||d.title))reason='title stated in linked/reference section';
+    else if(owner?.doc_type==='COSHH'&&d.doc_type==='SDS'&&hasSdsCue){
+      const score=coshhMatchesSds(text,owner,d);
+      if(score>=0.74)reason=`SDS/product name aligned with COSHH assessment (${Math.round(score*100)}% match)`;
     }
-    if(state.guard){
-      history.pushState(current,'',location.href);
-      return;
-    }
-    history.replaceState({...state,...current,modal:!!state.modal,guard:false},'',location.href);
+    if(reason)out.push({doc:d,reason});
   }
-  function navigatePage(page,{replace=false}={}) {
-    if(!page) return;
-    const modal=document.getElementById('modalBackdrop');
-    if(modal) modal.remove();
-    S.page=page;
-    S.selectedItemId=null;
-    const state=navState({modal:false});
-    if(replace) history.replaceState(state,'',location.href);
-    else history.pushState(state,'',location.href);
-    render();
-  }
-  function pushModalHistory() {
-    if(!S.session || S.passwordMode) return;
-    // A chain of modal actions counts as one screen for Back. This prevents
-    // repeated modal replacements from creating a long stack of dead views.
-    if(history.state?.inventoryTracker && history.state.modal) return;
-    history.pushState(navState({modal:true}),'',location.href);
-  }
+  return out;
+}
+function activeTraining(){return state.training.filter(t=>t.status!=='ARCHIVED')}
 
-  const esc = v => String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-  const num = v => Number(v || 0);
-  const qty = v => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 3 });
-  const money = v => v == null || v === '' ? '—' : `£${Number(v).toFixed(2)}`;
-  const fmtDate = v => v ? new Date(v).toLocaleString() : '—';
-  const fmtShortDate = v => v ? new Date(v).toLocaleDateString() : '—';
-  const todayISO = () => new Date().toISOString().slice(0,10);
-  const backupStorageKey = 'inventoryTrackerLastBackupAt';
-  const lastBackupAt = () => localStorage.getItem(backupStorageKey) || '';
-  const backupDue = () => {
-    const v=lastBackupAt();
-    if(!v) return true;
-    const age=Date.now()-new Date(v).getTime();
-    return !Number.isFinite(age) || age >= 7*24*60*60*1000;
-  };
-  const monthStartISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`; };
-  const byId = (arr, id) => arr.find(x => x.id === id);
-  const canManage = () => ['admin','manager'].includes(S.profile?.role);
-  const canAdmin = () => S.profile?.role === 'admin';
-  const roleLabel = r => ({admin:'Admin',manager:'Manager',staff:'User'})[String(r||'staff')] || 'User';
-  const countsAsUsage = t => t?.transaction_type==='USE' && !t?.exclude_from_usage && (!t?.legacy_import || !t?.legacy_classification || t.legacy_classification==='USE');
-  const itemPref = itemId => S.userPrefs.find(x=>x.item_id===itemId&&x.user_id===S.profile?.id) || null;
-  // Database rows still represent exact stock positions, but users only manage
-  // Locations. Bin Ref is free text entered when assigning/moving stock. Older
-  // area_name/bin_code values remain readable so existing stock is preserved.
-  const effectiveBinCode = l => {
-    if(!l) return '';
-    const area=String(l.area_name||'').trim();
-    const bin=String(l.bin_code||'').trim();
-    if(area && bin) return `${area} / ${bin}`;
-    return bin || area || '';
-  };
-  const binLabel = l => { const b=effectiveBinCode(l); return b ? `Bin Ref ${b}` : 'No bin ref'; };
-  const locationLabel = l => !l ? '—' : `${l.location_name}${effectiveBinCode(l) ? ` → ${effectiveBinCode(l)}` : ''}`;
-  const activeLocations = () => S.locations.filter(l=>l.active);
-  const locationNames = (rows=activeLocations()) => [...new Set(rows.map(l=>String(l.location_name||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
-  const positionsForLocation = (name, rows=activeLocations()) => rows.filter(l=>l.location_name===name).sort((a,b)=>effectiveBinCode(a).localeCompare(effectiveBinCode(b)));
-  const locationNameForId = id => byId(S.locations,id)?.location_name || '';
-  const binRefForId = id => effectiveBinCode(byId(S.locations,id));
-  const normalizeBin = v => String(v||'').trim();
-  const BIN_PRESET_MARKER='[[BIN_PRESET]]';
-  const isLegacyControlledBinNote = note => /^Controlled\s+.+\s+bin$/i.test(String(note||'').trim());
-  const isBinPresetRow = row => {
-    if(!row || !row.active || !effectiveBinCode(row)) return false;
-    const note=String(row.notes||'');
-    return note.includes(BIN_PRESET_MARKER) || isLegacyControlledBinNote(note);
-  };
-  const presetRowsForLocation = locationName => S.locations
-    .filter(l=>l.location_name===locationName && isBinPresetRow(l))
-    .sort((a,b)=>effectiveBinCode(a).localeCompare(effectiveBinCode(b),undefined,{numeric:true,sensitivity:'base'}));
-  const controlledBinPresetRefs = locationName => {
-    const refs=[...new Set(presetRowsForLocation(locationName).map(effectiveBinCode).filter(Boolean))].sort(naturalBinSort);
-    return refs.length ? refs : null;
-  };
-  const controlledBinSummary = locationName => {
-    const refs=controlledBinPresetRefs(locationName);
-    if(!refs?.length) return '';
-    const parsed=refs.map(r=>String(r).match(/^(.*?)(\d+)$/));
-    if(parsed.every(Boolean)){
-      const prefix=parsed[0][1];
-      const nums=parsed.map(x=>Number(x[2]));
-      const samePrefix=parsed.every(x=>x[1]===prefix);
-      const sorted=[...nums].sort((a,b)=>a-b);
-      const continuous=sorted.every((n,i)=>i===0||n===sorted[i-1]+1);
-      if(samePrefix&&continuous&&new Set(nums).size===refs.length){
-        return `Controlled bins: ${prefix}${sorted[0]}–${prefix}${sorted[sorted.length-1]}`;
-      }
-    }
-    return `Controlled bins: ${refs.length} configured`;
-  };
-  const addPresetMarker = note => {
-    const n=String(note||'').trim();
-    if(n.includes(BIN_PRESET_MARKER)||isLegacyControlledBinNote(n)) return n || BIN_PRESET_MARKER;
-    return n ? `${n} ${BIN_PRESET_MARKER}` : BIN_PRESET_MARKER;
-  };
-  const stripPresetMarker = note => {
-    const n=String(note||'').trim();
-    if(isLegacyControlledBinNote(n)) return '';
-    return n.replaceAll(BIN_PRESET_MARKER,'').replace(/\s{2,}/g,' ').trim();
-  };
-  const naturalBinSort = (a,b) => String(a).localeCompare(String(b),undefined,{numeric:true,sensitivity:'base'});
-  const itemDefaultPosition = item => {
-    if(!item?.default_location_id) return null;
-    return byId(S.locations,item.default_location_id) || null;
-  };
-  const itemDefaultLabel = item => {
-    const p=itemDefaultPosition(item);
-    return p ? locationLabel(p) : 'Not set';
-  };
-  function applyItemDefaultDestination(item, locationSelectId, binInputId) {
-    const p=itemDefaultPosition(item);
-    if(!p || !p.active) return false;
-    const loc=document.getElementById(locationSelectId), bin=document.getElementById(binInputId);
-    if(!loc || !bin) return false;
-    const hasOption=[...loc.options].some(o=>o.value===p.location_name);
-    if(!hasOption) return false;
-    loc.value=p.location_name;
-    // Refresh the location first, then actively sync the bin helper so the
-    // dropdown visibly selects the item's default bin.
-    loc.dispatchEvent(new Event('change',{bubbles:true}));
-    setTimeout(()=>{
-      bin.value=effectiveBinCode(p)||'';
-      bin.dispatchEvent(new Event('input',{bubbles:true}));
-      bin.dispatchEvent(new Event('change',{bubbles:true}));
-    },0);
-    return true;
-  }
-  const itemTotal = itemId => S.balances.filter(b => b.item_id === itemId).reduce((a,b) => a + num(b.quantity), 0);
-  const itemPositions = itemId => S.balances.filter(b => b.item_id === itemId && num(b.quantity) > 0).sort((a,b) => num(b.quantity)-num(a.quantity));
-  const orderRemaining = o => Math.max(0, num(o.quantity_ordered) - num(o.quantity_received));
-  const openOrdersForItem = itemId => S.purchaseOrders.filter(o=>o.item_id===itemId && ['OPEN','PART_RECEIVED'].includes(o.status));
-  const itemOnOrder = itemId => openOrdersForItem(itemId).reduce((a,o)=>a+orderRemaining(o),0);
-  const suppliersForItem = itemId => S.itemSuppliers.filter(s=>s.item_id===itemId).sort((a,b)=>num(a.supplier_slot)-num(b.supplier_slot));
-  const preferredSupplier = itemId => suppliersForItem(itemId).find(s=>s.preferred) || suppliersForItem(itemId)[0] || null;
-  const globalSupplierNames = () => [...new Set([...S.itemSuppliers.map(s=>s.supplier_name),...S.purchaseOrders.map(o=>o.supplier_name)].map(x=>String(x||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
-  const userName = id => id ? (byId(S.profiles,id)?.display_name || 'Unknown user') : 'Legacy import';
-  const itemName = id => byId(S.items,id)?.name || 'Unknown item';
-  const locName = id => locationLabel(byId(S.locations,id));
-  const slug = v => String(v || '').trim().replace(/[^a-z0-9._-]+/gi,'-').replace(/^-+|-+$/g,'').slice(0,80) || 'file';
-  const fileExt = f => (f.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g,'');
+function looksLikeCoshhAssessment(text){
+  const u=clean(text).toUpperCase();
+  const named=/\bCOSHH\s+(?:RISK\s+)?ASSESSMENT\b|CONTROL OF SUBSTANCES HAZARDOUS TO HEALTH/.test(u);
+  const assessmentSignals=[/RISK\s+(?:RATING|SCORE|LEVEL)/, /LIKELIHOOD/, /SEVERITY/, /CONTROL\s+MEASURES?/, /PERSONS?\s+(?:AT|EXPOSED TO)\s+RISK/, /ASSESS(?:ED|MENT)\s+BY/, /ADOPTED\s+BY/, /AFTER\s+CONTROLS?/].filter(rx=>rx.test(u)).length;
+  if(/\bCOSHH\s+RISK\s+ASSESSMENT\b/.test(u))return true;
+  return named && assessmentSignals>=2;
+}
+function looksLikeSafetyDataSheet(text){
+  const u=clean(text).toUpperCase();
+  if(looksLikeCoshhAssessment(u))return false;
+  const heading=/\b(?:SAFETY DATA SHEET|MATERIAL SAFETY DATA SHEET|MSDS)\b/.test(u);
+  const section1=/\b1\.1\s+(?:PRODUCT IDENTIFIER|PRODUCT NAME)|SECTION\s+1\s*[:.-]?\s*(?:IDENTIFICATION|IDENTIFICATION OF THE SUBSTANCE)/.test(u);
+  const section2=/SECTION\s+2\s*[:.-]?\s*HAZARD|2\.1\s+CLASSIFICATION/.test(u);
+  const section3=/SECTION\s+3\s*[:.-]?\s*COMPOSITION|3\.1\s+SUBSTANCES|3\.2\s+MIXTURES/.test(u);
+  return heading && section1 && (section2||section3);
+}
+function classifySafetyPdfText(text){
+  if(looksLikeCoshhAssessment(text))return 'COSHH';
+  if(looksLikeSafetyDataSheet(text))return 'SDS';
+  const u=clean(text).toUpperCase();
+  if(/\bSAFE SYSTEM OF WORK\b|\bSSW\s+(?:REFERENCE|REF)\b/.test(u))return 'SSW';
+  if(/\bTOOLBOX TALK\b|\bTBT\s+(?:REFERENCE|REF)\b/.test(u))return 'TOOLBOX_TALK';
+  if(!/\bCOSHH\b/.test(u)&&(/\bRISK ASSESSMENT\b|\bRA\s+(?:REFERENCE|REF)\b/.test(u)))return 'RISK_ASSESSMENT';
+  return null;
+}
 
 
-  const offlineSnapshotKey = 'inventoryTrackerOfflineSnapshotV1';
-  const offlineQueueKey = 'inventoryTrackerOfflineQueueV1';
-  const clientRef = id => `CLIENT:${id}`;
-  const makeClientId = () => (crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  const isNetworkError = e => {
-    const m=String(e?.message||e||'').toLowerCase();
-    return !navigator.onLine || e?.name==='AbortError' || m.includes('failed to fetch') || m.includes('network') || m.includes('load failed') || m.includes('fetch');
-  };
-  function allOfflineQueue(){
-    try{const v=JSON.parse(localStorage.getItem(offlineQueueKey)||'[]');return Array.isArray(v)?v:[];}catch(_){return [];}
+function activityActionLabel(action){return ({OPENED:'Opened',DOWNLOADED:'Downloaded',REVIEWED:'Reviewed',CONTROLLED_REVIEW:'Controlled review',TRAINING_COMPLETED:'Training completed'})[action]||String(action||'Activity').replaceAll('_',' ')}
+function activityPersonName(a){const p=state.people.find(x=>x.id===a?.user_id);return p?.display_name||p?.email||a?.user_name_snapshot||a?.user_email_snapshot||'Unknown user'}
+function activityTargetLabel(a){const ref=clean(a?.document_reference),title=clean(a?.document_title),ver=clean(a?.version_label);const base=ref&&title?`${ref} - ${title}`:(ref||title||clean(a?.file_name)||'Document');return ver?`${base} · v${ver}`:base}
+function activityForDocument(docId){return state.documentActivity.filter(a=>a.document_id===docId).sort((a,b)=>new Date(b.occurred_at||0)-new Date(a.occurred_at||0))}
+function activityForTraining(trainingId){return state.documentActivity.filter(a=>a.training_session_id===trainingId).sort((a,b)=>new Date(b.occurred_at||0)-new Date(a.occurred_at||0))}
+function activityVersionSnapshot(v){const d=state.documents.find(x=>x.id===v?.document_id);return {document_id:d?.id||null,document_version_id:v?.id||null,document_reference:d?.reference||null,document_title:d?documentDisplayTitle(d):null,version_label:v?.version_label||null,file_name:v?.file_name||null}}
+function activityTrainingFileSnapshot(f){const t=state.training.find(x=>x.id===f?.training_session_id);return {training_session_id:t?.id||null,training_file_id:f?.id||null,document_reference:t?trainingReference(t)||null:null,document_title:t?.name||null,version_label:null,file_name:f?.file_name||null}}
+async function logDocumentActivity(action,snapshot={},metadata=null,showError=false){
+  if(!sb||!state.user?.id)return null;
+  const payload={user_id:state.user.id,user_name_snapshot:state.profile?.display_name||state.user?.email||null,user_email_snapshot:state.user?.email||state.profile?.email||null,action,source_context:snapshot.source_context||'DOCUMENT_LIBRARY',document_id:snapshot.document_id||null,document_version_id:snapshot.document_version_id||null,training_session_id:snapshot.training_session_id||null,training_file_id:snapshot.training_file_id||null,document_reference:snapshot.document_reference||null,document_title:snapshot.document_title||null,version_label:snapshot.version_label||null,file_name:snapshot.file_name||null,metadata:metadata||{}};
+  const r=await sb.from('document_activity').insert(payload).select().single();
+  if(r.error){console.warn('Document activity audit',r.error);if(showError)toast('Could not record document activity. Check the v2.1.2 document-activity SQL migration.');return null}
+  state.documentActivity.unshift(r.data);return r.data;
+}
+async function downloadDocument(versionId){const v=state.versions.find(x=>x.id===versionId);if(!v?.storage_path)return toast('Stored PDF not found.');if(!isManager()&&(!isVersionApproved(v)||v.status!=='CURRENT'))return toast('Only the approved current version is available for use.');const r=await sb.storage.from('safety-files').download(v.storage_path);if(r.error||!r.data)return toast(r.error?.message||'Download failed.');downloadBlob(r.data,v.file_name||'safety-document.pdf');await logDocumentActivity('DOWNLOADED',{...activityVersionSnapshot(v),source_context:'DOCUMENT_LIBRARY'});}
+function documentUsesFormalTraining(d){return !!d&&sourceDocTypes.has(d.doc_type)}
+function hasOpenedVersion(versionId,userId=state.user?.id){return state.documentActivity.some(a=>a.user_id===userId&&a.document_version_id===versionId&&a.action==='OPENED')}
+function showMarkDocumentReviewed(versionId){const v=state.versions.find(x=>x.id===versionId),d=state.documents.find(x=>x.id===v?.document_id);if(!v||!d)return;if(documentUsesFormalTraining(d))return toast('This controlled document is acknowledged through Training. Open it from the assigned training and complete the training sign-off instead.');if(!hasOpenedVersion(versionId))return toast('Open the file first. Safety Tracker must record the file was opened before it can be marked read/reviewed.');openModal('Mark file as read / reviewed',`<p><strong>${esc(d.reference?d.reference+' - '+documentDisplayTitle(d):documentDisplayTitle(d))}</strong> · v${esc(v.version_label||'—')}</p><div class="hint-box">For reference documents that are not formal training, this records that you opened and reviewed the file. It does <strong>not</strong> create a training completion.</div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Confirm read / reviewed','primary',`data-confirm-doc-reviewed="${v.id}"`)}</div>`)}
+async function confirmDocumentReviewed(versionId){const v=state.versions.find(x=>x.id===versionId),d=state.documents.find(x=>x.id===v?.document_id);if(!v||!d)return;if(documentUsesFormalTraining(d))return toast('RA, COSHH RA and SSW acknowledgements are completed through Training.');if(!hasOpenedVersion(versionId))return toast('Open the file first.');const row=await logDocumentActivity('REVIEWED',{...activityVersionSnapshot(v),source_context:'REFERENCE_DOCUMENT'},null,true);if(!row)return;closeModal();toast('Read / review recorded.');}
+function activityCards(rows){return rows.length?rows.map(a=>`<div class="item-card compact"><div class="row-between"><div><strong>${esc(activityActionLabel(a.action))}</strong><div>${esc(activityTargetLabel(a))}</div><div class="meta"><span>${esc(activityPersonName(a))}</span><span>${fmtDateTime(a.occurred_at)}</span>${a.source_context?`<span>${esc(String(a.source_context).replaceAll('_',' ').toLowerCase())}</span>`:''}</div></div></div></div>`).join(''):'<div class="empty">No document activity recorded yet.</div>'}
+function showDocumentActivity(docId){const d=state.documents.find(x=>x.id===docId);if(!d)return;const rows=activityForDocument(docId);openModal('Document activity',`<p><strong>${esc(d.reference?d.reference+' - '+documentDisplayTitle(d):documentDisplayTitle(d))}</strong></p><div class="muted">Opened, downloaded, reviewed and training-completion events are timestamped against the user and version.</div><div class="card-list" style="margin-top:1rem">${activityCards(rows)}</div>`)}
+function showTrainingFileActivity(trainingId){const t=state.training.find(x=>x.id===trainingId);if(!t)return;openModal('File activity',`<p><strong>${esc(trainingReference(t)?trainingReference(t)+' - '+t.name:t.name)}</strong></p><div class="card-list">${activityCards(activityForTraining(trainingId))}</div>`)}
+function filteredDocumentActivity(){const q=clean($('activitySearch')?.value).toLowerCase(),person=$('activityPersonFilter')?.value||'',action=$('activityActionFilter')?.value||'';return [...state.documentActivity].filter(a=>(!person||a.user_id===person)&&(!action||a.action===action)&&(!q||`${a.document_reference||''} ${a.document_title||''} ${a.file_name||''} ${activityPersonName(a)} ${activityActionLabel(a.action)}`.toLowerCase().includes(q))).sort((a,b)=>new Date(b.occurred_at||0)-new Date(a.occurred_at||0))}
+function renderDocumentActivityReport(){const list=$('activityList'),stats=$('activityStats');if(!list||!stats)return;const rows=filteredDocumentActivity();stats.innerHTML=[['Events',rows.length],['Opened',rows.filter(x=>x.action==='OPENED').length],['Reviewed',rows.filter(x=>x.action==='REVIEWED'||x.action==='CONTROLLED_REVIEW').length],['Downloads',rows.filter(x=>x.action==='DOWNLOADED').length]].map(([l,n])=>`<div class="stat"><strong>${n}</strong><span>${l}</span></div>`).join('');list.innerHTML=activityCards(rows)}
+function downloadDocumentActivityPdf(){const rows=filteredDocumentActivity().map(a=>({date_time:fmtDateTime(a.occurred_at),user:activityPersonName(a),action:activityActionLabel(a.action),reference:a.document_reference||'',document:a.document_title||a.file_name||'',version:a.version_label||''}));pdfTable('Document Activity Audit',rows,`document-activity-audit-${todayISO()}.pdf`)}
+
+function originalBulkSourceName(v){
+  const m=String(v?.notes||'').match(/Bulk imported(?: changed content)? from (.+?), pages?\s+\d+/i);
+  return m?clean(m[1]):'';
+}
+function stripPdfName(name){return clean(String(name||'').replace(/\.pdf$/i,'').replace(/[_-]+/g,' '))}
+function isBadSdsTitle(title){
+  const t=clean(title);
+  if(!t)return true;
+  if(/^(?:manufacturer\s+)?(?:material\s+)?safety data sheet$/i.test(t))return true;
+  if(/^\d+\s*\/\s*\d+$/.test(t))return true;
+  if(/^page\s+\d+(?:\s+of\s+\d+)?$/i.test(t))return true;
+  if(/^(?:version|revision|revision date|print date|date of issue|section\s+\d+)\b/i.test(t))return true;
+  if(/^[\W_\d]+$/.test(t))return true;
+  if(t.length<3)return true;
+  if(t.length<60&&/\)$/.test(t)&&!t.includes('('))return true;
+  if(/^(?:product name|product identifier|product form|form of product|type of product|product type|physical state|trade name|name of product|chemical name|substance|mixture|article|liquid|solid|gas|aerosol|preparation|not applicable|n\/a|unknown)(?:\s*[:;-].*)?$/i.test(t))return true;
+  if(/^(?:product|identifier|form|classification|supplier|manufacturer|details of the supplier|relevant identified uses)\s*:?$/i.test(t))return true;
+  // Never expose a combined-pack/source filename as the SDS product title.
+  if(/\b(?:sds\s+msds|msds\s+sds)\s+only\b/i.test(t)||/\bno\s+directory\b/i.test(t))return true;
+  return false;
+}
+function cleanSdsCandidate(s){
+  let t=clean(s).replace(/^[\s:;\-–—]+/,'').replace(/[\s|]+$/,'');
+  t=t.replace(/^(?:Product name|Product identifier|Trade name|Name of product|Chemical name)\s*:?\s*/i,'');
+  t=t.replace(/\s+\d+\s*\/\s*\d+\s*$/,'');
+  // Stop at another Section 1 field label or metadata/regulatory text.
+  t=t.replace(/\s+(?:Product form|Form of product|Type of product|Product code|Article(?: No\.?| number)?|Chemical name|UFI|REACH(?: registration)?|Relevant identified uses|Details of the supplier|Emergency telephone|1\.2\.?\b|SECTION\s+1\b|Revision(?: date)?|Version|Print date|Date of issue|According to|In accordance with|Conforms? to|COMMISSION REGULATION|REGULATION \(EU\)|REGULATION \(EC\)).*$/i,'');
+  t=t.replace(/\s*[:;,-]?\s*1\.[12](?:\.\d+)?\s*$/i,'');
+  t=t.replace(/[\s:;|,\-–—]+$/,'').trim();
+  // Some manufacturer PDFs repeat the product name twice on the first page.
+  // Collapse an exact duplicated phrase, e.g. "DIAMOND MATT ... WHITE DIAMOND MATT ... WHITE".
+  const words=t.split(/\s+/).filter(Boolean);
+  if(words.length>=4&&words.length%2===0){
+    const h=words.length/2;
+    if(words.slice(0,h).join(' ').toLowerCase()===words.slice(h).join(' ').toLowerCase())t=words.slice(0,h).join(' ');
   }
-  function saveOfflineQueue(rows){localStorage.setItem(offlineQueueKey,JSON.stringify(rows));}
-  function currentOfflineQueue(){const uid=S.session?.user?.id;return uid?allOfflineQueue().filter(x=>x.user_id===uid):[];}
-  function pendingOfflineCount(){return currentOfflineQueue().length;}
-  function saveOfflineSnapshot(){
-    if(!S.session?.user?.id||!S.profile)return;
-    const payload={
-      saved_at:new Date().toISOString(),user_id:S.session.user.id,profile:S.profile,
-      profiles:S.profiles,items:S.items,locations:S.locations,balances:S.balances,transactions:S.transactions,
-      categories:S.categories,itemSuppliers:S.itemSuppliers,purchaseOrders:S.purchaseOrders,userPrefs:S.userPrefs,
-      stocktakeSettings:S.stocktakeSettings,stocktakeTasks:S.stocktakeTasks,stocktakeItems:S.stocktakeItems
-    };
-    try{localStorage.setItem(offlineSnapshotKey,JSON.stringify(payload));S.offlineSnapshotAt=payload.saved_at;}
-    catch(e){
-      try{payload.transactions=S.transactions.slice(0,500);localStorage.setItem(offlineSnapshotKey,JSON.stringify(payload));S.offlineSnapshotAt=payload.saved_at;}catch(_){}
+  if(t.length>140)t=t.slice(0,140).trim();
+  return t;
+}
+function extractSdsProductName(text){
+  const t=clean(text);
+  // First isolate Section 1.1. Many manufacturer sheets put "Product form"
+  // before the actual Product name; never use those generic field values.
+  const blockMatch=t.match(/\b1\.1\.?\s*Product identifier\b([\s\S]{0,900}?)(?=\b1\.2\.?\b|Relevant identified uses|Details of the supplier|SECTION\s+2\b)/i);
+  const block=blockMatch?blockMatch[1]:'';
+  const fieldPatterns=[
+    /\bGHS product identifier\s*:?\s*([\s\S]{2,220}?)(?=\s+(?:e-?mail address|Product use|Product form|Form of product|Type of product|Product code|Article(?: No\.?| number)?|Chemical name|Trade name|UFI|REACH|1\.3\.?\b|Details of the supplier|Date of previous issue|1\.4\b|Version|Telephone number|SECTION\b))/i,
+    /\bProduct name\s*:?\s*([\s\S]{2,180}?)(?=\s+(?:Product form|Form of product|Type of product|Product code|Article(?: No\.?| number)?|Chemical name|Trade name|UFI|REACH|1\.2\.?\b|Relevant identified uses|Details of the supplier|SECTION\b))/i,
+    /\bTrade name\s*:?\s*([\s\S]{2,180}?)(?=\s+(?:Product form|Form of product|Type of product|Product code|Article(?: No\.?| number)?|Chemical name|UFI|REACH|1\.2\.?\b|Relevant identified uses|Details of the supplier|SECTION\b))/i,
+    /\bName of product\s*:?\s*([\s\S]{2,180}?)(?=\s+(?:Product form|Form of product|Type of product|Product code|Article(?: No\.?| number)?|UFI|REACH|1\.2\.?\b|Relevant identified uses|Details of the supplier|SECTION\b))/i
+  ];
+  for(const scope of [block,t]){
+    if(!scope)continue;
+    for(const rx of fieldPatterns){const m=scope.match(rx);if(m){const c=cleanSdsCandidate(m[1]);if(c&&!isBadSdsTitle(c))return c}}
+  }
+  // Fallback only when Product identifier itself has a real value, not a field label.
+  const fallbacks=[
+    /\b1\.1\.?\s*Product identifier\s*:?\s*([\s\S]{3,180}?)(?=\s+(?:Product form|Form of product|Type of product|Product code|UFI|REACH|1\.2\.?\b|Relevant identified uses|Details of the supplier|SECTION\b))/i,
+    /\bProduct identifier\s*:?\s*([\s\S]{3,180}?)(?=\s+(?:Product form|Form of product|Type of product|Product code|UFI|REACH|1\.2\.?\b|Relevant identified uses|Details of the supplier|SECTION\b))/i,
+    /\bSAFETY DATA SHEET\s+([\s\S]{3,110}?)(?=\s+\d+\s*\/\s*\d+\b)/i
+  ];
+  for(const rx of fallbacks){const m=t.match(rx);if(m){const c=cleanSdsCandidate(m[1]);if(c&&!isBadSdsTitle(c))return c}}
+  return '';
+}
+function cleanRaTitleCandidate(value,ref=''){
+  let t=clean(value);
+  if(!t)return '';
+  // Shield RAs commonly print "RA-007 - Title" directly below the heading.
+  // Remove only the LEADING reference; older code removed everything after it.
+  const refEsc=String(ref||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  if(refEsc)t=t.replace(new RegExp(`^\\s*${refEsc}\\s*[-–—:]?\\s*`,'i'),'').trim();
+  t=t.replace(/^RISK\s+ASSESSMENT\s*/i,'').replace(/^TASK\s+RISK\s+ASSESSMENT\s*/i,'').trim();
+  t=t.replace(/\s+(?:Marriott\s+Portsmouth|Adopted\s+on|Department\s*\/\s*job\s+title|RA\s+Reference|Location|Persons\s+at\s+risk|Task|Scope|Frequency|Linked\s+(?:controls|documents|assessments)|Related\s+(?:document|documents|assessments)|Chemical\s+controls|Typical\s+location|Fuel\s+handling|Existing\s+features)\b.*$/i,'').trim();
+  if(!t||t.length<4||t.length>180)return '';
+  if(/SHIELD\s+SAFETY|CONTROL\s+MEASURES|\bHAZARDS?\b|RISK\s+RATING|SEVERITY|LIKELIHOOD|PEOPLE\s+EXPOSED|Page\s+\d+|Version\b/i.test(t))return '';
+  if(/^(?:Surface and Work Area Checks|Dust Control and PPE|Sanding Equipment|Product and COSHH Checks|Fire and Ventilation|Application and Spill Control|Access and Surface Preparation|Housekeeping and Waste|Storage, Waste and Completion)$/i.test(t))return '';
+  if(/\b(?:Follow\s+RA-|Follow\s+SSW-|Follow\s+COSHH-|reposition\s+access\s+equipment|avoid\s+prolonged|keep\s+hands|wear\s+eye\s+protection)\b/i.test(t))return '';
+  if(t.length>120&&/[.!?]/.test(t))return '';
+  return t.replace(/\s+/g,' ').trim();
+}
+function extractRiskAssessmentTitle(text,ref=''){
+  const raw=String(text||'').replace(/\r/g,'\n');
+  const lines=raw.split(/\n+/).map(clean).filter(Boolean);
+  // Most current Shield RAs expose the exact controlled title as
+  // "RA-005 - Use of Hazardous Paint - Brush and Roller Application".
+  if(ref){
+    const refEsc=String(ref).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    for(const l of lines.slice(0,18)){
+      const m=l.match(new RegExp(`^\\s*${refEsc}\\s*[-–—:]\\s*(.+)$`,'i'));
+      if(m){const c=cleanRaTitleCandidate(m[1],ref);if(c)return c;}
     }
   }
-  function restoreOfflineSnapshot(){
+  // Also accept any RA-xxx title line on the first page when the stored ref is blank.
+  for(const l of lines.slice(0,18)){
+    const m=l.match(/^\s*RA-\d{3}\s*[-–—:]\s*(.+)$/i);
+    if(m){const c=cleanRaTitleCandidate(m[1],ref);if(c)return c;}
+  }
+  // TASK RISK ASSESSMENT (e.g. RA-004) prints the title immediately below the heading.
+  let idx=lines.findIndex(x=>/^(?:TASK\s+)?RISK\s+ASSESSMENT$/i.test(x));
+  if(idx>=0){
+    const parts=[];
+    for(let i=idx+1;i<Math.min(lines.length,idx+6);i++){
+      const l=clean(lines[i]);
+      if(!l)continue;
+      if(/^(?:Department|Location|Persons\s+at\s+risk|Task|Scope|Frequency|Linked\s+(?:controls|documents|assessments)|Related\s+(?:document|documents|assessments)|Chemical\s+controls|Typical\s+location|Fuel\s+handling|Existing\s+features)\b/i.test(l))break;
+      if(/SHIELD\s+SAFETY|Maintenance\s+RA|Page\s+\d+/i.test(l))continue;
+      parts.push(l);
+      const c=cleanRaTitleCandidate(parts.join(' '),ref);if(c)return c;
+    }
+  }
+  // Legacy Shield layout: title immediately before Marriott Portsmouth.
+  const hotelIndex=lines.findIndex(x=>/^Marriott\s+Portsmouth$/i.test(x));
+  if(hotelIndex>0){
+    const parts=[];
+    for(let i=hotelIndex-1;i>=0&&parts.length<3;i--){
+      const l=clean(lines[i]);if(!l)continue;
+      if(/SHIELD\s+SAFETY|(?:TASK\s+)?RISK\s+ASSESSMENT|Maintenance\s+RA|Page\s+\d+|SECTION\s+\d/i.test(l))break;
+      if(/^Maintenance$/i.test(l))continue;
+      parts.unshift(l);
+    }
+    const c=cleanRaTitleCandidate(parts.join(' '),ref);if(c)return c;
+  }
+  const flat=clean(raw);
+  if(ref){
+    const refEsc=String(ref).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    const m=flat.match(new RegExp(`\\b${refEsc}\\s*[-–—:]\\s*(.{4,180}?)(?=\\s+(?:Department|Location|Scope|Task|Frequency|Linked|Related|Chemical|Typical|Fuel|Existing)\\b)`,'i'));
+    if(m){const c=cleanRaTitleCandidate(m[1],ref);if(c)return c;}
+  }
+  return '';
+}
+async function pdfFirstPageTextFromBlob(blob){
+  if(!blob||!window.pdfjsLib)return '';
+  const pdf=await pdfjsLib.getDocument({data:(await blob.arrayBuffer()).slice(0)}).promise;
+  if(!pdf.numPages)return '';
+  const pg=await pdf.getPage(1),c=await pg.getTextContent();
+  const out=[];let line='';
+  for(const it of c.items||[]){const t=String(it.str||'').trim();if(t)line+=(line?' ':'')+t;if(it.hasEOL){if(clean(line))out.push(clean(line));line=''}}
+  if(clean(line))out.push(clean(line));
+  return out.join('\n');
+}
+async function repairRaTitles(options={}){
+  const {silent=false,refreshAfter=true,progress=null}=options&&typeof options==='object'?options:{};
+  if(!isAdmin()&&!state.user){if(!silent)toast('Admin access required.');return {changed:0,failed:0}}
+  const docs=state.documents.filter(d=>d.status!=='ARCHIVED'&&d.doc_type==='RISK_ASSESSMENT');
+  if(!docs.length){if(!silent)toast('No active Risk Assessments found.');return {changed:0,failed:0}}
+  const status=$('raRepairStatus');if(!silent&&status){status.hidden=false;status.textContent=`Checking ${docs.length} Risk Assessment title${docs.length===1?'':'s'}…`}
+  let changed=0,failed=0;
+  for(let i=0;i<docs.length;i++){
+    const d=docs[i],v=currentVersion(d.id);if(!v?.storage_path)continue;
+    const msg=`Checking RA ${i+1} of ${docs.length}: ${d.reference||d.title}`;
+    if(progress)progress(msg);if(!silent&&status)status.textContent=msg;
     try{
-      const p=JSON.parse(localStorage.getItem(offlineSnapshotKey)||'null');
-      if(!p||p.user_id!==S.session?.user?.id)return false;
-      S.profile=p.profile||null;S.profiles=p.profiles||[];S.items=p.items||[];S.locations=p.locations||[];S.balances=p.balances||[];S.transactions=p.transactions||[];
-      S.categories=p.categories||[];S.itemSuppliers=p.itemSuppliers||[];S.purchaseOrders=p.purchaseOrders||[];S.userPrefs=p.userPrefs||[];S.categoryModel=null;
-      S.stocktakeSettings=p.stocktakeSettings||null;S.stocktakeTasks=p.stocktakeTasks||[];S.stocktakeItems=p.stocktakeItems||[];S.offlineSnapshotAt=p.saved_at||null;
-      return !!S.profile;
-    }catch(_){return false;}
-  }
-  function offlineStatusHtml(){
-    const n=pendingOfflineCount();
-    if(!S.offline&&!n)return '';
-    const when=S.offlineSnapshotAt?` Last saved ${esc(fmtDate(S.offlineSnapshotAt))}.`:'';
-    if(S.offline)return `<div class="offline-banner"><strong>Offline mode.</strong> Using the last saved stock data.${when} Scan/search and Add, Use, Move and Adjust will be queued. Counts may be stale until the connection returns.${n?` <strong>${n} action${n===1?'':'s'} pending sync.</strong>`:''}<div class="actions"><button class="btn ghost small" id="reviewOfflineBtn">Pending actions</button></div></div>`;
-    return `<div class="offline-banner syncing"><strong>${n} stock action${n===1?'':'s'} waiting to sync.</strong>${S.offlineSyncError?` ${esc(S.offlineSyncError)}`:''}<div class="actions"><button class="btn small" id="syncOfflineBtn" ${S.syncingOffline?'disabled':''}>${S.syncingOffline?'Syncing…':'Sync now'}</button><button class="btn ghost small" id="reviewOfflineBtn">Review</button></div></div>`;
-  }
-  function localPosition(locationName,binRef){
-    let p=findPosition(locationName,binRef);if(p)return p;
-    p={id:`offline-pos:${makeClientId()}`,location_name:locationName,area_name:'',bin_code:normalizeBin(binRef),active:true,notes:'Pending offline stock position',_offline:true};
-    S.locations.push(p);return p;
-  }
-  function localBalance(itemId,locationId){
-    let b=S.balances.find(x=>x.item_id===itemId&&x.location_id===locationId);
-    if(!b){b={id:`offline-bal:${makeClientId()}`,item_id:itemId,location_id:locationId,quantity:0,updated_at:new Date().toISOString(),_offline:true};S.balances.push(b);}
-    return b;
-  }
-  function applyLocalStockOperation(op){
-    const now=op.created_at||new Date().toISOString();
-    let fromPos=null,toPos=null,old=0;
-    if(op.from_location_name){fromPos=localPosition(op.from_location_name,op.from_bin_ref||'');op.from_local_id=fromPos.id;}
-    if(op.to_location_name){toPos=localPosition(op.to_location_name,op.to_bin_ref||'');op.to_local_id=toPos.id;}
-    if(op.type==='ADD'){
-      const b=localBalance(op.item_id,toPos.id);old=num(b.quantity);b.quantity=old+num(op.quantity);b.updated_at=now;
-    }else if(op.type==='USE'){
-      const b=localBalance(op.item_id,fromPos.id);old=num(b.quantity);b.quantity=Math.max(0,old-num(op.quantity));b.updated_at=now;
-    }else if(op.type==='MOVE'){
-      const f=localBalance(op.item_id,fromPos.id),t=localBalance(op.item_id,toPos.id);old=num(f.quantity);f.quantity=Math.max(0,old-num(op.quantity));t.quantity=num(t.quantity)+num(op.quantity);f.updated_at=t.updated_at=now;
-    }else if(op.type==='ADJUST'){
-      const b=localBalance(op.item_id,fromPos.id);old=num(b.quantity);op.previous_quantity=old;b.quantity=num(op.new_quantity);b.updated_at=now;
-    }
-    const existing=S.transactions.find(t=>t.reference===clientRef(op.id));
-    if(!existing){
-      S.transactions.unshift({id:`offline-tx:${op.id}`,item_id:op.item_id,transaction_type:op.type,quantity:op.type==='ADJUST'?Math.abs(num(op.new_quantity)-old):num(op.quantity),from_location_id:fromPos?.id||null,to_location_id:toPos?.id||null,new_quantity:op.new_quantity??null,reason:op.reason||null,reference:clientRef(op.id),notes:[op.notes,'Pending offline sync'].filter(Boolean).join(' · '),user_id:op.user_id,occurred_at:now,_offline_pending:true});
-    }
-  }
-  function queueStockOperation(op){
-    const rows=allOfflineQueue();
-    if(!rows.some(x=>x.id===op.id)){applyLocalStockOperation(op);rows.push(op);saveOfflineQueue(rows);saveOfflineSnapshot();}
-    S.offline=true;
-  }
-  async function resolveServerPosition(name,binRef){
-    const {data,error}=await sb.rpc('get_or_create_stock_position',{p_location_name:name,p_bin_ref:normalizeBin(binRef)});if(error)throw error;return data;
-  }
-  async function sendClientStockOperation(op){
-    let from=null,to=null;
-    if(op.from_location_name)from=await resolveServerPosition(op.from_location_name,op.from_bin_ref||'');
-    if(op.to_location_name)to=await resolveServerPosition(op.to_location_name,op.to_bin_ref||'');
-    if(op.type==='MOVE'&&from===to)throw new Error('Choose a different destination Location / Bin Ref.');
-    const {error}=await sb.rpc('apply_client_stock_transaction',{p_item_id:op.item_id,p_type:op.type,p_quantity:num(op.quantity),p_from_location_id:from,p_to_location_id:to,p_new_quantity:op.new_quantity==null?null:num(op.new_quantity),p_reason:op.reason||null,p_client_reference:clientRef(op.id),p_notes:op.notes||null});
-    if(error)throw error;
-  }
-  async function syncOfflineQueue(){
-    if(S.syncingOffline||!navigator.onLine||!S.session)return;
-    const uid=S.session.user.id;let rows=allOfflineQueue(),mine=rows.filter(x=>x.user_id===uid);if(!mine.length){S.offline=false;S.offlineSyncError=null;return;}
-    S.syncingOffline=true;S.offline=false;S.offlineSyncError=null;render();
-    let synced=0;
-    for(const op of mine){
-      try{
-        await sendClientStockOperation(op);rows=rows.filter(x=>x.id!==op.id);saveOfflineQueue(rows);synced++;
-      }catch(e){
-        if(isNetworkError(e)){S.offline=true;S.offlineSyncError='Connection was lost during sync.';break;}
-        op.last_error=parseError(e);rows=rows.map(x=>x.id===op.id?op:x);saveOfflineQueue(rows);S.offlineSyncError=`Sync stopped: ${parseError(e)}`;break;
+      const r=await sb.storage.from('safety-files').download(v.storage_path);if(r.error||!r.data){failed++;continue}
+      const first=await pdfFirstPageTextFromBlob(r.data),extracted=extractRiskAssessmentTitle(first,d.reference||'');
+      const finalTitle=extracted||clean(d.title);
+      if(extracted&&clean(extracted)!==clean(d.title)){
+        const u=await sb.from('documents').update({title:extracted}).eq('id',d.id);if(u.error){failed++;continue}
+        d.title=extracted;changed++;
       }
-    }
-    try{if(navigator.onLine){await loadData();S.offline=false;startRealtime();}}catch(e){if(restoreOfflineSnapshot())S.offline=true;}
-    S.syncingOffline=false;
-    if(synced&&!S.offlineSyncError)setNotice(`${synced} offline stock action${synced===1?'':'s'} synced.`);
-    render();
-  }
-  function showOfflineQueue(){
-    const rows=currentOfflineQueue();
-    showModal(`<header><div><h2>Pending offline stock actions</h2><div class="muted">These are kept on this device until they are accepted by Supabase.</div></div><button class="close" data-close>×</button></header>${rows.length?`<div class="item-list">${rows.map(op=>`<div class="item-row"><div><strong>${esc(itemName(op.item_id))}</strong><div class="muted">${esc(op.type)} · ${op.type==='ADJUST'?`new count ${qty(op.new_quantity)}`:qty(op.quantity)} · ${esc(op.from_location_name||op.to_location_name||'')}</div>${op.last_error?`<div class="notice error compact">${esc(op.last_error)}</div>`:''}</div><span class="badge warn">Pending</span></div>`).join('')}</div>`:'<div class="notice success">No pending stock actions.</div>'}<div class="actions">${navigator.onLine&&rows.length?'<button class="btn" id="modalSyncOffline">Sync now</button>':''}<button class="btn ghost" data-close>Close</button></div>`);
-    const b=document.getElementById('modalSyncOffline');if(b)b.onclick=()=>{closeModal();syncOfflineQueue();};
-  }
-
-  function setNotice(message, type='success') {
-    S.notice = { message, type };
-    setTimeout(() => { if (S.notice?.message === message) { S.notice = null; render(); } }, 4500);
-  }
-
-  function noticeHtml() {
-    if (!S.notice) return '';
-    return `<div class="notice ${S.notice.type === 'error' ? 'error' : 'success'}">${esc(S.notice.message)}</div>`;
-  }
-
-  function parseError(e) {
-    return e?.message || e?.error_description || String(e || 'Something went wrong');
-  }
-
-  async function fetchAll(table, select='*', orderCol=null, ascending=true) {
-    let out = [], from = 0;
-    while (true) {
-      let q = sb.from(table).select(select).range(from, from + 999);
-      if (orderCol) q = q.order(orderCol, { ascending });
-      const { data, error } = await q;
-      if (error) throw error;
-      out.push(...(data || []));
-      if (!data || data.length < 1000) break;
-      from += 1000;
-    }
-    return out;
-  }
-
-  async function loadData({transactions=true}={}) {
-    const [profiles,items,locations,balances,itemSuppliers,purchaseOrders,categories,userPrefs,stocktakeSettingsRows,stocktakeTasks,stocktakeItems,safetyBridgeSettingsRows,safetyBridgeLinks,safetyBridgeFeedback] = await Promise.all([
-      fetchAll('profiles','*','display_name',true),
-      fetchAll('items','*','name',true),
-      fetchAll('stock_locations','*','location_name',true),
-      fetchAll('stock_balances','*'),
-      fetchAll('item_suppliers','*','supplier_slot',true),
-      fetchAll('purchase_orders','*','ordered_at',false),
-      fetchAll('inventory_categories','*','sort_order',true),
-      fetchAll('user_item_preferences','*','last_viewed_at',false),
-      fetchAll('stocktake_settings','*'),
-      fetchAll('stocktake_tasks','*','created_at',false),
-      fetchAll('stocktake_task_items','*'),
-      fetchAll('safety_bridge_settings','*'),
-      fetchAll('safety_bridge_item_links','*','linked_at',false),
-      fetchAll('safety_bridge_link_feedback','*','decided_at',false)
-    ]);
-    S.profiles=profiles; S.items=items; S.locations=locations; S.balances=balances;
-    S.itemSuppliers=itemSuppliers; S.purchaseOrders=purchaseOrders; S.categories=categories; S.userPrefs=userPrefs;
-    S.categoryModel=null;
-    S.stocktakeSettings=stocktakeSettingsRows[0]||null; S.stocktakeTasks=stocktakeTasks; S.stocktakeItems=stocktakeItems;
-    S.safetyBridgeSettings=safetyBridgeSettingsRows[0]||{enabled:false,safety_tracker_url:'https://grich295.github.io/Safety-tracker/'}; S.safetyBridgeLinks=safetyBridgeLinks||[]; S.safetyBridgeFeedback=safetyBridgeFeedback||[];
-    S.profile=byId(S.profiles,S.session?.user?.id)||S.profile;
-    if(transactions) S.transactions=await fetchAll('transactions','*','occurred_at',false);
-    S.offline=false; S.offlineSyncError=null; saveOfflineSnapshot();
-  }
-
-
-  async function stopRealtime() {
-    if(S.liveTimer){clearTimeout(S.liveTimer);S.liveTimer=null;}
-    if(S.liveChannel){try{await sb.removeChannel(S.liveChannel);}catch(_){}S.liveChannel=null;}
-  }
-
-  function queueLiveRefresh() {
-    clearTimeout(S.liveTimer);
-    S.liveTimer=setTimeout(async()=>{
-      if(!S.session)return;
-      try{
-        await loadData();
-        if(S.profile?.active===false){await sb.auth.signOut();return;}
-        if(S.page!=='scan' && !document.getElementById('modalBackdrop')) render();
-      }catch(e){console.warn('Live refresh failed',e);}
-    },350);
-  }
-
-  function startRealtime() {
-    if(S.liveChannel||!S.session||S.offline||!navigator.onLine)return;
-    let c=sb.channel('inventory-live');
-    for(const table of ['stock_balances','transactions','items','stock_locations','profiles','item_suppliers','purchase_orders','inventory_categories','user_item_preferences','stocktake_tasks','stocktake_task_items']){
-      c=c.on('postgres_changes',{event:'*',schema:'public',table},queueLiveRefresh);
-    }
-    S.liveChannel=c.subscribe();
-  }
-
-  async function bootstrap() {
-    const { data: { session } } = await sb.auth.getSession();
-    S.session = session;
-    const hash = window.location.hash;
-    const qs = window.location.search;
-    S.passwordMode = hash.includes('type=recovery') || hash.includes('type=invite') || qs.includes('type=recovery') || qs.includes('type=invite') || session?.user?.user_metadata?.must_set_password === true;
-    if (S.session) {
-      try {
-        await loadData();
-        if(S.profile?.active===false){ await sb.auth.signOut(); return; }
-        try{ await sb.rpc('ensure_stocktake_task',{p_force:false}); await loadData({transactions:false}); }catch(_){}
-        startRealtime();
-        if(pendingOfflineCount())setTimeout(syncOfflineQueue,250);
-      } catch (e) {
-        if(restoreOfflineSnapshot()){
-          S.offline=true;S.offlineSyncError=null;
-          setNotice(`Offline mode: showing saved inventory from ${fmtDate(S.offlineSnapshotAt)}.`, 'success');
-        }else setNotice(navigator.onLine?parseError(e):'No connection and no saved offline inventory is available on this device.','error');
+      // Auto-managed Training must always mirror the corrected controlled-document title.
+      const desiredName=`${d.reference?d.reference+' - ':''}${finalTitle}`;
+      for(const t of state.training.filter(t=>t.auto_managed===true&&t.source_document_id===d.id&&t.status!=='ARCHIVED')){
+        if(clean(t.name)!==clean(desiredName)){
+          const u=await sb.from('training_sessions').update({name:desiredName}).eq('id',t.id);
+          if(!u.error){t.name=desiredName;changed++;}
+        }
       }
-    }
-    ensureNavigationHistory();
-    render();
+    }catch(e){console.warn('repairRaTitles',d.id,e);failed++}
   }
-
-  sb.auth.onAuthStateChange(async (event, session) => {
-    S.session = session;
-    if (event === 'PASSWORD_RECOVERY' || session?.user?.user_metadata?.must_set_password === true) S.passwordMode = true;
-    if (session) {
-      try {
-        await loadData();
-        if(S.profile?.active===false){ await sb.auth.signOut(); return; }
-        try{ await sb.rpc('ensure_stocktake_task',{p_force:false}); await loadData({transactions:false}); }catch(_){}
-        startRealtime();
-        if(pendingOfflineCount())setTimeout(syncOfflineQueue,250);
-      } catch (e) {
-        if(restoreOfflineSnapshot()){S.offline=true;S.notice={message:`Offline mode: showing saved inventory from ${fmtDate(S.offlineSnapshotAt)}.`,type:'success'};}
-        else S.notice = {message:parseError(e),type:'error'};
-      }
-    } else {
-      stopRealtime();
-      S.profile = null; S.profiles=[]; S.items=[]; S.locations=[]; S.balances=[]; S.transactions=[];
-    }
-    ensureNavigationHistory();
-    render();
+  if(refreshAfter)await refresh();
+  if(!silent&&status){status.hidden=false;status.textContent=`Risk Assessment title/training alignment complete: ${changed} update${changed===1?'':'s'}${failed?`, ${failed} could not be read`:''}.`}
+  if(!silent)toast(`${changed} Risk Assessment/document training update${changed===1?'':'s'} applied.`);
+  return {changed,failed};
+}
+function documentDisplayTitle(d){
+  if(!d)return '';
+  if(d.doc_type!=='SDS'||!isBadSdsTitle(d.title))return d.title||'';
+  // Never expose a combined-pack/source filename as an SDS title. If extraction has
+  // not succeeded yet, show a neutral repair prompt until Force Sync reads Section 1.1.
+  return 'SDS / MSDS (title needs repair)';
+}
+function sdsVersionsForTitleRepair(docId){
+  // Pending-only documents used to be skipped because title repair looked only at CURRENT.
+  // Prefer the newest pending version, then current, then any remaining versions.
+  const all=state.versions.filter(v=>v.document_id===docId&&v.storage_path);
+  return all.sort((a,b)=>{
+    const rank=v=>versionApprovalStatus(v)==='PENDING'?3:(v.status==='CURRENT'?2:1);
+    const r=rank(b)-rank(a);
+    return r||new Date(b.created_at||0)-new Date(a.created_at||0);
   });
-
-  function render() {
-    stopScanner();
-    if (!S.session) return renderLogin();
-    if (S.passwordMode) return renderPasswordUpdate();
-    app.innerHTML = shellHtml(pageHtml());
-    bindShell();
-    bindPage();
+}
+async function repairSdsTitles(options={}){
+  const {silent=false,refreshAfter=true,progress=null}=options&&typeof options==='object'?options:{};
+  if(!isAdmin()&&!state.user){if(!silent)toast('Admin access required.');return {changed:0,failed:0}}
+  const docs=state.documents.filter(d=>d.status!=='ARCHIVED'&&d.doc_type==='SDS');
+  if(!docs.length){if(!silent)toast('No active SDS/MSDS documents found.');return {changed:0,failed:0}}
+  const status=$('sdsRepairStatus');if(!silent&&status){status.hidden=false;status.textContent=`Checking ${docs.length} SDS/MSDS title${docs.length===1?'':'s'}…`}
+  let changed=0,failed=0;
+  for(let i=0;i<docs.length;i++){
+    const d=docs[i],versions=sdsVersionsForTitleRepair(d.id);if(!versions.length)continue;
+    const msg=`Checking SDS/MSDS ${i+1} of ${docs.length}: ${documentDisplayTitle(d)}`;
+    if(progress)progress(msg);if(!silent&&status)status.textContent=msg;
+    let title='',readAny=false;
+    try{
+      for(const v of versions){
+        const r=await sb.storage.from('safety-files').download(v.storage_path);
+        if(r.error||!r.data)continue;
+        readAny=true;
+        const text=await pdfTextFromBlob(r.data);
+        title=extractSdsProductName(text);
+        if(title&&!isBadSdsTitle(title))break;
+        title='';
+      }
+      if(!readAny){failed++;continue}
+      if(title&&!isBadSdsTitle(title)&&clean(title)!==clean(d.title)){
+        const u=await sb.from('documents').update({title}).eq('id',d.id);if(u.error){failed++;continue}
+        d.title=title;changed++;
+      }
+    }catch(e){console.warn('repairSdsTitles',d.id,e);failed++}
   }
+  if(refreshAfter)await refresh();
+  if(!silent&&status){status.hidden=false;status.textContent=`SDS/MSDS title repair complete: ${changed} updated${failed?`, ${failed} could not be read`:''}.`}
+  if(!silent)toast(`${changed} SDS/MSDS title${changed===1?'':'s'} updated.`);
+  return {changed,failed};
+}
 
-  function renderLogin() {
-    app.innerHTML = `
-      <div class="login">
-        <h1>Inventory Tracker</h1>
-        <p class="muted">Sign in to scan, find and update stock.</p>
-        ${!navigator.onLine?'<div class="notice warn">No connection. Offline mode is available only if this device still has a previously signed-in session and saved inventory data.</div>':''}
-        ${noticeHtml()}
-        <form id="loginForm">
-          <label>Email</label><input id="loginEmail" type="email" autocomplete="email" required>
-          <label>Password</label><input id="loginPassword" type="password" autocomplete="current-password" required>
-          <div class="actions"><button class="btn" type="submit">Sign in</button><button class="btn ghost" id="forgotBtn" type="button">Forgot password</button></div>
-        </form>
-      </div>`;
-    document.getElementById('loginForm').onsubmit = async e => {
-      e.preventDefault();
-      const email = document.getElementById('loginEmail').value.trim();
-      const password = document.getElementById('loginPassword').value;
-      const { error } = await sb.auth.signInWithPassword({email,password});
-      if (error) { S.notice={message:parseError(error),type:'error'}; renderLogin(); }
-    };
-    document.getElementById('forgotBtn').onclick = async () => {
-      const email = document.getElementById('loginEmail').value.trim();
-      if (!email) { S.notice={message:'Enter your email address first.',type:'error'}; return renderLogin(); }
-      const redirectTo = LIVE_APP_URL;
-      const { error } = await sb.auth.resetPasswordForEmail(email,{redirectTo});
-      S.notice = error ? {message:parseError(error),type:'error'} : {message:'Password reset email sent.',type:'success'};
-      renderLogin();
-    };
-  }
-
-  function renderPasswordUpdate() {
-    app.innerHTML = `
-      <div class="login">
-        <h1>Set your password</h1>
-        <p class="muted">Choose a new password for your Inventory Tracker account.</p>
-        ${noticeHtml()}
-        <form id="pwForm">
-          <label>New password</label><input id="pw1" type="password" minlength="8" autocomplete="new-password" required>
-          <label>Repeat password</label><input id="pw2" type="password" minlength="8" autocomplete="new-password" required>
-          <div class="actions"><button class="btn" type="submit">Save password</button></div>
-        </form>
-      </div>`;
-    document.getElementById('pwForm').onsubmit = async e => {
-      e.preventDefault();
-      const a=document.getElementById('pw1').value,b=document.getElementById('pw2').value;
-      if (a!==b) { S.notice={message:'Passwords do not match.',type:'error'}; return renderPasswordUpdate(); }
-      const currentMeta = S.session?.user?.user_metadata || {};
-      const { error } = await sb.auth.updateUser({
-        password:a,
-        data:{...currentMeta,must_set_password:false,password_set_at:new Date().toISOString()}
-      });
-      if (error) { S.notice={message:parseError(error),type:'error'}; return renderPasswordUpdate(); }
-      const { data:{ session } } = await sb.auth.getSession();
-      S.session=session;
-      S.passwordMode=false; history.replaceState({},'',location.pathname); setNotice('Password set. You can now use Inventory Tracker.'); render();
-    };
-  }
-
-  function shellHtml(content) {
-    const nav = [
-      ['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['stocktake','Stocktake'],['reports','Reports'],['history','History'],['help','Help']
-    ];
-    if (S.profile?.role === 'admin') nav.push(['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']);
-    return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.4.3</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
-      <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
-      <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
-    </div>`;
-  }
-
-  function bindShell() {
-    document.getElementById('logoutBtn').onclick = () => sb.auth.signOut();
-    document.querySelectorAll('[data-page]').forEach(b => b.onclick = () => navigatePage(b.dataset.page));
-    const sync=document.getElementById('syncOfflineBtn');if(sync)sync.onclick=()=>syncOfflineQueue();
-    const review=document.getElementById('reviewOfflineBtn');if(review)review.onclick=()=>showOfflineQueue();
-  }
-
-  function pageHtml() {
-    if (S.page==='scan') return scanHtml();
-    if (S.page==='items') return itemsHtml();
-    if (S.page==='locations') return locationsHtml();
-    if (S.page==='orders') return ordersHtml();
-    if (S.page==='stocktake') return stocktakeHtml();
-    if (S.page==='reports') return reportsHtml();
-    if (S.page==='history') return historyHtml();
-    if (S.page==='help') return helpHtml();
-    if (S.page==='users') return usersHtml();
-    if (S.page==='binsetup') return binSetupHtml();
-    if (S.page==='safetybridge') return safetyBridgeHtml();
-    if (S.page==='legacy') return legacyReviewHtml();
-    if (S.page==='backup') return backupHtml();
-    return dashboardHtml();
-  }
-
-
-  function helpHtml() {
-    const role=String(S.profile?.role||'staff');
-    const roleName=esc(roleLabel(role));
-
-    const common=`
-      <div class="card help-role-banner">
-        <h2>Help</h2>
-        <p><strong>Your role: ${roleName}</strong></p>
-        <p class="muted">Use your own login so stock actions and audit history are recorded against the correct person.</p>
-      </div>
-
-      <h2 class="help-heading">Everyday use</h2>
-      <div class="help-grid">
-        <div class="card help-card">
-          <h3>Find an item</h3>
-          <ul>
-            <li>Use <strong>Scan</strong> to scan the QR label on the bin/item.</li>
-            <li>Or open <strong>Items</strong> and search by item name, item code, category, location or Bin Ref.</li>
-            <li>Favourites, recent items and frequently used items make repeat jobs quicker.</li>
-          </ul>
-        </div>
-
-        <div class="card help-card">
-          <h3>Add / Use / Move / Adjust</h3>
-          <ul>
-            <li><strong>Add:</strong> stock has physically arrived or been added.</li>
-            <li><strong>Use:</strong> stock has been consumed/used. This counts towards usage reports and Suggested Orders. If the optional Safety Bridge trial is enabled for that item, your current Safety Tracker training is checked before the Use form opens.</li>
-            <li><strong>Move:</strong> transfer stock between locations/bins. Overall stock does not change and it is not usage.</li>
-            <li><strong>Adjust:</strong> correct a stock-count error. Adjustments do not count as usage.</li>
-          </ul>
-          <div class="help-warning"><strong>Important:</strong> if stock is missing because it was actually used but somebody forgot to record it, record it as <strong>Use</strong>, not Adjust. This keeps usage and Suggested Orders accurate.</div>
-        </div>
-
-        <div class="card help-card">
-          <h3>Locations and bins</h3>
-          <ul>
-            <li>Select the main <strong>Location</strong>, then the Bin Ref.</li>
-            <li>Locations can use an Admin-managed <strong>controlled bin dropdown</strong> or manual Bin Ref entry.</li>
-            <li>Controlled bin lists are shared with every user/device.</li>
-            <li>Admins can add ranges (for example Bin 1–50), individual bins, or convert existing bins to controlled choices.</li>
-            <li><strong>No bin / Unallocated</strong> is available where appropriate.</li>
-          </ul>
-        </div>
-
-        <div class="card help-card">
-          <h3>Default storage</h3>
-          <ul>
-            <li>An item can have a Default Location and Bin Ref.</li>
-            <li>Add Stock, Move destination and Receive Delivery use that default automatically.</li>
-            <li>You can override the destination for an individual transaction.</li>
-            <li>Changing an item's default does not move existing stock.</li>
-          </ul>
-        </div>
-
-        <div class="card help-card">
-          <h3>Offline mode</h3>
-          <ul>
-            <li>After a successful online login/load, saved stock data can be used when the connection drops.</li>
-            <li>Scan/search and Add, Use, Move and Adjust can be queued offline.</li>
-            <li>Queued actions sync automatically when the connection returns.</li>
-            <li>Check the offline banner for pending actions or sync errors.</li>
-          </ul>
-          <div class="help-tip">Stock shown offline may be older than the live database until the device reconnects and syncs.</div>
-        </div>
-
-        <div class="card help-card">
-          <h3>Stocktake</h3>
-          <ul>
-            <li>Open <strong>Stocktake</strong> when a task is assigned to you.</li>
-            <li>Count the physical stock in each listed Location/Bin.</li>
-            <li>Enter the actual count, not the expected count.</li>
-            <li>Completing the task creates audited stock corrections for differences.</li>
-          </ul>
-        </div>
-      </div>
-
-      <h2 class="help-heading">User guide</h2>
-      <div class="help-grid">
-        <div class="card help-card">
-          <h3>What a User can do</h3>
-          <ul>
-            <li>Scan and search stock.</li>
-            <li>View quantities and stock positions.</li>
-            <li>Add, Use, Move and Adjust stock.</li>
-            <li>Receive deliveries against open orders.</li>
-            <li>Complete assigned stocktakes.</li>
-            <li>View Orders, Reports and History.</li>
-          </ul>
-        </div>
-
-        <div class="card help-card">
-          <h3>Receiving an order</h3>
-          <ul>
-            <li>Open <strong>Orders → On Order</strong>.</li>
-            <li>Open the relevant order and receive the quantity actually delivered.</li>
-            <li>Choose/check the destination location and bin.</li>
-            <li>Part deliveries remain open for the outstanding balance.</li>
-          </ul>
-        </div>
-      </div>`;
-
-    const manager=`
-      <h2 class="help-heading">Manager guide</h2>
-      <div class="help-grid">
-        <div class="card help-card">
-          <h3>Items</h3>
-          <ul>
-            <li>Create and edit inventory items.</li>
-            <li>Set category, reorder level, default storage and suppliers.</li>
-            <li>Add/change item photos. Photos are cropped then resized/compressed before storage.</li>
-            <li>Archive items rather than losing useful history.</li>
-          </ul>
-        </div>
-
-        <div class="card help-card">
-          <h3>Locations</h3>
-          <ul>
-            <li>Add, rename and remove stock locations where permitted.</li>
-            <li>Controlled bins are managed centrally by Admin in <strong>Bin Setup</strong>.</li>
-            <li>Managers can use the configured dropdowns but only Admin changes the standard bin lists.</li>
-          </ul>
-          <div class="help-tip">Renaming locations is preferable to creating duplicates where the physical location is the same.</div>
-        </div>
-
-        <div class="card help-card">
-          <h3>Orders and suppliers</h3>
-          <ul>
-            <li>Suggested Orders use actual <strong>Use</strong> transactions from the previous 3 completed months.</li>
-            <li>Current stock and stock already On Order are subtracted.</li>
-            <li>Managers/Admins can create, edit and close purchase orders.</li>
-            <li>Use supplier details against each item so ordering is quicker and consistent.</li>
-          </ul>
-        </div>
-
-        <div class="card help-card">
-          <h3>Reports and audit history</h3>
-          <ul>
-            <li><strong>Reports</strong> shows usage and activity by item, user, location, bin and date range.</li>
-            <li><strong>History</strong> records Add, Use, Move and Adjust actions with user/location details.</li>
-            <li>Use reports to check unusual usage and help plan orders.</li>
-          </ul>
-        </div>
-      </div>`;
-
-    const admin=`
-      <h2 class="help-heading">Admin guide</h2>
-      <div class="help-grid">
-        <div class="card help-card">
-          <h3>Bin Setup</h3>
-          <ul>
-            <li>Open <strong>Bin Setup</strong> from the Admin navigation.</li>
-            <li>Select a location, then add a numbered range or individual Bin Refs.</li>
-            <li>Existing manual bins can be added to the controlled dropdown in one step.</li>
-            <li>Remove bins or clear a controlled setup without deleting stock history.</li>
-            <li>Item default bins are automatically selected and labelled <strong>(Default)</strong> on Add Stock, Move destination and Receive Delivery.</li>
-          </ul>
-        </div>
-
-        <div class="card help-card">
-          <h3>Users and roles</h3>
-          <ul>
-            <li>Open <strong>Users</strong> to invite people and set User, Manager or Admin roles.</li>
-            <li>Change a registered email without losing the user's password, role or stock history.</li>
-            <li>Disable users rather than deleting them so audit history is retained.</li>
-            <li>Re-enable an account if the person needs access again later.</li>
-          </ul>
-        </div>
-
-        <div class="card help-card">
-          <h3>Category suggestions</h3>
-          <ul>
-            <li>Open <strong>Items → Category Review</strong> to see automatic suggestions for existing stock.</li>
-            <li>Suggestions use item names plus categories you have already approved.</li>
-            <li>Nothing is re-categorised automatically; approve a suggestion or edit the item yourself.</li>
-            <li>New item forms show a live suggested category while you type.</li>
-          </ul>
-        </div>
-
-        <div class="card help-card">
-          <h3>Backups</h3>
-          <ul>
-            <li>Open <strong>Backup → Back up now</strong>.</li>
-            <li>The ZIP contains inventory database records and can include item photos.</li>
-            <li>It does not contain passwords or Supabase secrets.</li>
-            <li>A weekly backup is a sensible default and a fresh backup should be taken before major database/app changes.</li>
-          </ul>
-        </div>
-
-        <div class="card help-card">
-          <h3>Stocktake administration</h3>
-          <ul>
-            <li>Admins can enable/disable automatic stocktakes.</li>
-            <li>Set the interval, number of items per task and due period.</li>
-            <li>Create the next stocktake immediately when needed.</li>
-            <li>Reassign open stocktake tasks to another active user.</li>
-          </ul>
-        </div>
-
-        <div class="card help-card">
-          <h3>Legacy review</h3>
-          <ul>
-            <li>Use <strong>Legacy</strong> to review imported historical transactions.</li>
-            <li>Classify/exclude old records where needed so historical imports do not distort real usage and Suggested Orders.</li>
-            <li>Do not change legacy classifications simply to make reports look better; use the best available evidence.</li>
-          </ul>
-        </div>
-      </div>`;
-
-    return common + (canManage()?manager:'') + (canAdmin()?admin:'');
-  }
-
-  function dashboardHtml() {
-    const active = S.items.filter(i=>i.active);
-    const totalUnits = S.balances.reduce((a,b)=>a+num(b.quantity),0);
-    const low = active.filter(i => num(i.reorder_level)>0 && itemTotal(i.id)<=num(i.reorder_level));
-    const mStart = new Date(); mStart.setDate(1); mStart.setHours(0,0,0,0);
-    const usedMonth = S.transactions.filter(t=>countsAsUsage(t) && new Date(t.occurred_at)>=mStart).reduce((a,t)=>a+num(t.quantity),0);
-    const onOrderUnits = S.purchaseOrders.filter(o=>['OPEN','PART_RECEIVED'].includes(o.status)).reduce((a,o)=>a+orderRemaining(o),0);
-    const recent = S.transactions.slice(0,8);
-    return `
-      <div class="grid cards">
-        <div class="card"><div class="muted">Active items</div><div class="stat">${active.length}</div></div>
-        <div class="card"><div class="muted">Units in stock</div><div class="stat">${qty(totalUnits)}</div></div>
-        <div class="card" data-go="orders" data-order-tab-go="suggested" title="Open Suggested Orders"><div class="muted">Low-stock items</div><div class="stat">${low.length}</div></div>
-        <div class="card" data-go="orders" data-order-tab-go="open" title="Open On Order"><div class="muted">Units on order</div><div class="stat">${qty(onOrderUnits)}</div></div>
-        <div class="card"><div class="muted">Used this month</div><div class="stat">${qty(usedMonth)}</div></div>
-      </div>
-      <div class="toolbar" style="margin-top:1rem"><button class="btn good" data-go="scan">Scan Stock QR</button><button class="btn" data-go="items">Manual search</button>${canManage()?'<button class="btn secondary" id="dashAddItem">Add new item</button>':''}</div>
-      ${S.offline?`<div class="notice warn"><strong>Offline stock mode:</strong> QR/manual search and stock Add, Use, Move and Adjust are available. Orders, user/admin changes, stocktake submission and other database changes need a connection. Any queued stock changes are checked against the live database when syncing.</div>`:''}
-      ${assignedOpenStocktake()?`<div class="notice warn" style="margin-top:1rem"><strong>Stocktake ${assignedOpenStocktake().status==='OVERDUE'?'overdue':'due'}.</strong> About ${stocktakeItemsFor(assignedOpenStocktake().id).length} items have been assigned to you. <button class="btn ghost" data-go="stocktake">Open Stocktake</button></div>`:''}
-      ${dashboardPersonalHtml()}
-      ${canAdmin()&&backupDue()?`<div class="notice warn" style="margin-top:1rem"><strong>Admin backup due.</strong> ${lastBackupAt()?`Last backup: ${esc(fmtDate(lastBackupAt()))}.`:'No app backup has been recorded on this device yet.'} <button class="btn ghost" data-go="backup">Open Backup</button></div>`:''}
-      ${low.length?`<div class="card"><h3>Low stock</h3><div class="item-list">${low.slice(0,8).map(itemRowHtml).join('')}</div></div>`:''}
-      <div class="card" style="margin-top:1rem"><h3>Recent activity</h3>${transactionTable(recent)}</div>`;
-  }
-
-  function scanHtml() {
-    return `<div class="scan-box">
-      <div class="card"><h2>Scan Stock QR</h2><p class="muted">Point the rear camera at the QR code on the bin or item label. For small labels, use <strong>Small QR Auto</strong> and keep the code near the centre guide.</p>
-        <div id="reader" class="scanner live-scanner">
-          <video id="qrVideo" playsinline muted autoplay></video>
-          <canvas id="qrCanvas" class="hidden"></canvas>
-          <div class="qr-guide" aria-hidden="true"></div>
-          <div id="scanModeBadge" class="scan-mode-badge">Normal scan</div>
-        </div>
-        <div id="scanStatus" class="notice">Starting rear camera…</div>
-        <div class="camera-tools">
-          <button class="btn ghost" id="smallQrBtn" type="button" aria-pressed="false">Small QR Auto</button>
-          <button class="btn ghost hidden" id="refocusBtn" type="button">Refocus</button>
-          <button class="btn ghost hidden" id="torchBtn" type="button" aria-pressed="false">Torch</button>
-        </div>
-        <div id="zoomWrap" class="camera-zoom hidden">
-          <label for="zoomSlider">Camera zoom <strong id="zoomValue">1.0×</strong></label>
-          <input id="zoomSlider" type="range" min="1" max="4" step="0.1" value="1">
-        </div>
-        <div class="actions">
-          <button class="btn secondary" id="stopScan">Stop camera</button>
-          <button class="btn ghost" id="scanPhotoBtn">Scan QR from photo</button>
-          <input id="scanPhotoInput" class="hidden" type="file" accept="image/*" capture="environment">
-          <button class="btn ghost" data-go="items">Manual search instead</button>
-        </div>
-      </div>
-      <div class="card" style="margin-top:1rem"><label>Or type/scan code</label><div class="toolbar"><input id="scanText" placeholder="Item or stock QR code"><button class="btn" id="scanFind">Find</button></div></div>
-    </div>`;
-  }
-
-  function itemRowHtml(i) {
-    const total=itemTotal(i.id); const low=num(i.reorder_level)>0 && total<=num(i.reorder_level); const onOrder=itemOnOrder(i.id);
-    const pos=itemPositions(i.id).slice(0,3).map(b=>`${esc(locationLabel(byId(S.locations,b.location_id)))} (${qty(b.quantity)})`).join(' · ');
-    const catReview=canManage()?categoryReviewSuggestion(i):null;
-    const catBadge=catReview?`<span class="badge warn category-suggest-badge">Suggested: ${esc(catReview.suggestion.category)}</span> `:'';
-    return `<div class="item-row inventory-item-row ${i.active?'':'archived-row'}" data-item="${i.id}">${i.primary_photo_path?`<img class="item-thumb" data-photo-path="${esc(i.primary_photo_path)}" alt="">`:`<div class="item-thumb placeholder">📦</div>`}<div class="item-main"><div class="item-title">${esc(i.name)}${i.active?'':' <span class="badge muted">Archived</span>'}</div><div class="muted">${esc(i.item_code)}${i.category?' · '+esc(i.category):' · Uncategorised'}</div><div class="muted">${pos || 'No stock location set'}</div>${catBadge}${low&&i.active?'<span class="badge low">Low stock</span> ':''}${onOrder>0?`<span class="badge order">On order ${qty(onOrder)}</span>`:''}</div><div class="qty">${qty(total)}</div></div>`;
-  }
-
-
-  function categoryNames() {
-    const configured=S.categories.filter(c=>c.active).map(c=>c.name);
-    const existing=S.items.map(i=>String(i.category||'').trim()).filter(Boolean);
-    return [...new Set([...configured,...existing])].sort((a,b)=>a.localeCompare(b));
-  }
-
-
-  // v8.3.2 Category Suggestions
-  // Suggestions are calculated from the current inventory, so existing items are
-  // automatically included every time data syncs. Nothing is changed until a
-  // manager/admin approves the suggested category.
-  const CATEGORY_STOP_WORDS=new Set([
-    'the','and','for','with','from','into','pack','pk','each','white','black','red','blue','green','grey','gray','small','large','medium','standard','trade','professional','pro','new','spare','replacement','part','parts','item','items','mm','cm','ml','kg','gram','grams','litre','litres','meter','metre','meters','metres','pcs','pc','piece','pieces','set','box','roll','single','double','triple'
+async function loadTable(table,target,optional=false){
+  const r=await sb.from(table).select('*');
+  if(r.error){state.loadErrors[table]=r.error.message;if(!optional)console.warn(table,r.error);state[target]=[];return false}
+  delete state.loadErrors[table];state[target]=r.data||[];return true;
+}
+async function loadAll(){
+  if(!sb)return;
+  state.loadErrors={};
+  await Promise.all([
+    loadTable('profiles','people'),loadTable('documents','documents'),loadTable('document_versions','versions'),
+    loadTable('document_links','documentLinks',true),loadTable('document_reviews','documentReviews',true),
+    loadTable('training_sessions','training'),loadTable('training_assignments','trainingAssignments'),loadTable('training_signoffs','trainingSignoffs'),loadTable('training_exceptions','trainingExceptions',true),
+    loadTable('training_delivery_confirmations','trainingConfirmations',true),loadTable('training_files','trainingFiles',true),
+    loadTable('training_document_links','trainingDocumentLinks',true),loadTable('document_activity','documentActivity',true),
+    loadTable('document_assignments','historicalDocAssignments',true),loadTable('document_signoffs','historicalDocSignoffs',true),loadTable('document_delivery_confirmations','historicalDocConfirmations',true),
+    loadTable('safety_awareness_items','awarenessItems',true),loadTable('safety_awareness_assignments','awarenessAssignments',true),loadTable('safety_awareness_activity','awarenessActivity',true),
+    loadTable('ppe_items','ppeItems',true),loadTable('ppe_assignments','ppeAssignments',true),loadTable('ppe_monthly_checks','ppeChecks',true),loadTable('ppe_monthly_check_items','ppeCheckItems',true),loadTable('ppe_alert_queue','ppeAlertQueue',true),
+    loadTable('report_schedules','reportSchedules',true),loadTable('generated_reports','generatedReports',true),loadTable('report_email_log','reportEmailLog',true),
+    loadTable('departments','departments',true),loadTable('user_departments','userDepartments',true),loadTable('document_training_audiences','documentAudiences',true),
+    loadTable('safety_tracker_settings','settings',true)
   ]);
-  const CATEGORY_SEED_GROUPS=[
-    {aliases:['bulbs','bulb','lighting','lamps','lamp'],terms:[['gu10',10],['g9',9],['e27',9],['e14',9],['b22',9],['ba22',9],['sbc',9],['pygmy',9],['led bulb',10],['led lamp',9],['light bulb',10],['fluorescent tube',9],['lamp',5],['bulb',7]]},
-    {aliases:['plumbing','pipework'],terms:[['copper pipe',9],['press fit',9],['m-profile',9],['compression fitting',9],['flexible hose',8],['flexi hose',8],['cistern',8],['flush valve',9],['fill valve',9],['isolation valve',9],['ball valve',8],['tap connector',8],['waste pipe',8],['pipe',5],['elbow',6],['coupling',6],['tee',5],['valve',5]]},
-    {aliases:['electrical','electrics'],terms:[['light switch',12],['switch cover plate',12],['switch plate',11],['light switch cover',12],['switched socket',11],['socket outlet',10],['socket',9],['switch',8],['faceplate',8],['back box',9],['pattress',9],['fuse',8],['mcb',9],['rcbo',9],['rcd',9],['isolator',8],['contactor',8],['relay',7],['transformer',8],['cable',7],['flex cable',8],['plug',6],['junction box',8],['connector block',7],['terminal block',7]]},
-    {aliases:['batteries','battery'],terms:[['battery',10],['batteries',10],['aa battery',10],['aaa battery',10],['cr2032',10],['lead acid',9]]},
-    {aliases:['paint','paints','decorating','decoration'],terms:[['dulux',10],['hammerite',10],['paint',9],['emulsion',9],['satinwood',9],['eggshell',9],['matt',6],['primer',7],['undercoat',7],['varnish',7]]},
-    {aliases:['sealants','sealant','adhesives','adhesive','glues','glue'],terms:[['sealant',10],['silicone',9],['caulk',9],['adhesive',9],['wood glue',10],['gorilla glue',10],['mapesil',10],['peel stop',8]]},
-    {aliases:['fixings','fixing','fasteners','fastener'],terms:[['screw',8],['screws',8],['bolt',8],['bolts',8],['rawlplug',10],['wall plug',9],['anchor bolt',9],['washer',5],['nuts and bolts',9],['fixing',7]]},
-    {aliases:['tools','tooling','hand tools','power tools'],terms:[['drill',7],['screwdriver',8],['spanner',8],['wrench',8],['pliers',8],['pipe cutter',8],['cutter',5],['saw',7],['chisel',7],['socket set',11],['tool',5]]},
-    {aliases:['ppe','personal protective equipment','safety wear','safety equipment'],terms:[['safety glasses',10],['goggles',10],['ear defenders',10],['hard hat',10],['safety footwear',10],['safety boots',10],['protective gloves',9],['work gloves',8]]},
-    {aliases:['cleaning','cleaners','cleaning products','janitorial'],terms:[['cleaner',7],['cleaning',8],['detergent',8],['descaler',9],['bleach',9],['polish',6],['wipes',6],['mop',7],['cloth',5]]},
-    {aliases:['chemicals','chemical','lubricants','lubricant'],terms:[['wd-40',10],['wd40',10],['lubricant',9],['grease',8],['penetrating oil',9],['aerosol',6],['chemical',7],['diesel',6],['gas oil',6]]},
-    {aliases:['hvac','heating','ventilation','air conditioning'],terms:[['fan coil',10],['fcu',9],['ahu',10],['air handling',10],['actuator',7],['fan belt',9],['air filter',8],['hvac',10]]},
-    {aliases:['fire','fire alarm','fire safety'],terms:[['smoke detector',10],['optical smoke',10],['heat detector',10],['apollo discovery',10],['fire alarm',10],['call point',9],['sounder',7]]}
+  state.people.sort((a,b)=>String(a.display_name||a.email).localeCompare(String(b.display_name||b.email)));
+  populateFilters();
+}
+
+async function loadReportViewerData(){
+  if(!sb)return;
+  state.loadErrors={};
+  await Promise.all([
+    loadTable('generated_reports','generatedReports',true),
+    loadTable('safety_tracker_settings','settings',true)
+  ]);
+  state.reportEmailLog=[];
+}
+
+function populateFilters(){
+  const docTypes=['RISK_ASSESSMENT','COSHH','SSW','SDS','TOOLBOX_TALK','POLICY','PROCEDURE','OTHER'];
+  if($('documentTypeFilter')){
+    const el=$('documentTypeFilter'),keep=el.value;
+    el.innerHTML='<option value="">All types</option>'+docTypes.map(x=>`<option value="${x}">${esc(x==='TOOLBOX_TALK'?'Toolbox Talk':docTypeLabel(x))}</option>`).join('');
+    if([...el.options].some(o=>o.value===keep))el.value=keep;
+  }
+  const tOpts=trainingKinds.map(x=>`<option value="${x}">${esc(kindLabel(x))}</option>`).join('');
+  if($('trainingTypeFilter')){
+    const el=$('trainingTypeFilter'),keep=el.value;
+    el.innerHTML='<option value="">All types</option>'+tOpts;
+    if([...el.options].some(o=>o.value===keep))el.value=keep;
+  }
+  if($('complianceTypeFilter')){
+    const el=$('complianceTypeFilter'),keep=el.value;
+    el.innerHTML='<option value="">All training types</option>'+tOpts;
+    if([...el.options].some(o=>o.value===keep))el.value=keep;
+  }
+  const peopleOpts=activePeople().map(p=>`<option value="${p.id}">${esc(p.display_name||p.email)}</option>`).join('');
+  if($('compliancePersonFilter'))$('compliancePersonFilter').innerHTML='<option value="">All people</option>'+peopleOpts;
+  if($('activityPersonFilter'))$('activityPersonFilter').innerHTML='<option value="">All people</option>'+peopleOpts;
+  const instructor=activeTraining().filter(t=>state.trainingAssignments.some(a=>a.training_session_id===t.id&&a.active!==false&&effectiveTrainingMethod(t,a)==='INSTRUCTOR_LED')).sort((a,b)=>a.name.localeCompare(b.name));
+  if($('groupTrainingSelect'))$('groupTrainingSelect').innerHTML='<option value="">Select training</option>'+instructor.map(t=>`<option value="${t.id}">${esc(trainingReference(t)?trainingReference(t)+' - '+t.name:t.name)}</option>`).join('');
+}
+
+function showView(name,{push=true}={}){
+  if(isReportViewer())name='reports';
+  currentViewName=name;
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active-view'));
+  document.querySelectorAll('#mainNav button').forEach(b=>b.classList.toggle('active',b.dataset.view===name));
+  $(name+'View')?.classList.add('active-view');
+  if(name==='mySafety')renderMySafety();if(name==='documents')renderDocuments();if(name==='training')renderTraining();if(name==='awareness')renderAwareness();if(name==='ppe')renderPpe();if(name==='people')renderPeople();if(name==='compliance')renderCompliance();if(name==='instructor')renderInstructor();if(name==='reports')renderReports();if(name==='admin')renderAdmin();if(name==='help')renderHelp();
+  if(navigationReady&&push){
+    const st=history.state;
+    if(!(st?.safetyTracker&&!st.modal&&!st.guard&&st.view===name))history.pushState(safetyNavState({view:name,modal:false,guard:false}),'',location.href);
+  }
+}
+async function refresh(msg){if(isReportViewer()){await loadReportViewerData();renderReports();if(msg)toast(msg);return}await loadAll();renderMySafety();renderDocuments();renderTraining();renderAwareness();renderPpe();if(isManager()){renderPeople();renderCompliance();renderInstructor();renderReports()}if(isAdmin())renderAdmin();if(msg)toast(msg)}
+
+async function init(){
+  if(!configured){showAuthMessage('Copy your working Safety Tracker config.js into this new v2 folder, then reload.');return}
+  if(window.pdfjsLib)pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  $('loginForm').addEventListener('submit',login);$('forgotPasswordBtn').addEventListener('click',forgotPassword);$('signOutBtn').addEventListener('click',()=>sb.auth.signOut());
+  $('completePasswordSetupBtn').addEventListener('click',completeMandatoryPasswordSetup);$('modalCloseBtn').addEventListener('click',closeModal);
+  window.addEventListener('popstate',handleSafetyPopstate);
+  $('mainNav').addEventListener('click',e=>{const b=e.target.closest('button[data-view]');if(b)showView(b.dataset.view)});
+  $('newDocumentBtn').addEventListener('click',showNewDocument);$('newTrainingBtn').addEventListener('click',showNewTraining);$('inviteUserBtn').addEventListener('click',showInviteUser);
+  $('documentSearch').addEventListener('input',renderDocuments);
+  $('documentTypeFilter').addEventListener('change',()=>{
+    // In Register, keep the Register open and filter its sections.
+    // In an individual index, switching the dropdown returns to the all-documents view
+    // so the selected type can take effect immediately.
+    if((state.documentIndex||'ALL')!=='REGISTER')state.documentIndex='ALL';
+    renderDocuments();
+  });
+  $('documentStatusFilter').addEventListener('change',renderDocuments);
+  $('documentIndexBackBtn')?.addEventListener('click',()=>{state.documentIndex='ALL';$('documentTypeFilter').value='';renderDocuments()});
+  ['trainingSearch','trainingTypeFilter','trainingStatusFilter'].forEach(id=>$(id).addEventListener('input',renderTraining));
+  ['awarenessSearch','awarenessStatusFilter'].forEach(id=>$(id)?.addEventListener('input',renderAwareness));
+  ['ppeSearch','ppeStatusFilter'].forEach(id=>$(id)?.addEventListener('input',renderPpe));
+  ['compliancePersonFilter','complianceTypeFilter','complianceStatusFilter'].forEach(id=>$(id).addEventListener('input',renderCompliance));
+  ['activitySearch','activityPersonFilter','activityActionFilter'].forEach(id=>$(id)?.addEventListener('input',renderDocumentActivityReport));
+  $('openGroupAttendanceBtn').addEventListener('click',()=>{const id=$('groupTrainingSelect').value;if(!id)return toast('Select training first.');showInstructorGroupAttendance(id)});
+  $('forceSyncBtn').addEventListener('click',forceSyncFromUI);$('repairSdsTitlesBtn')?.addEventListener('click',repairSdsTitles);$('repairRaTitlesBtn')?.addEventListener('click',repairRaTitles);$('storageCleanupBtn')?.addEventListener('click',scanStorageCleanup);$('outstandingPdfBtn').addEventListener('click',()=>downloadReport('outstanding'));$('documentActivityPdfBtn')?.addEventListener('click',downloadDocumentActivityPdf);$('trainingMatrixPdfBtn').addEventListener('click',()=>downloadReport('matrix'));$('trainingSignoffsPdfBtn').addEventListener('click',()=>downloadReport('signoffs'));$('reviewDatesPdfBtn').addEventListener('click',()=>downloadReport('reviews'));$('backupBtn').addEventListener('click',downloadBackup);$('fullBackupBtn').addEventListener('click',downloadFullBackup);
+  $('generateMonthlyReportBtn')?.addEventListener('click',()=>generateMonthlySafetyReport($('monthlyReportMonth')?.value,{download:true,archive:true}));
+  $('generatePpeReportBtn')?.addEventListener('click',()=>downloadMonthlyPpeReport($('monthlyReportMonth')?.value));
+  $('newReportScheduleBtn')?.addEventListener('click',showNewReportSchedule);$('evidencePackBtn')?.addEventListener('click',()=>showEvidencePackPicker());
+  document.body.addEventListener('click',globalClick);
+  const {data:{session}}=await sb.auth.getSession();if(session)await enterApp(session.user);else showLogin();
+  sb.auth.onAuthStateChange(async(event,session)=>{if(event==='PASSWORD_RECOVERY'&&session){showPasswordReset();return}if(session&&(!state.user||state.user.id!==session.user.id))await enterApp(session.user);if(!session){state.user=null;state.profile=null;showLogin()}});
+}
+function showLogin(){$('appView').hidden=true;$('authView').hidden=false;$('loginForm').hidden=false;$('forgotPasswordBtn').hidden=false;$('passwordSetupArea').hidden=true}
+async function login(e){e.preventDefault();$('authMessage').hidden=true;const {error}=await sb.auth.signInWithPassword({email:$('loginEmail').value.trim(),password:$('loginPassword').value});if(error)showAuthMessage(error.message)}
+async function forgotPassword(){const email=$('loginEmail').value.trim().toLowerCase();if(!email)return showAuthMessage('Enter your email address first.');const {error}=await sb.auth.resetPasswordForEmail(email,{redirectTo:location.origin+location.pathname});showAuthMessage(error?error.message:'Password reset request sent. Check Inbox and Junk/Spam.')}
+function showPasswordReset(){openModal('Set new password',`<label>New password<input id="newPassword" type="password" minlength="8"></label><div class="actions">${btn('Save password','primary','id="saveNewPassword"')}</div>`)}
+function showMandatoryPasswordSetup(user){state.user=user;state.profile=null;$('appView').hidden=true;$('authView').hidden=false;$('loginForm').hidden=true;$('forgotPasswordBtn').hidden=true;$('passwordSetupArea').hidden=false;$('authMessage').hidden=true}
+async function completeMandatoryPasswordSetup(){const p=$('invitePassword').value,c=$('invitePasswordConfirm').value;if(!p||p.length<8)return showAuthMessage('Password must be at least 8 characters.');if(p!==c)return showAuthMessage('Passwords do not match.');const current=state.user?.user_metadata||{};const {error}=await sb.auth.updateUser({password:p,data:{...current,must_set_password:false,password_set_at:new Date().toISOString()}});if(error)return showAuthMessage(error.message);const {data:{user}}=await sb.auth.getUser();if(user)await enterApp(user)}
+async function enterApp(user){state.user=user;if(user?.user_metadata?.must_set_password===true)return showMandatoryPasswordSetup(user);const {data,error}=await sb.from('profiles').select('*').eq('id',user.id).single();if(error||!data){showAuthMessage('Profile not found. Ask an administrator to check the Safety Tracker profile.');await sb.auth.signOut();return}if(data.active===false){showAuthMessage('This Safety Tracker account is disabled.');await sb.auth.signOut();return}state.profile=data;if(isReportViewer())await loadReportViewerData();else await loadAll();$('authView').hidden=true;$('appView').hidden=false;$('currentUserName').textContent=data.display_name||user.email;$('currentUserRole').textContent=isReportViewer()?'Report Viewer':data.role;document.querySelectorAll('.manager-only').forEach(el=>el.hidden=!isManager());document.querySelectorAll('.admin-only').forEach(el=>el.hidden=!isAdmin());const reportsNav=document.querySelector('#mainNav button[data-view="reports"]');if(reportsNav)reportsNav.hidden=!canViewReports();const initialView=isReportViewer()?'reports':'mySafety';if(isReportViewer())document.querySelectorAll('#mainNav button').forEach(b=>b.hidden=b.dataset.view!=='reports');seedSafetyNavigation(initialView);showView(initialView,{push:false})}
+
+function latestTrainingSignoff(a){return state.trainingSignoffs.filter(s=>s.training_assignment_id===a.id).sort((x,y)=>new Date(y.signed_at||0)-new Date(x.signed_at||0))[0]||null}
+function latestTrainingException(a){return state.trainingExceptions.filter(x=>x.training_assignment_id===a.id).sort((x,y)=>new Date(y.completed_at||0)-new Date(x.completed_at||0))[0]||null}
+function latestTrainingCompletion(a){const signoff=latestTrainingSignoff(a),exception=latestTrainingException(a);if(!exception)return {evidence:signoff,exception:null};if(!signoff||new Date(exception.completed_at||0)>new Date(signoff.signed_at||0))return {evidence:{...exception,signed_at:exception.completed_at},exception};return {evidence:signoff,exception:null}}
+function trainingEvents(a){return state.trainingConfirmations.filter(c=>c.assignment_id===a.id).sort((x,y)=>new Date(y.confirmed_at||0)-new Date(x.confirmed_at||0))}
+function latestTrainingConfirmation(a){return trainingEvents(a).find(c=>(c.attendance_status||'ATTENDED')==='ATTENDED')||null}
+function latestTrainingEvent(a){return trainingEvents(a)[0]||null}
+function freshConfirmation(c,s){return !!c&&(!s||new Date(c.confirmed_at)>new Date(s.signed_at))}
+function effectiveTrainingMethod(t,a){return a?.delivery_method_override||t?.delivery_method||defaultTrainingDelivery(trainingKind(t))}
+function trainingAssignmentDue(a,s){if(!s)return a.due_date?new Date(a.due_date+'T23:59:59').toISOString():new Date().toISOString();const c=trainingEvents(a).find(x=>(x.attendance_status||'ATTENDED')==='ATTENDED'&&new Date(x.confirmed_at)<=new Date(s.signed_at));return addRenewal(c?.delivery_date||s.signed_at,a.renewal_value,a.renewal_unit)}
+function assignmentStatus(a,t){
+  const completion=latestTrainingCompletion(a),s=completion.evidence,exception=completion.exception,method=effectiveTrainingMethod(t,a),due=trainingAssignmentDue(a,s),c=latestTrainingConfirmation(a),event=latestTrainingEvent(a),renewalDue=!!(s&&a.renewal_value&&due&&new Date(due)<=new Date()),needs=!s||renewalDue;
+  if(!needs)return {code:'COMPLETED',label:exception?'Completed · admin exception':'Completed',badge:'complete',due,s,exception,method,c,event,ready:false};
+  if(due&&new Date(due)<new Date())return {code:'OVERDUE',label:'Overdue',badge:'overdue',due,s,exception,method,c,event,ready:freshConfirmation(c,s)};
+  if(method==='INSTRUCTOR_LED'){
+    if(freshConfirmation(c,s))return {code:'READY_TO_SIGN',label:'Ready to sign',badge:'due',due,s,exception,method,c,event,ready:true};
+    if(event?.attendance_status==='ABSENT')return {code:'AWAITING_INSTRUCTOR',label:'Absent / awaiting new session',badge:'due',due,s,exception,method,c,event,ready:false};
+    return {code:'AWAITING_INSTRUCTOR',label:'Awaiting instructor',badge:'due',due,s,exception,method,c,event,ready:false};
+  }
+  return {code:'OUTSTANDING',label:s?'Refresher due':'Not started',badge:'due',due,s,exception,method,c,event,ready:true};
+}
+function myActiveAssignments(){return state.trainingAssignments.filter(a=>a.user_id===state.user?.id&&a.active!==false).map(a=>({a,t:state.training.find(t=>t.id===a.training_session_id)})).filter(x=>x.t&&x.t.status!=='ARCHIVED'&&trainingSourceApproved(x.t))}
+function renderMySafety(){
+  const rows=myActiveAssignments().map(x=>({...x,status:assignmentStatus(x.a,x.t)}));
+  const completed=rows.filter(x=>x.status.code==='COMPLETED').length;
+  const overdue=rows.filter(x=>x.status.code==='OVERDUE').length;
+  const waiting=rows.filter(x=>x.status.code==='AWAITING_INSTRUCTOR').length;
+  const outstanding=rows.filter(x=>x.status.code!=='COMPLETED').length;
+  const stats=[
+    {label:'Assigned',value:rows.length,traffic:outstanding>0?'amber':'green'},
+    {label:'Completed',value:completed,traffic:'green'},
+    {label:'Overdue',value:overdue,traffic:overdue>0?'red':'green'},
+    {label:'Awaiting instructor',value:waiting,traffic:waiting>0?'amber':'green'}
   ];
+  $('mySafetyStats').innerHTML=stats.map(x=>`<div class="stat traffic-${x.traffic}"><span class="traffic-dot" aria-hidden="true"></span><strong>${x.value}</strong><span>${x.label}</span></div>`).join('');
+  $('mySafetyList').innerHTML=rows.length?rows.map(({a,t,status})=>{
+    const src=sourceForTraining(t),deps=trainingDependencyState(t),materials=requiredTrainingMaterials(a,t),materialOpened=requiredTrainingMaterialOpened(a,t);
+    const openedCount=materials.filter(m=>trainingMaterialOpenedSince(m,a)).length,unavailable=materials.filter(m=>m.available===false).length;
+    const requiredBtn=materials.length&&status.code!=='COMPLETED'?btn(materialOpened?'Source file opened ✓':'Open source file','secondary',`data-open-required-training="${a.id}"`):'';
+    const materialBadge=materials.length&&status.code!=='COMPLETED'?`<span class="badge ${materialOpened?'complete':'due'}">${materialOpened?'Source file opened ✓':`Source ${openedCount}/${materials.length} opened${unavailable?` · source not approved`:''}`}</span>`:'';
+    const traffic=!deps.ready?'red':status.code==='COMPLETED'?'green':status.code==='OVERDUE'?'red':'amber';
+    return `<div class="item-card training-status-card traffic-${traffic}"><div class="row-between"><div><h3>${esc(trainingReference(t)&&!t.name.toUpperCase().includes(trainingReference(t))?trainingReference(t)+' - '+t.name:t.name)}</h3><div class="meta"><span class="badge">${esc(kindLabel(trainingKind(t)))}</span><span>${esc(deliveryText(status.method))}</span><span class="badge ${!deps.ready?'overdue':status.badge}">${esc(!deps.ready?'Blocked':status.label)}</span>${status.due?`<span>Due ${fmtDate(status.due)}</span>`:''}${materialBadge}</div></div></div>${src?`<div class="muted">Controlled source: ${esc(src.reference||'')} ${esc(src.title)}</div>`:''}${!deps.ready?`<div class="pending-use-warning">${esc(trainingDependencyMessage(t))}</div>`:materials.length&&status.code!=='COMPLETED'&&!materialOpened?`<div class="request-note">Open the current approved source file before this training can be signed off.</div>`:''}<div class="row">${deps.ready?requiredBtn:''}${deps.ready&&status.code!=='COMPLETED'&&status.method==='SELF_TRAINING'?btn('Complete & sign','primary',`data-sign-training="${a.id}"`):''}${deps.ready&&status.code==='READY_TO_SIGN'?btn('Sign attendance','primary',`data-sign-training="${a.id}"`):''}${deps.ready&&isAdmin()&&a.user_id===state.user?.id&&status.method==='INSTRUCTOR_LED'&&status.code!=='COMPLETED'&&!status.ready?btn('Complete as exception','danger',`data-training-exception="${a.id}"`):''}${deps.ready&&status.method==='SELF_TRAINING'&&status.code!=='COMPLETED'?btn('Need further training','secondary',`data-request-instructor="${a.id}"`):''}${btn('View training','secondary',`data-view-training="${t.id}"`)}</div></div>`
+  }).join(''):'<div class="empty">No active training is assigned to you.</div>';
+  renderMyAwareness();
+  renderMyPpe();
+}
 
-  const categoryNorm=v=>String(v||'').toLowerCase().replace(/&/g,' and ').replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();
-  const categoryTokenise=v=>categoryNorm(v).split(' ').filter(t=>t.length>1&&!CATEGORY_STOP_WORDS.has(t)&&!/^\d+(?:\.\d+)?$/.test(t));
-  const categoryBigrams=tokens=>tokens.slice(0,-1).map((t,i)=>`${t} ${tokens[i+1]}`);
-  const phraseIn=(text,phrase)=>` ${text} `.includes(` ${categoryNorm(phrase)} `);
-  const sameCategory=(a,b)=>categoryNorm(a)===categoryNorm(b);
-  const CATEGORY_PLACEHOLDERS=new Set(['imported','uncategorised','uncategorized','unknown','not set','n a','na']);
-  const categoryIsPlaceholder=v=>!String(v||'').trim()||CATEGORY_PLACEHOLDERS.has(categoryNorm(v));
+function documentIndexCount(kind){
+  if(kind==='TOOLBOX_TALK')return state.training.filter(t=>t.status!=='ARCHIVED'&&trainingKind(t)==='TOOLBOX_TALK').length;
+  return state.documents.filter(d=>d.status!=='ARCHIVED'&&d.doc_type===kind&&(isManager()||approvedCurrentVersion(d.id))).length;
+}
+function documentRegisterCount(){
+  return ['RISK_ASSESSMENT','COSHH','SSW','SDS'].reduce((n,k)=>n+registerDocumentRows(k).length,0)+documentIndexCount('TOOLBOX_TALK');
+}
+function pendingApprovalEntries(){
+  return state.versions.filter(v=>versionApprovalStatus(v)==='PENDING').map(v=>({v,d:state.documents.find(d=>d.id===v.document_id)})).filter(x=>x.d&&x.d.status!=='ARCHIVED').sort((a,b)=>new Date(a.v.created_at||0)-new Date(b.v.created_at||0));
+}
+function renderDocumentApprovalOverview(){
+  const wrap=$('documentApprovalOverview'),stats=$('documentApprovalStats'),panel=$('pendingApprovalPanel');if(!wrap||!stats||!panel||!isManager())return;
+  wrap.hidden=false;
+  const q=clean($('documentSearch')?.value).toLowerCase(),type=$('documentTypeFilter')?.value||'',status=$('documentStatusFilter')?.value||'';
+  const pendingFocus=status==='PENDING';
+  const overviewHead=wrap.querySelector('.approval-overview-card > .row-between');
+  if(overviewHead)overviewHead.hidden=pendingFocus;
+  stats.hidden=pendingFocus;
+  const searchOk=d=>!q||`${d.reference||''} ${d.title||''} ${documentDisplayTitle(d)} ${originalBulkSourceName(approvedCurrentVersion(d.id)||pendingApprovalVersion(d.id)||latestVersion(d.id))}`.toLowerCase().includes(q);
+  const docs=state.documents.filter(d=>d.status!=='ARCHIVED'&&searchOk(d)&&(!type||d.doc_type===type)&&matchesDocumentStatusFilter(d,status));
+  const approved=docs.filter(d=>approvedCurrentVersion(d.id)).length;
+  let pending=pendingApprovalEntries().filter(({d})=>searchOk(d)&&(!type||d.doc_type===type));
+  if(status&&!['ACTIVE','PENDING'].includes(status))pending=[];
+  const reviewAction=docs.filter(d=>{const v=approvedCurrentVersion(d.id);return !!v&&(d.review_required||(!v.review_date?false:v.review_date>=todayISO()&&v.review_date<=daysFromNow(30)))}).length;
+  const red=docs.filter(d=>documentTraffic(d)==='red').length;
+  stats.innerHTML=[
+    {label:'Approved/current',value:approved,traffic:'green'},
+    {label:'Pending approval',value:pending.length,traffic:pending.length?'amber':'green'},
+    {label:'Review action',value:reviewAction,traffic:reviewAction?'amber':'green'},
+    {label:'Overdue / not approved',value:red,traffic:red?'red':'green'}
+  ].map(x=>`<div class="stat traffic-${x.traffic}"><span class="traffic-dot" aria-hidden="true"></span><strong>${x.value}</strong><span>${x.label}</span></div>`).join('');
+  panel.innerHTML=`<div class="pending-approval-head"><div><h4>${pendingFocus?'Pending approval':'Pending approval queue'}</h4><p class="muted">${pendingFocus?'Documents matching the filters are shown here first. ':'This queue follows the Search, Type and Status filters above. '}A pending version is not authorised for use or new Training until it is opened and digitally approved/accepted.</p></div><span class="badge ${pending.length?'due':'complete'}">${pending.length} pending</span></div>${pending.length?`<div class="card-list pending-approval-list">${pending.map(({d,v})=>{const current=approvedCurrentVersion(d.id),replacement=!!current&&current.id!==v.id;return `<div class="item-card document-status-card traffic-amber"><div class="row-between"><div><h4>${esc(d.reference?d.reference+' - '+documentDisplayTitle(d):documentDisplayTitle(d))}</h4><div class="meta"><span class="badge due">${esc(versionApprovalLabel(v,d))}</span><span>v${esc(v.version_label||'—')}</span><span>Issue ${fmtDate(v.issue_date)}</span>${d.doc_type==='SDS'?'':`<span>Review ${fmtDate(v.review_date)}</span>`}</div></div><span class="badge">${replacement?`Current v${esc(current.version_label||'—')} remains in use`:'No approved version in use'}</span></div><div class="row">${btn('Open pending file','secondary',`data-open-doc="${v.id}"`)}${btn(d.doc_type==='SDS'?'Review & accept':'Review & approve','primary',`data-approve-version="${v.id}"`)}${isAdmin()&&documentLooksUnused(d)?btn('Delete unused','danger',`data-delete-unused-doc="${d.id}"`):''}</div></div>`}).join('')}</div>`:'<div class="success-note">No documents matching the current filters are waiting for approval.</div>'}`;
+}
+function renderDocumentIndexGrid(){
+  const grid=$('documentIndexGrid'),ctx=$('documentIndexContext');if(!grid||!ctx)return;
+  const selected=state.documentIndex||'ALL';
+  grid.hidden=selected!=='ALL';ctx.hidden=selected==='ALL';
+  const registerCard=`<button type="button" class="document-index-card document-register-card" data-doc-index="REGISTER"><span class="document-index-name">Register</span><strong>${documentRegisterCount()}</strong><span class="muted">Approved/current controlled items</span><span class="register-open-label">Open register</span></button>`;
+  grid.innerHTML=registerCard+Object.entries(documentIndexDefs).map(([kind,d])=>`<button type="button" class="document-index-card" data-doc-index="${kind}"><span class="document-index-name">${esc(d.short)}</span><strong>${documentIndexCount(kind)}</strong><span class="muted">Open index</span></button>`).join('');
+  if(selected==='REGISTER'){$('documentIndexTitle').textContent='Register';$('documentIndexDescription').textContent='Live master register of approved/current RA, COSHH Risk Assessment, SSW, MSDS/Safety Data Sheet and Toolbox Talk items.'}
+  else if(selected!=='ALL'&&documentIndexDefs[selected]){$('documentIndexTitle').textContent=documentIndexDefs[selected].title;$('documentIndexDescription').textContent=documentIndexDefs[selected].description}
+}
+function registerDocumentRows(kind,q=''){
+  return state.documents.filter(d=>d.status!=='ARCHIVED'&&d.doc_type===kind&&approvedCurrentVersion(d.id)).filter(d=>!q||`${d.reference||''} ${documentDisplayTitle(d)} ${originalBulkSourceName(approvedCurrentVersion(d.id))}`.toLowerCase().includes(q)).sort((a,b)=>String(a.reference||documentDisplayTitle(a)).localeCompare(String(b.reference||documentDisplayTitle(b)),undefined,{numeric:true}));
+}
+function registerToolboxRows(q=''){
+  return state.training.filter(t=>t.status!=='ARCHIVED'&&trainingKind(t)==='TOOLBOX_TALK').filter(t=>!q||trainingSearchText(t).includes(q)).sort((a,b)=>String(trainingReference(a)||a.name).localeCompare(String(trainingReference(b)||b.name),undefined,{numeric:true}));
+}
+function registerSectionHtml(kind,label,q=''){
+  if(kind==='TOOLBOX_TALK'){
+    const rows=registerToolboxRows(q);
+    return `<section class="register-section"><div class="register-section-heading"><h3>${esc(label)}</h3><span class="badge">${rows.length}</span></div>${rows.length?`<div class="register-list">${rows.map(t=>{const f=latestTrainingFile(t.id);return `<div class="register-row"><div class="register-main"><strong>${esc(trainingReference(t)||'—')}</strong><span>${esc(t.name)}</span></div><div class="register-meta"><span>Training-controlled</span><span>File ${f?fmtDate(f.created_at):'—'}</span><span>Review ${fmtDate(t.review_date)}</span></div></div>`}).join('')}</div>`:'<div class="empty compact-empty">No current items registered.</div>'}</section>`;
+  }
+  const rows=registerDocumentRows(kind,q);
+  return `<section class="register-section"><div class="register-section-heading"><h3>${esc(label)}</h3><span class="badge complete">${rows.length}</span></div>${rows.length?`<div class="register-list">${rows.map(d=>{const v=approvedCurrentVersion(d.id),title=documentDisplayTitle(d);return `<div class="register-row traffic-register-green"><div class="register-main"><strong>${esc(d.reference||'—')}</strong><span>${esc(title)}</span></div><div class="register-meta"><span class="badge complete">${esc(versionApprovalLabel(v,d))}</span><span>v${esc(v?.version_label||'—')}</span><span>Issue ${fmtDate(v?.issue_date)}</span>${kind==='SDS'?'':`<span>Review ${fmtDate(v?.review_date)}</span>`}</div></div>`}).join('')}</div>`:'<div class="empty compact-empty">No approved/current items registered.</div>'}</section>`;
+}
+function renderDocumentRegister(q='',type=''){
+  let sections=[['RISK_ASSESSMENT','Risk Assessments'],['COSHH','COSHH Risk Assessments'],['SSW','Safe Systems of Work'],['SDS','MSDS / Safety Data Sheets'],['TOOLBOX_TALK','Toolbox Talks']];
+  if(type)sections=sections.filter(([k])=>k===type);
+  const body=sections.length?sections.map(([k,l])=>registerSectionHtml(k,l,q)).join(''):'<div class="empty">This document type is not part of the controlled Register.</div>';
+  $('documentsList').innerHTML=`<div class="register-toolbar"><div><strong>Approved / Current Document Register</strong><div class="muted">Generated live from authorised/current Safety Tracker records only.${type?' Filtered to '+esc(type==='TOOLBOX_TALK'?'Toolbox Talk':docTypeLabel(type))+'.':''}</div></div>${btn('Download register PDF','secondary','data-download-register')}</div>`+body;
+}
+function documentRegisterPdf(){
+  const rows=[];
+  for(const [kind,label] of [['RISK_ASSESSMENT','Risk Assessments'],['COSHH','COSHH Risk Assessments'],['SSW','Safe Systems of Work'],['SDS','MSDS / Safety Data Sheets']]){
+    for(const d of registerDocumentRows(kind)){const v=approvedCurrentVersion(d.id);rows.push({section:label,reference:d.reference||'',title:documentDisplayTitle(d),version:v?.version_label||'',approval:versionApprovalLabel(v,d),issue_date:fmtDate(v?.issue_date),review_date:kind==='SDS'?'—':fmtDate(v?.review_date)});}
+  }
+  for(const t of registerToolboxRows()){rows.push({section:'Toolbox Talks',reference:trainingReference(t)||'',title:t.name||'',version:'',approval:'Training-controlled',issue_date:'',review_date:fmtDate(t.review_date)});}
+  pdfTable('Safety Tracker Approved / Current Document Register',rows,`safety-document-register-${todayISO()}.pdf`);
+}
+function latestTrainingFile(trainingId){return state.trainingFiles.filter(f=>f.training_session_id===trainingId).sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0))[0]||null}
 
-  function resolveSeedCategory(aliases,categories) {
-    const list=categories.map(name=>({name,norm:categoryNorm(name)}));
-    for(const alias of aliases){
-      const a=categoryNorm(alias);
-      const exact=list.find(x=>x.norm===a); if(exact)return exact.name;
+function trainingOpenCutoff(a){
+  const c=latestTrainingCompletion(a)?.evidence;
+  const ts=c?.signed_at||c?.completed_at||null;
+  return ts?new Date(ts).getTime():0;
+}
+function requiredTrainingMaterials(a,t){
+  if(!a||!t)return [];
+  const out=[];
+  if(t.source_document_id){
+    const d=state.documents.find(x=>x.id===t.source_document_id);
+    const v=state.versions.find(x=>x.id===t.source_document_version_id)||approvedCurrentVersion(t.source_document_id)||currentVersion(t.source_document_id);
+    if(d)out.push({kind:'DOCUMENT',document:d,version:v||null,available:!!(v&&isVersionApproved(v)&&v.status==='CURRENT'),label:`${d.reference||docTypeLabel(d.doc_type)} - ${documentDisplayTitle(d)}`});
+  }else{
+    const f=latestTrainingFile(t.id);
+    if(f)out.push({kind:'TRAINING_FILE',file:f,available:true,label:f.file_name||t.name});
+  }
+  return out;
+}
+function requiredTrainingMaterial(a,t){return requiredTrainingMaterials(a,t)[0]||null}
+function trainingMaterialOpenedSince(m,a){
+  if(!m||m.available===false)return false;
+  const cutoff=trainingOpenCutoff(a),uid=state.user?.id;
+  return state.documentActivity.some(x=>x.user_id===uid&&x.action==='OPENED'&&new Date(x.occurred_at||0).getTime()>cutoff&&((m.kind==='DOCUMENT'&&m.version&&x.document_version_id===m.version.id)||(m.kind==='TRAINING_FILE'&&x.training_file_id===m.file.id)));
+}
+function requiredTrainingMaterialOpened(a,t){const mats=requiredTrainingMaterials(a,t);return !mats.length||mats.every(m=>trainingMaterialOpenedSince(m,a))}
+function requiredTrainingMaterialLabel(a,t){const missing=requiredTrainingMaterials(a,t).filter(m=>!trainingMaterialOpenedSince(m,a));return missing.length?missing.map(m=>m.available===false?`${m.label} (not approved/current)`:m.label).join('; '):'required training file'}
+async function openRequiredTrainingMaterial(assignmentId){
+  const a=state.trainingAssignments.find(x=>x.id===assignmentId),t=state.training.find(x=>x.id===a?.training_session_id);if(!a||!t)return;
+  if(t.source_document_version_id&&!trainingSourceApproved(t))return toast('This controlled source is pending approval and cannot be used for Training yet.');
+  const mats=requiredTrainingMaterials(a,t);if(!mats.length)return toast('No required training file is attached to this assignment.');
+  const m=mats.find(x=>!trainingMaterialOpenedSince(x,a))||mats[0];
+  if(m.available===false)return toast(`Required document is not approved/current yet: ${m.label}`);
+  if(m.kind==='DOCUMENT'){
+    const v=m.version;if(!v?.storage_path)return toast('Stored PDF not found.');
+    const {data,error}=await sb.storage.from('safety-files').createSignedUrl(v.storage_path,300);if(error)return toast(error.message);
+    window.open(data.signedUrl,'_blank','noopener');
+    await logDocumentActivity('OPENED',{...activityVersionSnapshot(v),training_session_id:t.id,source_context:'TRAINING_REQUIRED'});
+  }else{
+    const f=m.file;if(!f?.storage_path)return toast('Stored training file not found.');
+    const r=await sb.storage.from('safety-files').createSignedUrl(f.storage_path,300);if(r.error)return toast(r.error.message);
+    window.open(r.data.signedUrl,'_blank','noopener');
+    await logDocumentActivity('OPENED',{...activityTrainingFileSnapshot(f),source_context:'TRAINING_REQUIRED'});
+  }
+  renderMySafety();
+}
+function renderToolboxTalkDocumentIndex(q,status){
+  const rows=state.training.filter(t=>trainingKind(t)==='TOOLBOX_TALK'&&(!q||trainingSearchText(t).includes(q))&&(!status||t.status===status)).sort((a,b)=>String(trainingReference(a)||a.name).localeCompare(String(trainingReference(b)||b.name),undefined,{numeric:true}));
+  $('documentsList').innerHTML=rows.length?rows.map(t=>{const f=latestTrainingFile(t.id),assigns=state.trainingAssignments.filter(a=>a.training_session_id===t.id&&a.active!==false);return `<div class="item-card"><div class="row-between"><div><h3>${esc(trainingReference(t)&&!t.name.toUpperCase().includes(trainingReference(t))?trainingReference(t)+' - '+t.name:t.name)}</h3><div class="meta"><span class="badge">Toolbox Talk</span><span>Review ${fmtDate(t.review_date)}</span><span>${esc(deliveryText(t.delivery_method||'INSTRUCTOR_LED'))}</span></div></div><div class="meta"><span class="badge">${assigns.length} assigned</span></div></div><div class="muted">Approved Toolbox Talks are available for assignment, attendance and sign-off in Training.</div><div class="row">${f?btn('Open file','secondary',`data-open-training-file="${f.id}"`)+btn('Download','secondary',`data-download-training-file="${f.id}"`):''}${btn('Activity','ghost',`data-training-file-activity="${t.id}"`)}${btn('View training','secondary',`data-view-training="${t.id}"`)}</div></div>`}).join(''):'<div class="empty">No Toolbox Talks found.</div>';
+}
+function documentLooksUnused(d){
+  if(!d)return false;
+  const versions=state.versions.filter(v=>v.document_id===d.id);
+  if(versions.some(v=>versionApprovalStatus(v)!=='PENDING'||v.approval_at||v.approval_by||v.approval_signature_data))return false;
+  if(state.documentReviews.some(r=>r.document_id===d.id||versions.some(v=>v.id===r.document_version_id)))return false;
+  const sourceSessions=state.training.filter(t=>t.source_document_id===d.id);
+  if(sourceSessions.some(t=>t.auto_managed!==true))return false;
+  const sourceIds=new Set(sourceSessions.map(t=>t.id));
+  if(state.trainingAssignments.some(a=>sourceIds.has(a.training_session_id)))return false;
+  if(state.trainingSignoffs.some(x=>sourceIds.has(x.training_session_id)))return false;
+  if(state.trainingExceptions.some(x=>sourceIds.has(x.training_session_id)))return false;
+  if(state.trainingFiles.some(f=>sourceIds.has(f.training_session_id)))return false;
+  const assignmentIds=new Set(state.trainingAssignments.filter(a=>sourceIds.has(a.training_session_id)).map(a=>a.id));
+  if(state.trainingConfirmations.some(c=>assignmentIds.has(c.assignment_id)))return false;
+  if(state.trainingDocumentLinks.some(l=>l.document_id===d.id&&!sourceIds.has(l.training_session_id)))return false;
+  if(state.historicalDocAssignments.some(a=>a.document_id===d.id))return false;
+  if(state.documentActivity.some(a=>a.document_id===d.id&&!['OPENED','DOWNLOADED'].includes(a.action)))return false;
+  return true;
+}
+function matchesDocumentStatusFilter(d,status){
+  const approved=approvedCurrentVersion(d.id),pending=pendingApprovalVersion(d.id),over=approved?.review_date&&approved.review_date<todayISO(),due=approved?.review_date&&approved.review_date>=todayISO()&&approved.review_date<=daysFromNow(30);
+  if(!status)return true;if(status==='ACTIVE')return d.status!=='ARCHIVED';if(status==='ARCHIVED')return d.status==='ARCHIVED';if(status==='UNUSED')return documentLooksUnused(d);if(d.status==='ARCHIVED')return false;if(status==='APPROVED')return !!approved;if(status==='PENDING')return !!pending;if(status==='REVIEW_REQUIRED')return !!(d.review_required||due);if(status==='OVERDUE')return !!over;return true;
+}
+function renderDocuments(){
+  if(!$('documentsList'))return;
+  const q=clean($('documentSearch').value).toLowerCase(),filterType=$('documentTypeFilter').value,status=$('documentStatusFilter').value;
+  renderDocumentApprovalOverview();
+  if(status==='PENDING'&&isManager()){
+    state.documentIndex='ALL';
+    if($('documentIndexGrid'))$('documentIndexGrid').hidden=true;
+    if($('documentIndexContext'))$('documentIndexContext').hidden=true;
+    $('documentsList').innerHTML='';
+    $('documentsList').hidden=true;
+    return;
+  }
+  $('documentsList').hidden=false;
+  renderDocumentIndexGrid();
+  const selected=state.documentIndex||'ALL';
+  if(selected==='REGISTER')return renderDocumentRegister(q,filterType);
+  if(selected==='TOOLBOX_TALK'||(selected==='ALL'&&filterType==='TOOLBOX_TALK'))return renderToolboxTalkDocumentIndex(q,status);
+  const type=selected!=='ALL'?selected:filterType;
+  const rows=state.documents.filter(d=>{const approved=approvedCurrentVersion(d.id),pending=pendingApprovalVersion(d.id),display=documentDisplayTitle(d),src=originalBulkSourceName(approved||pending||currentVersion(d.id)||latestVersion(d.id));if(!isManager()&&(!approved||d.status==='ARCHIVED'))return false;return (!q||`${d.reference||''} ${d.title||''} ${display} ${src}`.toLowerCase().includes(q))&&(!type||d.doc_type===type)&&matchesDocumentStatusFilter(d,status)}).sort((a,b)=>String(a.reference||documentDisplayTitle(a)).localeCompare(String(b.reference||documentDisplayTitle(b)),undefined,{numeric:true}));
+  $('documentsList').innerHTML=rows.length?rows.map(d=>{
+    const approved=approvedCurrentVersion(d.id),pending=pendingApprovalVersion(d.id),displayV=approved||pending||currentVersion(d.id)||latestVersion(d.id),links=linksForDocument(d.id),over=approved?.review_date&&approved.review_date<todayISO(),soon=approved?.review_date&&approved.review_date>=todayISO()&&approved.review_date<=daysFromNow(30),traffic=documentTraffic(d);
+    const flag=over?'<span class="badge overdue">Review overdue</span>':d.review_required?'<span class="badge due">Controlled review required</span>':soon?'<span class="badge due">Review due soon</span>':'';
+    const approvalBadges=`${approved?`<span class="badge complete">${esc(versionApprovalLabel(approved,d))} · v${esc(approved.version_label||'—')}</span>`:''}${pending?`<span class="badge due">${esc(versionApprovalLabel(pending,d))} · v${esc(pending.version_label||'—')}</span>`:''}${!approved&&!pending?'<span class="badge overdue">No approved/current version</span>':''}`;
+    const sourceName=d.doc_type==='SDS'?originalBulkSourceName(displayV):'';
+    const userVersion=approved;
+    const managerPendingOnly=isManager()&&!userVersion&&pending;
+    const fileButtons=userVersion?btn('Open current','secondary',`data-open-doc="${userVersion.id}"`)+btn('Download','secondary',`data-download-doc="${userVersion.id}"`)+(documentUsesFormalTraining(d)?'':btn('Mark read / reviewed','ghost',`data-mark-doc-reviewed="${userVersion.id}"`)):(managerPendingOnly?btn('Open pending','secondary',`data-open-doc="${pending.id}"`):'');
+    const approvalButton=isManager()&&pending?btn(d.doc_type==='SDS'?'Review & accept':'Review & approve','primary',`data-approve-version="${pending.id}"`):'';
+    const audienceButton=isManager()&&approved&&documentUsesFormalTraining(d)?btn('Training audience','secondary',`data-edit-doc-audience="${d.id}"`):'';
+    const newVersionButton=isManager()?(pending?btn('Awaiting approval','ghost','disabled'):btn('New version','primary',`data-new-version="${d.id}"`)):'';
+    return `<div class="item-card document-status-card traffic-${traffic}"><div class="row-between"><div><h3>${esc(d.reference?d.reference+' - '+documentDisplayTitle(d):documentDisplayTitle(d))}</h3><div class="meta"><span class="badge">${esc(docTypeLabel(d.doc_type))}</span>${approvalBadges}<span>Issue ${fmtDate(displayV?.issue_date)}</span>${d.doc_type==='SDS'?'':`<span>Review ${fmtDate((approved||displayV)?.review_date)}</span>`}${flag}</div>${sourceName?`<div class="muted">Source file: ${esc(sourceName)}</div>`:''}${approved&&documentUsesFormalTraining(d)?`<div class="muted">Training audience: ${esc(documentAudienceSummary(d.id))}</div>`:''}</div></div>${!approved&&pending?'<div class="pending-use-warning">NOT APPROVED FOR USE — management review/approval required.</div>':''}${approved&&pending?`<div class="request-note">Approved/current v${esc(approved.version_label||'—')} remains in use while v${esc(pending.version_label||'—')} waits for approval.</div>`:''}${d.review_required&&d.review_reason?`<div class="request-note">${esc(d.review_reason)}</div>`:''}<div class="row">${fileButtons}${approvalButton}${audienceButton}${btn('Activity','ghost',`data-doc-activity="${d.id}"`)}${btn('Details','ghost',`data-doc-details="${d.id}"`)}${isManager()&&approved&&d.doc_type!=='SDS'?btn('Controlled review','ghost',`data-review-doc="${d.id}"`):''}${newVersionButton}${isManager()?btn(d.status==='ARCHIVED'?'Restore':'Archive','ghost',`data-toggle-doc="${d.id}"`):''}${isAdmin()&&documentLooksUnused(d)?btn('Delete unused','danger',`data-delete-unused-doc="${d.id}"`):''}</div></div>`;
+  }).join(''):'<div class="empty">No controlled documents found in this index.</div>';
+}
+
+function trainingSearchText(t){const src=sourceForTraining(t);return `${t.name||''} ${t.reference||''} ${t.description||''} ${src?.reference||''} ${src?documentDisplayTitle(src):''}`.toLowerCase()}
+function trainingCatalogueTraffic(t){if(t.status==='ARCHIVED')return 'neutral';if(!trainingSourceApproved(t))return 'amber';if(t.review_date&&t.review_date<todayISO())return 'red';if(t.review_required||(t.review_date&&t.review_date>=todayISO()&&t.review_date<=daysFromNow(30)))return 'amber';return 'green'}
+function renderTraining(){
+  if(!$('trainingList'))return;const q=clean($('trainingSearch').value).toLowerCase(),type=$('trainingTypeFilter').value,status=$('trainingStatusFilter').value;
+  const rows=state.training.filter(t=>(!t.auto_managed||trainingSourceApproved(t))&&(!q||trainingSearchText(t).includes(q))&&(!type||trainingKind(t)===type)&&(!status||t.status===status)).sort((a,b)=>String(trainingReference(a)||a.name).localeCompare(String(trainingReference(b)||b.name),undefined,{numeric:true}));
+  $('trainingList').innerHTML=rows.length?rows.map(t=>{const assigns=state.trainingAssignments.filter(a=>a.training_session_id===t.id&&a.active!==false),complete=assigns.filter(a=>assignmentStatus(a,t).code==='COMPLETED').length,src=sourceForTraining(t),sourceOk=trainingSourceApproved(t),deps=trainingDependencyState(t),traffic=!deps.ready?'red':trainingCatalogueTraffic(t),flag=!sourceOk?'<span class="badge due">Source pending approval</span>':t.review_required?'<span class="badge due">Review required</span>':t.review_date&&t.review_date<todayISO()?'<span class="badge overdue">Review overdue</span>':'';return `<div class="item-card training-catalogue-card traffic-${traffic}"><div class="row-between"><div><h3>${esc(trainingReference(t)&&!t.name.toUpperCase().includes(trainingReference(t))?trainingReference(t)+' - '+t.name:t.name)}</h3><div class="meta"><span class="badge">${esc(kindLabel(trainingKind(t)))}</span><span>${esc(deliveryText(t.delivery_method||defaultTrainingDelivery(trainingKind(t))))}</span><span>${esc(renewalText(t.renewal_value,t.renewal_unit,t.auto_managed&&sourceDocTypes.has(trainingKind(t))))}</span><span>Review ${fmtDate(t.review_date)}</span>${t.auto_managed?'<span class="badge">Auto-managed</span>':''}${flag}</div></div><span class="badge">${complete}/${assigns.length} complete</span></div>${src?`<div class="muted">Source: ${esc(src.reference||'')} ${esc(src.title)} · version ${esc(state.versions.find(v=>v.id===t.source_document_version_id)?.version_label||approvedCurrentVersion(src.id)?.version_label||'—')}</div>`:''}${!deps.ready?`<div class="pending-use-warning">${esc(trainingDependencyMessage(t))}</div>`:''}${t.review_required&&t.review_reason?`<div class="request-note">${esc(t.review_reason)}</div>`:''}<div class="row">${btn('View','secondary',`data-view-training="${t.id}"`)}${isManager()?(deps.ready?btn('Assign','secondary',`data-assign-training="${t.id}"`):'')+btn('Edit','ghost',`data-edit-training="${t.id}"`)+btn(t.status==='ARCHIVED'?'Restore':'Archive','ghost',`data-archive-training="${t.id}"`):''}</div></div>`}).join(''):'<div class="empty">No training found.</div>';
+}
+
+function renewalFields(prefix,value=null,unit=null,sourceAware=false){const p=value&&unit?`${Number(value)}|${unit}`:'';const known=['6|MONTHS','12|MONTHS','24|MONTHS'];const preset=known.includes(p)?p:(p?'CUSTOM':'');const noneLabel=sourceAware?'On change only':'One-off only';return `<label>Refresher frequency<select id="${prefix}RenewalPreset"><option value="" ${!preset?'selected':''}>${noneLabel}</option><option value="6|MONTHS" ${preset==='6|MONTHS'?'selected':''}>Every 6 months</option><option value="12|MONTHS" ${preset==='12|MONTHS'?'selected':''}>Every 12 months</option><option value="24|MONTHS" ${preset==='24|MONTHS'?'selected':''}>Every 24 months</option><option value="CUSTOM" ${preset==='CUSTOM'?'selected':''}>Custom</option></select></label><div id="${prefix}CustomRenewal" class="full" ${preset==='CUSTOM'?'':'hidden'}><div class="form-grid"><label>Every<input id="${prefix}RenewalValue" type="number" min="1" value="${preset==='CUSTOM'?esc(value||''):''}"></label><label>Unit<select id="${prefix}RenewalUnit"><option ${unit==='DAYS'?'selected':''}>DAYS</option><option ${unit==='MONTHS'||!unit?'selected':''}>MONTHS</option><option ${unit==='YEARS'?'selected':''}>YEARS</option></select></label></div></div>`}
+function getRenewal(prefix){const p=$(prefix+'RenewalPreset')?.value||'';if(!p)return {value:null,unit:null};if(p==='CUSTOM')return {value:Number($(prefix+'RenewalValue')?.value)||null,unit:$(prefix+'RenewalUnit')?.value||'MONTHS'};const [v,u]=p.split('|');return {value:Number(v),unit:u}}
+function setRenewalSelection(prefix,r){const sel=$(prefix+'RenewalPreset');if(!sel)return;const key=r?.value&&r?.unit?`${Number(r.value)}|${r.unit}`:'';sel.value=['6|MONTHS','12|MONTHS','24|MONTHS'].includes(key)?key:(key?'CUSTOM':'');if(sel.value==='CUSTOM'){if($(prefix+'RenewalValue'))$(prefix+'RenewalValue').value=r.value||'';if($(prefix+'RenewalUnit'))$(prefix+'RenewalUnit').value=r.unit||'MONTHS'}if($(prefix+'CustomRenewal'))$(prefix+'CustomRenewal').hidden=sel.value!=='CUSTOM'}
+function wireRenewal(prefix){$(prefix+'RenewalPreset')?.addEventListener('change',()=>{$(prefix+'CustomRenewal').hidden=$(prefix+'RenewalPreset').value!=='CUSTOM'})}
+
+function showNewDocument(){
+  if(!isManager())return;const review=plusYear(todayISO());
+  openModal('New controlled document',`<div class="form-grid"><label>Title<input id="docTitle"></label><label>Reference<input id="docRef" placeholder="e.g. RA-045"></label><label>Type<select id="docType"><option value="RISK_ASSESSMENT">Risk Assessment</option><option value="COSHH">COSHH Risk Assessment</option><option value="SSW">Safe System of Work</option><option value="SDS">MSDS / Safety Data Sheet</option><option value="POLICY">Policy</option><option value="PROCEDURE">Procedure</option><option value="OTHER">Other</option></select></label><label>Version<input id="docVersion" value="1"></label><label>Issue date<input id="docIssue" type="date" value="${todayISO()}"></label><label>Review date<input id="docReview" type="date" value="${review}"></label><div id="docTrainingRenewalWrap" class="full"><div class="form-grid">${renewalFields('doc',12,'MONTHS',true)}</div></div><label class="full">PDF file<input id="docFile" type="file" accept="application/pdf,.pdf" required></label><label class="full">Notes<textarea id="docNotes"></textarea></label></div><div class="hint-box">New and revised controlled documents are uploaded as <strong>Pending approval</strong>. They are not authorised for use or new Training until a Manager/Admin opens the exact PDF and digitally approves/accepts it.</div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Save document','primary','data-create-document')}</div>`);
+  wireRenewal('doc');let lastDocType=$('docType').value;const sync=()=>{const type=$('docType').value,s=type==='SDS';$('docReview').disabled=s;if(s)$('docReview').value='';else if(!$('docReview').value)$('docReview').value=plusYear($('docIssue').value||todayISO());$('docTrainingRenewalWrap').hidden=!sourceDocTypes.has(type);if(type!==lastDocType&&sourceDocTypes.has(type)){setRenewalSelection('doc',defaultSourceRenewal(type));lastDocType=type}else if(type!==lastDocType){lastDocType=type}};$('docType').addEventListener('change',sync);$('docIssue').addEventListener('change',()=>{if($('docType').value!=='SDS')$('docReview').value=plusYear($('docIssue').value||todayISO())});$('docFile').addEventListener('change',async()=>{const f=$('docFile').files[0];if(!f)return;try{const text=await pdfTextFromBlob(f),detected=classifySafetyPdfText(text);if(['COSHH','SDS','RISK_ASSESSMENT','SSW'].includes(detected)){if($('docType').value!==detected){$('docType').value=detected;sync();toast(`Detected ${docTypeLabel(detected)} from PDF content.`)}if(detected==='SDS'&&!clean($('docTitle').value)){const n=extractSdsProductName(text);if(n)$('docTitle').value=n}}}catch(e){console.warn('Document type detection',e)}});sync();
+}
+function safeFileName(s){return clean(s).replace(/[<>:"/\\|?*]+/g,'-').slice(0,120)||'document'}
+async function pdfTextFromBlob(blob){if(!blob||!window.pdfjsLib)return '';const pdf=await pdfjsLib.getDocument({data:(await blob.arrayBuffer()).slice(0)}).promise;const out=[];for(let p=1;p<=pdf.numPages;p++){const pg=await pdf.getPage(p),c=await pg.getTextContent();out.push((c.items||[]).map(i=>i.str||'').join(' '))}return clean(out.join(' '))}
+async function sha256Text(text){const bytes=new TextEncoder().encode(String(text||'').normalize('NFKC').replace(/\s+/g,' ').trim().toLowerCase());const hash=await crypto.subtle.digest('SHA-256',bytes);return [...new Uint8Array(hash)].map(b=>b.toString(16).padStart(2,'0')).join('')}
+async function hashPdf(blob){try{const text=await pdfTextFromBlob(blob);return text?await sha256Text(text):null}catch(e){console.warn('PDF hash',e);return null}}
+function nextVersionLabel(docId){const nums=state.versions.filter(v=>v.document_id===docId).map(v=>Number(v.version_label)).filter(Number.isFinite);return nums.length?String(Math.max(...nums)+1):'1'}
+function existingDocMatch(type,ref,title){if(clean(ref)){const r=clean(ref).toUpperCase();return state.documents.find(d=>d.status!=='ARCHIVED'&&clean(d.reference).toUpperCase()===r)||null}if(type==='SDS'){const ranked=state.documents.filter(d=>d.status!=='ARCHIVED'&&d.doc_type==='SDS').map(d=>({d,score:productNameMatchScore(title,documentDisplayTitle(d))})).filter(x=>x.score>=0.88).sort((a,b)=>b.score-a.score);if(ranked.length&&(!ranked[1]||ranked[0].score-ranked[1].score>=0.08||ranked[0].score===1))return ranked[0].d}return null}
+async function storedHashForVersion(v){if(!v)return null;if(v.content_text_sha256)return v.content_text_sha256;if(!v.storage_path)return null;try{const {data,error}=await sb.storage.from('safety-files').download(v.storage_path);if(error||!data)return null;const h=await hashPdf(data);if(h){const r=await sb.from('document_versions').update({content_text_sha256:h}).eq('id',v.id);if(!r.error)v.content_text_sha256=h}return h}catch{return null}}
+async function createDocumentRecord(){
+  if(!isManager())return;const title=clean($('docTitle').value),ref=clean($('docRef').value).toUpperCase()||null,type=$('docType').value,file=$('docFile').files[0];if(!title)return toast('Title is required.');if(!file)return toast('Choose the PDF file.');
+  const existing=existingDocMatch(type,ref,title);if(existing){const result=await publishFileAsNewVersion(existing,file,$('docIssue').value,$('docReview').value,$('docNotes').value,true);if(result){closeModal();await refresh(`Replacement version uploaded as Pending ${type==='SDS'?'acceptance':'approval'}. The approved/current version remains in use.`)}return}
+  const renewal=getRenewal('doc');const payload={title,reference:ref,doc_type:type,delivery_method:type==='SSW'?'INSTRUCTOR_LED':'SELF_TRAINING',status:'ACTIVE',default_renewal_value:sourceDocTypes.has(type)?renewal.value:null,default_renewal_unit:sourceDocTypes.has(type)?renewal.unit:null,resign_on_new_version:false,created_by:state.user.id};
+  const {data:d,error}=await sb.from('documents').insert(payload).select().single();if(error)return toast(error.message);const h=await hashPdf(file),ver=clean($('docVersion').value)||'1',name=`${safeFileName(ref||title)}-v${safeFileName(ver)}.pdf`,path=`documents/${d.id}/${crypto.randomUUID()}-${name}`;const up=await sb.storage.from('safety-files').upload(path,file,{contentType:'application/pdf'});if(up.error){await sb.from('documents').delete().eq('id',d.id);return toast(up.error.message)}const vr=await sb.from('document_versions').insert({document_id:d.id,version_label:ver,issue_date:$('docIssue').value||todayISO(),review_date:type==='SDS'?null:($('docReview').value||plusYear(todayISO())),delivery_method:payload.delivery_method,storage_path:path,file_name:name,notes:clean($('docNotes').value)||null,status:'CURRENT',approval_status:'PENDING',content_text_sha256:h,created_by:state.user.id}).select().single();if(vr.error){await sb.storage.from('safety-files').remove([path]);await sb.from('documents').delete().eq('id',d.id);return toast(vr.error.message)}closeModal();await refresh(`Controlled document uploaded as Pending ${type==='SDS'?'acceptance':'approval'}. It is not yet authorised for use or Training.`)
+}
+async function publishFileAsNewVersion(d,file,issue,review,notes,autoIncrement=true){
+  const existingPending=pendingApprovalVersion(d.id);if(existingPending){toast(`Version ${existingPending.version_label||''} is already pending ${d.doc_type==='SDS'?'acceptance':'approval'}. Resolve it before uploading another version.`);return false}
+  const old=currentVersion(d.id),baseline=old||latestVersion(d.id),newHash=await hashPdf(file),oldHash=await storedHashForVersion(baseline);if(newHash&&oldHash&&newHash===oldHash){toast('This PDF matches the latest stored version. No new version was created.');return false}
+  const ver=nextVersionLabel(d.id),name=`${safeFileName(d.reference||d.title)}-v${safeFileName(ver)}.pdf`,path=`documents/${d.id}/${crypto.randomUUID()}-${name}`;const up=await sb.storage.from('safety-files').upload(path,file,{contentType:'application/pdf'});if(up.error){toast(up.error.message);return false}
+  const ins=await sb.from('document_versions').insert({document_id:d.id,version_label:ver,issue_date:issue||todayISO(),review_date:d.doc_type==='SDS'?null:(review||plusYear(issue||todayISO())),delivery_method:d.doc_type==='SSW'?'INSTRUCTOR_LED':'SELF_TRAINING',storage_path:path,file_name:name,notes:clean(notes)||'Replacement controlled version uploaded pending approval.',status:old?'SUPERSEDED':'CURRENT',approval_status:'PENDING',content_text_sha256:newHash,created_by:state.user.id}).select().single();if(ins.error){await sb.storage.from('safety-files').remove([path]);toast(ins.error.message);return false}return true
+}
+function showNewVersion(id){
+  const d=state.documents.find(x=>x.id===id);if(!d)return;const pending=pendingApprovalVersion(id);if(pending)return toast(`v${pending.version_label||''} is already pending ${d.doc_type==='SDS'?'acceptance':'approval'}. Complete that decision first.`);const approved=approvedCurrentVersion(id),base=approved||currentVersion(id)||latestVersion(id);
+  openModal('Upload replacement version',`<p><strong>${esc(d.reference?d.reference+' - '+documentDisplayTitle(d):documentDisplayTitle(d))}</strong></p><div class="form-grid"><label>New version<input value="${esc(nextVersionLabel(id))}" readonly></label><label>Issue date<input id="newVerIssue" type="date" value="${todayISO()}"></label><label>Review date<input id="newVerReview" type="date" value="${d.doc_type==='SDS'?'':plusYear(todayISO())}" ${d.doc_type==='SDS'?'disabled':''}></label><label class="full">PDF file<input id="newVerFile" type="file" accept="application/pdf,.pdf"></label><label class="full">Notes<textarea id="newVerNotes"></textarea></label></div><div class="hint-box">The replacement will be stored as <strong>Pending ${d.doc_type==='SDS'?'acceptance':'approval'}</strong>. ${approved?`Approved/current v${esc(approved.version_label||'—')} remains in use until the replacement is approved.`:'There is currently no approved version in use.'} Existing training/sign-off evidence is retained.</div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Upload pending version','primary',`data-publish-version="${id}"`)}</div>`);$('newVerIssue').addEventListener('change',()=>{if(d.doc_type!=='SDS')$('newVerReview').value=plusYear($('newVerIssue').value||todayISO())})
+}
+async function publishVersionFromModal(id){const d=state.documents.find(x=>x.id===id),file=$('newVerFile').files[0];if(!file)return toast('Choose the new PDF file.');const ok=await publishFileAsNewVersion(d,file,$('newVerIssue').value,$('newVerReview').value,$('newVerNotes').value,true);if(!ok)return;closeModal();await refresh(`New version uploaded as Pending ${d.doc_type==='SDS'?'acceptance':'approval'}. No retraining is triggered until it is approved/current.`)}
+async function openDocument(versionId){const v=state.versions.find(x=>x.id===versionId);if(!v?.storage_path)return toast('Stored PDF not found.');if(!isManager()&&(!isVersionApproved(v)||v.status!=='CURRENT'))return toast('Only the approved current version is available for use.');const {data,error}=await sb.storage.from('safety-files').createSignedUrl(v.storage_path,300);if(error)return toast(error.message);window.open(data.signedUrl,'_blank','noopener');await logDocumentActivity('OPENED',{...activityVersionSnapshot(v),source_context:versionApprovalStatus(v)==='PENDING'?'VERSION_APPROVAL':'DOCUMENT_LIBRARY'});if($('approvalOpenStatus')&&$('approvalOpenStatus').dataset.versionId===v.id){$('approvalOpenStatus').textContent='Opened ✓';$('approvalOpenStatus').className='badge complete';}}
+function showDocDetails(id){const d=state.documents.find(x=>x.id===id),versions=state.versions.filter(v=>v.document_id===id).sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));openModal('Document details',`<p><strong>${esc(d.reference?d.reference+' - '+documentDisplayTitle(d):documentDisplayTitle(d))}</strong></p><div class="meta"><span class="badge">${esc(docTypeLabel(d.doc_type))}</span><span>Status ${esc(d.status)}</span><span>Training ${esc(renewalText(d.default_renewal_value,d.default_renewal_unit,sourceDocTypes.has(d.doc_type)))}</span></div><h4>Version history</h4><div class="card-list">${versions.map(v=>{const approved=isVersionApproved(v),pending=versionApprovalStatus(v)==='PENDING',rejected=versionApprovalStatus(v)==='REJECTED',usable=approved&&v.status==='CURRENT',traffic=pending?'amber':rejected?'red':usable?'green':'neutral',canOpen=isManager()||usable;return `<div class="item-card compact document-status-card traffic-${traffic}"><div class="row-between"><span><strong>v${esc(v.version_label)}</strong> · ${esc(v.status)}</span><span class="badge ${pending?'due':rejected?'overdue':approved?'complete':''}">${esc(versionApprovalLabel(v,d))}</span></div><div class="meta"><span>Issue ${fmtDate(v.issue_date)}</span><span>Review ${fmtDate(v.review_date)}</span><span>${esc(v.file_name||'')}</span>${v.approval_at?`<span>Decision ${fmtDateTime(v.approval_at)}</span>`:''}${v.approval_signature_name?`<span>Signed ${esc(v.approval_signature_name)}</span>`:''}</div>${v.approval_note?`<div class="request-note">${esc(v.approval_note)}</div>`:''}<div class="row">${v.storage_path&&canOpen?btn('Open','ghost',`data-open-doc="${v.id}"`)+btn('Download','ghost',`data-download-doc="${v.id}"`)+(usable&&!documentUsesFormalTraining(d)?btn('Mark read / reviewed','ghost',`data-mark-doc-reviewed="${v.id}"`):''):''}${isManager()&&pending?btn(d.doc_type==='SDS'?'Review & accept':'Review & approve','primary',`data-approve-version="${v.id}"`):''}</div></div>`}).join('')}</div>`)}
+function showToggleDocument(id){
+  const d=state.documents.find(x=>x.id===id);if(!d||!isManager())return;
+  const restoring=d.status==='ARCHIVED';
+  openModal(restoring?'Restore document':'Archive document',`<p><strong>${esc(d.reference?d.reference+' - '+documentDisplayTitle(d):documentDisplayTitle(d))}</strong></p><div class="${restoring?'hint-box':'danger-note'}">${restoring?'Restoring will make the document active again. If it has an approved/current trainable version, its Training item will become available again.':'Archiving removes this item from the active Documents and Training workflow. Controlled versions, access history and completed training evidence are retained.'}</div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn(restoring?'Restore':'Archive',restoring?'primary':'danger',`data-confirm-toggle-doc="${id}"`)}</div>`);
+}
+async function toggleDocument(id){
+  const d=state.documents.find(x=>x.id===id);if(!d||!isManager())return;
+  const restoring=d.status==='ARCHIVED',archive=!restoring;
+  let error=null;
+  const rpc=await sb.rpc('set_document_archive_state_v219',{p_document_id:id,p_archive:archive});
+  if(rpc.error){
+    console.warn('Archive RPC failed; attempting direct update for backwards compatibility.',rpc.error);
+    const direct=await sb.from('documents').update({status:archive?'ARCHIVED':'ACTIVE'}).eq('id',id).select('id').maybeSingle();
+    error=direct.error;
+  }
+  if(error)return toast(error.message||'Archive action failed. Run the v2.1.9 SQL migration and try again.');
+  closeModal();
+  if(archive){
+    await refresh('Document archived. Active links were removed; versions, access history and training evidence were retained.');
+    return;
+  }
+  await loadAll();
+  const v=currentVersion(id);
+  if(v&&isVersionApproved(v)){
+    const prior=state.training.filter(t=>t.auto_managed===true&&t.source_document_id===id&&t.source_document_version_id===v.id&&t.status==='ARCHIVED').sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0))[0];
+    if(prior)await sb.from('training_sessions').update({status:'ACTIVE'}).eq('id',prior.id);
+  }
+  await loadAll();
+  const result=await runSafetySync({scan:'full',rebuildLinks:true});
+  await refresh(`Document restored. Declared links were re-read and rebuilt${result.missing?`; ${result.missing} unresolved reference${result.missing===1?'':'s'} flagged`:''}.`);
+}
+
+function suggestedDocumentLinks(docId){
+  const d=state.documents.find(x=>x.id===docId);if(!d)return [];
+  const candidates=state.documents.filter(x=>x.id!==docId&&x.status!=='ARCHIVED'&&!pairExists(docId,x.id));
+  const out=[];
+  for(const x of candidates){
+    let score=0,reason='';
+    if((d.doc_type==='COSHH'&&x.doc_type==='SSW')||(d.doc_type==='SSW'&&x.doc_type==='COSHH')){
+      score=productNameMatchScore(documentDisplayTitle(d),documentDisplayTitle(x));
+      if(score>=0.72)reason='Strong COSHH ↔ SSW title/task match';
+    }else if((d.doc_type==='SDS'&&x.doc_type==='COSHH')||(d.doc_type==='COSHH'&&x.doc_type==='SDS')){
+      score=productNameMatchScore(documentDisplayTitle(d),documentDisplayTitle(x));
+      if(score>=0.82)reason='Strong SDS/MSDS ↔ COSHH product-name match';
     }
-    for(const alias of aliases){
-      const a=categoryNorm(alias);
-      if(a.length<3)continue;
-      const partial=list.find(x=>` ${x.norm} `.includes(` ${a} `)||` ${a} `.includes(` ${x.norm} `));
-      if(partial)return partial.name;
+    if(reason)out.push({doc:x,score,reason});
+  }
+  return out.sort((a,b)=>b.score-a.score).slice(0,8);
+}
+function showDocumentLinks(docId){
+  const d=state.documents.find(x=>x.id===docId),links=linksForDocument(docId),available=state.documents.filter(x=>x.id!==docId&&x.status!=='ARCHIVED').sort((a,b)=>String(a.reference||a.title).localeCompare(String(b.reference||b.title),undefined,{numeric:true})),suggested=suggestedDocumentLinks(docId);
+  openModal('Document links',`<p><strong>${esc(d.reference?d.reference+' - '+documentDisplayTitle(d):documentDisplayTitle(d))}</strong></p><div class="section-card"><h4>Current links</h4>${links.length?links.map(l=>{const o=otherDocForLink(l,docId),st=documentApprovalSummary(o);return `<div class="item-card compact traffic-${st.traffic}"><div class="row-between"><span><strong>${esc(o?.reference||docTypeLabel(o?.doc_type))}</strong> · ${esc(documentDisplayTitle(o)||'Unknown')}</span><span class="badge">${esc(linkTypeLabel(l.link_type))}</span></div><div class="meta"><span class="badge ${st.ready?'complete':'due'}">${esc(st.label)}</span></div>${isManager()?`<div class="row">${btn('Remove','danger',`data-remove-doc-link="${l.id}|${docId}"`)}</div>`:''}</div>`}).join(''):'<div class="muted">No document links yet.</div>'}</div>${isManager()&&suggested.length?`<div class="section-card"><h4>Suggested links</h4><div class="muted">Suggestions are not applied automatically. Confirm only relationships that genuinely apply.</div>${suggested.map(x=>{const st=documentApprovalSummary(x.doc);return `<div class="item-card compact traffic-${st.traffic}"><div class="row-between"><span><strong>${esc(x.doc.reference||docTypeLabel(x.doc.doc_type))}</strong> · ${esc(documentDisplayTitle(x.doc))}</span><span class="badge due">Suggested ${Math.round(x.score*100)}%</span></div><div class="meta"><span>${esc(x.reason)}</span><span>${esc(st.label)}</span></div><div class="row">${btn('Add suggested link','secondary',`data-add-doc-link="${docId}|${x.doc.id}"`)}</div></div>`}).join('')}</div>`:''}${isManager()?`<div class="section-card"><label>Search by reference or full title<input id="docLinkSearch" placeholder="e.g. RA-044, WD-40, SSW-019"></label><div class="muted" style="margin-top:.45rem">Links can be created while either document is pending. Training remains blocked until every Required linked SSW/COSHH document has an approved/current version.</div><div id="docLinkChoices" class="card-list link-results">${available.map(x=>{const st=documentApprovalSummary(x);return `<div class="item-card compact link-choice" data-search="${esc(`${x.doc_type} ${x.reference||''} ${documentDisplayTitle(x)}`.toLowerCase())}"><div class="row-between"><span><strong>${esc(x.reference||docTypeLabel(x.doc_type))}</strong> · ${esc(documentDisplayTitle(x))}</span><span class="badge ${st.ready?'complete':'due'}">${esc(st.label)}</span></div><div class="row">${pairExists(docId,x.id)?'<span class="muted">Already linked</span>':btn('Add link','primary',`data-add-doc-link="${docId}|${x.id}"`)}</div></div>`}).join('')}</div></div>`:''}`);const input=$('docLinkSearch');input?.addEventListener('input',()=>{const q=clean(input.value).toLowerCase();document.querySelectorAll('.link-choice').forEach(el=>el.hidden=!!q&&!el.dataset.search.includes(q))})
+}
+async function addDocumentLink(payload){const [aId,bId]=payload.split('|'),a=state.documents.find(x=>x.id===aId),b=state.documents.find(x=>x.id===bId);if(!a||!b)return;if(pairExists(aId,bId))return toast('These documents are already linked.');const rel=inferLinkType(a,b),r=await sb.from('document_links').insert({source_document_id:rel.source.id,target_document_id:rel.target.id,link_type:rel.type,created_by:state.user.id}).select().single();if(r.error)return toast(r.error.message);await loadAll();await syncSourceTrainings();await refresh('Documents linked. Pending documents are visible now; Training remains blocked until all Required documents are approved/current.');showDocumentLinks(aId)}
+async function removeDocumentLink(payload){const [id,docId]=payload.split('|'),existing=state.documentLinks.find(l=>l.id===id);if(!existing)return;const aId=existing.source_document_id,bId=existing.target_document_id,r=await sb.from('document_links').delete().eq('id',id);if(r.error)return toast(r.error.message);const affected=state.training.filter(t=>t.auto_managed===true&&t.status!=='ARCHIVED'&&(t.source_document_id===aId||t.source_document_id===bId));for(const t of affected){const other=t.source_document_id===aId?bId:aId;await sb.from('training_document_links').delete().eq('training_session_id',t.id).eq('document_id',other).neq('link_role','SOURCE')}await refresh('Document link removed.');showDocumentLinks(docId)}
+
+function sourcePickerOptions(kind,selected=''){return state.documents.filter(d=>d.status!=='ARCHIVED'&&d.doc_type===kind&&approvedCurrentVersion(d.id)).sort((a,b)=>String(a.reference||a.title).localeCompare(String(b.reference||b.title),undefined,{numeric:true})).map(d=>{const v=currentVersion(d.id);return `<option value="${d.id}" ${d.id===selected?'selected':''}>${esc(`${d.reference||''} · ${d.title} · v${v?.version_label||'—'}`)}</option>`}).join('')}
+function genericDocPicker(prefix,checkedIds=[]){const docs=state.documents.filter(d=>d.status!=='ARCHIVED'&&approvedCurrentVersion(d.id)).sort((a,b)=>String(a.reference||a.title).localeCompare(String(b.reference||b.title),undefined,{numeric:true}));return `<div class="full"><label>Link relevant controlled documents<input id="${prefix}DocSearch" placeholder="Search reference or title"></label><div id="${prefix}DocChoices" class="checkbox-list">${docs.map(d=>`<label class="check-row doc-choice" data-search="${esc(`${d.doc_type} ${d.reference||''} ${documentDisplayTitle(d)}`.toLowerCase())}"><input type="checkbox" class="${prefix}-doc-link" value="${d.id}" ${checkedIds.includes(d.id)?'checked':''}><span><strong>${esc(d.reference||docTypeLabel(d.doc_type))}</strong> · ${esc(documentDisplayTitle(d))} <span class="muted">(${esc(docTypeLabel(d.doc_type))})</span></span></label>`).join('')}</div></div>`}
+function wireDocPicker(prefix){$(prefix+'DocSearch')?.addEventListener('input',e=>{const q=clean(e.target.value).toLowerCase();document.querySelectorAll(`#${prefix}DocChoices .doc-choice`).forEach(x=>x.hidden=!!q&&!x.dataset.search.includes(q))})}
+function showNewTraining(){
+  openModal('New training session',`<div class="form-grid"><label>Type<select id="trainType">${trainingKinds.map(k=>`<option value="${k}">${esc(kindLabel(k))}</option>`).join('')}</select></label><label id="trainSourceWrap" hidden>Controlled source<select id="trainSource"></select></label><label>Training name<input id="trainName"></label><label>Reference<input id="trainReference" placeholder="e.g. TBT-021"></label><label>Delivery method<select id="trainDelivery"><option value="SELF_TRAINING">Self-training</option><option value="INSTRUCTOR_LED">Instructor-led</option></select></label><label>Default completion due date<input id="trainDefaultDue" type="date" value="${daysFromNow(14)}"></label><label>Date delivered<input id="trainDate" type="date" value="${todayISO()}"></label><label>Trainer / presenter<input id="trainTrainer" value="${esc(state.profile?.display_name||'')}"></label><label>Review date<input id="trainReview" type="date" value="${plusYear(todayISO())}"></label>${renewalFields('train')}<label class="full">Details<textarea id="trainDesc"></textarea></label><label class="full">Supporting files<input id="trainFiles" type="file" multiple></label></div><div id="trainSourceNote" class="hint-box" hidden></div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Create training','primary','data-save-training')}</div>`);
+  wireRenewal('train');wireDocPicker('train');
+  const sync=()=>{const type=$('trainType').value,isSource=sourceDocTypes.has(type);$('trainSourceWrap').hidden=!isSource;$('trainSourceNote').hidden=!isSource;if(isSource){$('trainSource').innerHTML='<option value="">Select controlled document</option>'+sourcePickerOptions(type);$('trainDelivery').value=sourceDelivery(type);$('trainDelivery').disabled=true;setRenewalSelection('train',defaultSourceRenewal(type));$('trainSourceNote').textContent='RA and COSHH default to self-training with a 12-month refresher. SSW defaults to instructor-led. A newer controlled document version creates a new training requirement immediately while keeping previous evidence.'}else{$('trainDelivery').disabled=false;$('trainDelivery').value=defaultTrainingDelivery(type)}};
+  $('trainType').addEventListener('change',sync);$('trainSource').addEventListener('change',()=>{const d=state.documents.find(x=>x.id===$('trainSource').value);if(!d)return;$('trainName').value=`${d.reference?d.reference+' - ':''}${d.title}`;$('trainReference').value=d.reference||'';$('trainReview').value=currentVersion(d.id)?.review_date||plusYear(todayISO());const current=state.training.find(t=>t.status!=='ARCHIVED'&&t.source_document_id===d.id&&t.auto_managed===true);if(current)$('trainSourceNote').textContent=`This document already has an active auto-managed training record: ${current.name}. Creating a duplicate will be blocked.`});sync();
+}
+async function ensureTrainingDocLink(trainingId,docId,role='RELATED'){if(!trainingId||!docId)return 0;const ex=state.trainingDocumentLinks.find(l=>l.training_session_id===trainingId&&l.document_id===docId);if(ex){const rank={RELATED:1,REQUIRED:2,SOURCE:3},desired=(rank[role]||1)>(rank[ex.link_role]||1)?role:ex.link_role;if(desired!==ex.link_role){const r=await sb.from('training_document_links').update({link_role:desired}).eq('id',ex.id);if(!r.error){ex.link_role=desired;return 1}}return 0}const r=await sb.from('training_document_links').insert({training_session_id:trainingId,document_id:docId,link_role:role,created_by:state.user.id}).select().single();if(r.error){console.warn('Training link',r.error);return 0}state.trainingDocumentLinks.push(r.data);return 1}
+async function saveTraining(){
+  const type=$('trainType').value,isSource=sourceDocTypes.has(type),source=isSource?state.documents.find(d=>d.id===$('trainSource').value):null;if(isSource&&!source)return toast('Select the controlled source document.');if(source&&!approvedCurrentVersion(source.id))return toast('This controlled document is not approved/current yet. Approve it before creating or assigning Training.');if(source&&state.training.some(t=>t.status!=='ARCHIVED'&&t.auto_managed===true&&t.source_document_id===source.id))return toast('This controlled document already has an active Training record. Use that record instead.');const name=clean($('trainName').value);if(!name)return toast('Training name is required.');const r=getRenewal('train'),v=source?currentVersion(source.id):null,payload={name,session_type:type,delivery_method:isSource?sourceDelivery(type):$('trainDelivery').value,description:clean($('trainDesc').value)||null,delivered_date:$('trainDate').value||null,trainer_name:clean($('trainTrainer').value)||null,trainer_user_id:state.user.id,review_date:$('trainReview').value||plusYear(todayISO()),default_due_date:$('trainDefaultDue').value||null,renewal_value:r.value,renewal_unit:r.unit,status:'ACTIVE',created_by:state.user.id,reference:source?.reference||clean($('trainReference').value).toUpperCase()||null,source_kind:type,source_document_id:source?.id||null,source_document_version_id:v?.id||null,auto_managed:!!source,review_required:false,review_reason:null};const ins=await sb.from('training_sessions').insert(payload).select().single();if(ins.error)return toast(ins.error.message);const t=ins.data;if(source){const du=await sb.from('documents').update({default_renewal_value:r.value,default_renewal_unit:r.unit}).eq('id',source.id);if(du.error)return toast(du.error.message);source.default_renewal_value=r.value;source.default_renewal_unit=r.unit}for(const f of $('trainFiles').files){const path=`training/${t.id}/${crypto.randomUUID()}-${safeFileName(f.name)}`,up=await sb.storage.from('safety-files').upload(path,f);if(!up.error)await sb.from('training_files').insert({training_session_id:t.id,file_name:f.name,storage_path:path,uploaded_by:state.user.id,content_text_sha256:f.type==='application/pdf'?await hashPdf(f):null})}closeModal();await refresh('Training created.')
+}
+function showTrainingDetails(id){
+  const t=state.training.find(x=>x.id===id),assigns=state.trainingAssignments.filter(a=>a.training_session_id===id&&a.active!==false),files=state.trainingFiles.filter(f=>f.training_session_id===id),src=sourceForTraining(t),deps=trainingDependencyState(t);
+  openModal('Training details',`<div><h3>${esc(t.name)}</h3><div class="meta"><span class="badge">${esc(kindLabel(trainingKind(t)))}</span><span>${esc(deliveryText(t.delivery_method||defaultTrainingDelivery(trainingKind(t))))}</span><span>${esc(renewalText(t.renewal_value,t.renewal_unit,t.auto_managed&&sourceDocTypes.has(trainingKind(t))))}</span><span>Review ${fmtDate(t.review_date)}</span>${deps.ready?'<span class="badge complete">Live</span>':'<span class="badge due">Waiting for source approval</span>'}</div></div>${src?`<div class="request-note"><strong>Controlled source:</strong> ${esc(src.reference||'')} ${esc(documentDisplayTitle(src))} · version ${esc(state.versions.find(v=>v.id===t.source_document_version_id)?.version_label||approvedCurrentVersion(src.id)?.version_label||'—')}</div>`:''}${!deps.ready?`<div class="pending-use-warning">${esc(trainingDependencyMessage(t))}</div>`:''}${t.description?`<p>${esc(t.description)}</p>`:''}<div class="section-card"><h4>Active assignments</h4>${assigns.length?assigns.map(a=>{const s=assignmentStatus(a,t);return `<div class="item-card compact"><div class="row-between"><strong>${esc(personName(a.user_id))}</strong><span class="badge ${s.badge}">${esc(s.label)}</span></div><div class="meta"><span>Due ${fmtDate(s.due)}</span><span>${esc(deliveryText(s.method))}</span>${s.exception?`<span class="badge complete">Admin exception ${fmtDateTime(s.exception.completed_at)}</span>`:''}</div>${isAdmin()&&deps.ready&&a.user_id===state.user?.id&&s.method==='INSTRUCTOR_LED'&&s.code!=='COMPLETED'&&!s.ready?`<div class="row">${btn('Complete as exception','danger',`data-training-exception="${a.id}"`)}</div>`:''}</div>`}).join(''):'<span class="muted">No active assignees.</span>'}</div>${files.length?`<div class="section-card"><h4>Training files</h4>${files.map(f=>`<div class="row-between"><span>${esc(f.file_name)}</span><div class="row">${btn('Open','ghost',`data-open-training-file="${f.id}"`)}${btn('Download','ghost',`data-download-training-file="${f.id}"`)}</div></div>`).join('')}</div>`:''}`)
+}
+async function setTrainingLinkRole(payload){
+  if(!isManager())return;const [linkId,role,trainingId]=payload.split('|');
+  const r=await sb.rpc('set_training_link_role_v2211',{p_training_link_id:linkId,p_link_role:role});if(r.error)return toast(r.error.message||'Could not change linked-document requirement. Run the v2.2.11 SQL migration.');
+  await loadAll();showTrainingDetails(trainingId);renderMySafety();renderTraining();toast(role==='REQUIRED'?'Linked document is now required reading.':'Linked document is now supporting only.');
+}
+function showAssignTraining(id){
+  const t=state.training.find(x=>x.id===id),deps=trainingDependencyState(t);if(!deps.ready)return toast(trainingDependencyMessage(t));
+  const current=state.trainingAssignments.filter(a=>a.training_session_id===id&&a.active!==false);
+  const currentIds=current.map(a=>a.user_id),autoIds=new Set(current.filter(a=>a.assignment_origin==='AUDIENCE').map(a=>a.user_id));
+  const due=current.find(a=>a.active!==false)?.due_date||t.default_due_date||daysFromNow(14);
+  const opts=activePeople().map(p=>`<label class="check-row"><input type="checkbox" class="train-person" value="${p.id}" ${currentIds.includes(p.id)?'checked':''} ${autoIds.has(p.id)?'disabled':''}>${esc(p.display_name||p.email)}${autoIds.has(p.id)?' <span class="badge complete">Automatic</span>':''}</label>`).join('');
+  const src=t.source_document_id?state.documents.find(d=>d.id===t.source_document_id):null;
+  openModal('Assign training',`<p><strong>${esc(t.name)}</strong></p>${src&&audienceRowsForDocument(src.id).length?`<div class="hint-box"><strong>Automatic audience:</strong> ${esc(documentAudienceSummary(src.id))}. Automatic assignments are controlled by the approved document audience and cannot be removed here.</div>`:''}<label>Complete by<input id="trainAssignDue" type="date" value="${esc(due||'')}"></label><label class="check-row"><input id="trainAssignAll" type="checkbox"> Select all active users for manual assignment</label><div class="checkbox-list">${opts}</div><p class="muted">Unticking a manually assigned person removes only their active manual assignment. Historical attendance/sign-off evidence is retained.</p><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Save assignments','primary',`data-save-training-assignments="${id}"`)}</div>`);
+  $('trainAssignAll').addEventListener('change',e=>document.querySelectorAll('.train-person:not(:disabled)').forEach(x=>x.checked=e.target.checked));
+}
+async function saveTrainingAssignments(id){
+  const t=state.training.find(x=>x.id===id),deps=trainingDependencyState(t);if(!deps.ready)return toast(trainingDependencyMessage(t));
+  const selected=[...document.querySelectorAll('.train-person:checked:not(:disabled)')].map(x=>x.value),set=new Set(selected),due=$('trainAssignDue').value||null;
+  const manualCurrent=state.trainingAssignments.filter(a=>a.training_session_id===id&&a.active!==false&&a.assignment_origin!=='AUDIENCE');
+  for(const a of manualCurrent)if(!set.has(a.user_id)){const r=await sb.from('training_assignments').update({active:false}).eq('id',a.id);if(r.error)return toast(r.error.message)}
+  for(const uid of selected){
+    const auto=state.trainingAssignments.find(a=>a.training_session_id===id&&a.user_id===uid&&a.active!==false&&a.assignment_origin==='AUDIENCE');if(auto)continue;
+    const ex=state.trainingAssignments.find(a=>a.training_session_id===id&&a.user_id===uid);
+    if(ex){const r=await sb.from('training_assignments').update({due_date:due,active:true,renewal_value:t.renewal_value,renewal_unit:t.renewal_unit,assignment_origin:'MANUAL'}).eq('id',ex.id);if(r.error)return toast(r.error.message)}
+    else{const r=await sb.from('training_assignments').insert({training_session_id:id,user_id:uid,due_date:due,renewal_value:t.renewal_value,renewal_unit:t.renewal_unit,assigned_by:state.user.id,active:true,assignment_origin:'MANUAL'});if(r.error)return toast(r.error.message)}
+  }
+  closeModal();await refresh('Training assignments updated.');
+}
+function showEditTraining(id){const t=state.training.find(x=>x.id===id);openModal('Edit training',`<div class="form-grid"><label class="full">Training name<input id="editTrainName" value="${esc(t.name)}" ${t.auto_managed?'readonly':''}></label><label>Type<input value="${esc(kindLabel(trainingKind(t)))}" readonly></label><label>Delivery<select id="editTrainDelivery" ${t.auto_managed?'disabled':''}><option value="SELF_TRAINING" ${t.delivery_method==='SELF_TRAINING'?'selected':''}>Self-training</option><option value="INSTRUCTOR_LED" ${t.delivery_method==='INSTRUCTOR_LED'?'selected':''}>Instructor-led</option></select></label><label>Review date<input id="editTrainReview" type="date" value="${esc(t.review_date||'')}"></label>${renewalFields('editTrain',t.renewal_value,t.renewal_unit,t.auto_managed&&sourceDocTypes.has(trainingKind(t)))}<label class="full">Details<textarea id="editTrainDesc" ${t.auto_managed?'readonly':''}>${esc(t.description||'')}</textarea></label><label class="check-row full"><input id="editApplyAssignments" type="checkbox" checked> Apply refresher frequency to active assignees.</label>${t.review_required?'<label class="check-row full"><input id="editClearReview" type="checkbox"> Reviewed — clear review flag.</label>':''}</div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Save','primary',`data-save-training-edit="${id}"`)}</div>`);wireRenewal('editTrain')}
+async function saveTrainingEdit(id){const t=state.training.find(x=>x.id===id),r=getRenewal('editTrain'),payload={review_date:$('editTrainReview').value||null,renewal_value:r.value,renewal_unit:r.unit};if(!t.auto_managed){payload.name=clean($('editTrainName').value)||t.name;payload.delivery_method=$('editTrainDelivery').value;payload.description=clean($('editTrainDesc').value)||null}if($('editClearReview')?.checked){payload.review_required=false;payload.review_reason=null}const up=await sb.from('training_sessions').update(payload).eq('id',id);if(up.error)return toast(up.error.message);if(t.auto_managed&&t.source_document_id){const du=await sb.from('documents').update({default_renewal_value:r.value,default_renewal_unit:r.unit}).eq('id',t.source_document_id);if(du.error)return toast(du.error.message);const d=state.documents.find(x=>x.id===t.source_document_id);if(d){d.default_renewal_value=r.value;d.default_renewal_unit=r.unit}}if($('editApplyAssignments').checked)for(const a of state.trainingAssignments.filter(a=>a.training_session_id===id&&a.active!==false)){const x=await sb.from('training_assignments').update({renewal_value:r.value,renewal_unit:r.unit}).eq('id',a.id);if(x.error)return toast(x.error.message)}closeModal();await refresh('Training updated.')}
+function showArchiveTraining(id){const t=state.training.find(x=>x.id===id);if(!t||!isManager())return;const restoring=t.status==='ARCHIVED';openModal(restoring?'Restore training':'Archive training',`<p><strong>${esc(t.name)}</strong></p><div class="${restoring?'hint-box':'danger-note'}">${restoring?'The training record will return to the active Training list.':'The training record will be hidden from active Training. Existing assignments, attendance, sign-offs, signatures and audit evidence are retained.'}</div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn(restoring?'Restore':'Archive',restoring?'primary':'danger',`data-confirm-archive-training="${id}"`)}</div>`)}
+async function archiveTraining(id){const t=state.training.find(x=>x.id===id);if(!t||!isManager())return;const archive=t.status!=='ARCHIVED';let error=null;const rpc=await sb.rpc('set_training_archive_state_v219',{p_training_session_id:id,p_archive:archive});if(rpc.error){console.warn('Training archive RPC failed; attempting direct update.',rpc.error);const direct=await sb.from('training_sessions').update({status:archive?'ARCHIVED':'ACTIVE'}).eq('id',id).select('id').maybeSingle();error=direct.error}if(error)return toast(error.message||'Training archive action failed. Run the v2.1.9 SQL migration and try again.');closeModal();await refresh(`Training ${archive?'archived':'restored'}. Historical evidence was retained.`)}
+
+async function showDeleteUnusedDocument(id){
+  if(!isAdmin())return;const d=state.documents.find(x=>x.id===id);if(!d)return;
+  const r=await sb.rpc('document_delete_check_v227',{p_document_id:id});if(r.error)return toast(r.error.message||'Could not verify delete eligibility. Run the v2.2.7 SQL migration.');
+  const check=r.data||{};if(!check.safe)return toast(`This document must be archived, not deleted: ${(check.reasons||[]).join('; ')||'compliance evidence exists'}`);
+  const paths=Array.isArray(check.storage_paths)?check.storage_paths:[];
+  openModal('Delete unused document permanently',`<p><strong>${esc(d.reference?d.reference+' - '+documentDisplayTitle(d):documentDisplayTitle(d))}</strong></p><div class="danger-note"><strong>Permanent deletion</strong><br>This document has never been approved/accepted and has no protected training or review evidence. The database record and ${paths.length} stored file${paths.length===1?'':'s'} will be removed. This cannot be undone.</div><label class="check-row"><input id="deleteUnusedAck" type="checkbox"> I confirm this is an incorrect/test/unused document and should be permanently deleted.</label><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Delete permanently','danger',`data-confirm-delete-unused-doc="${id}"`)}</div>`);
+}
+async function deleteUnusedDocument(id){
+  if(!isAdmin())return;if(!$('deleteUnusedAck')?.checked)return toast('Tick the confirmation first.');
+  const r=await sb.rpc('delete_unused_document_v227',{p_document_id:id});if(r.error)return toast(r.error.message||'Permanent delete was blocked.');
+  const paths=Array.isArray(r.data?.storage_paths)?r.data.storage_paths:[];let storageWarning='';
+  if(paths.length){const rm=await sb.storage.from('safety-files').remove(paths);if(rm.error)storageWarning=' Database record deleted; the file is now an orphan and can be removed from Storage Cleanup.'}
+  closeModal();await refresh(`Unused document permanently deleted.${storageWarning}`);
+}
+async function scanStorageCleanup(){
+  if(!isAdmin())return;const status=$('storageCleanupStatus'),list=$('storageCleanupList');if(status){status.hidden=false;status.textContent='Scanning Safety Tracker storage…'}
+  const r=await sb.rpc('list_orphaned_storage_v226');if(r.error){if(status)status.textContent=r.error.message||'Storage scan failed. Run the v2.2.6 SQL migration.';return}
+  const rows=r.data||[];state.storageOrphans=rows;if(status)status.textContent=`${rows.length} orphaned file${rows.length===1?'':'s'} found. Only files with no live database reference are listed.`;
+  if(list)list.innerHTML=rows.length?`<div class="row">${btn(`Delete all ${rows.length} orphan${rows.length===1?'':'s'}`,'danger','data-delete-all-storage-orphans')}</div>`+rows.map(x=>`<div class="item-card compact"><div class="row-between"><div><strong>${esc(x.area||'File')}</strong><div class="muted">${esc(x.path)}</div></div><span>${x.size_bytes?Math.max(1,Math.round(Number(x.size_bytes)/1024))+' KB':''}</span></div><div class="row">${btn('Delete orphan','danger',`data-delete-storage-orphan="${encodeURIComponent(x.path)}"`)}</div></div>`).join(''):'<div class="success-note">No orphaned Safety Tracker files found.</div>';
+}
+async function deleteStorageOrphan(encoded){if(!isAdmin())return;const path=decodeURIComponent(encoded),r=await sb.storage.from('safety-files').remove([path]);if(r.error)return toast(r.error.message);toast('Orphaned file deleted.');await scanStorageCleanup()}
+function confirmDeleteAllStorageOrphans(){const n=state.storageOrphans?.length||0;if(!n)return toast('No orphaned files to delete.');openModal('Delete orphaned storage files',`<div class="danger-note"><strong>Permanent cleanup</strong><br>${n} file${n===1?'':'s'} have no document, training-file or report record pointing to them. They will be permanently removed from Safety Tracker storage.</div><label class="check-row"><input id="deleteOrphansAck" type="checkbox"> I confirm I want to remove all listed orphaned files.</label><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Delete all orphans','danger','data-confirm-delete-all-storage-orphans')}</div>`)}
+async function deleteAllStorageOrphans(){if(!isAdmin())return;if(!$('deleteOrphansAck')?.checked)return toast('Tick the confirmation first.');const paths=(state.storageOrphans||[]).map(x=>x.path);if(!paths.length)return;const r=await sb.storage.from('safety-files').remove(paths);if(r.error)return toast(r.error.message);closeModal();toast(`${paths.length} orphaned file${paths.length===1?'':'s'} deleted.`);await scanStorageCleanup()}
+function setupSignaturePad(canvasId,clearId){const canvas=$(canvasId);if(!canvas)return;const status=$(canvasId.replace('SignaturePad','SignatureStatus')),rect=canvas.getBoundingClientRect(),dpr=Math.max(1,Math.min(window.devicePixelRatio||1,3));canvas.width=Math.round(Math.max(rect.width,300)*dpr);canvas.height=Math.round(170*dpr);const ctx=canvas.getContext('2d');const reset=()=>{ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.restore();canvas.dataset.hasInk='';if(status){status.textContent='Signature not yet captured';status.classList.remove('signature-ok')}};reset();ctx.lineWidth=2.6*dpr;ctx.lineCap='round';ctx.lineJoin='round';ctx.strokeStyle='#111';let drawing=false,last=null,pid=null;const pt=e=>{const r=canvas.getBoundingClientRect();return {x:(e.clientX-r.left)*(canvas.width/r.width),y:(e.clientY-r.top)*(canvas.height/r.height)}};const mark=()=>{canvas.dataset.hasInk='1';if(status){status.textContent='✓ Signature captured';status.classList.add('signature-ok')}};canvas.addEventListener('pointerdown',e=>{e.preventDefault();drawing=true;pid=e.pointerId;try{canvas.setPointerCapture(pid)}catch{}last=pt(e);ctx.beginPath();ctx.arc(last.x,last.y,2*dpr,0,Math.PI*2);ctx.fillStyle='#111';ctx.fill();mark()});canvas.addEventListener('pointermove',e=>{if(!drawing||e.pointerId!==pid)return;e.preventDefault();const p=pt(e);ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(p.x,p.y);ctx.stroke();last=p;mark()});const end=()=>{drawing=false;last=null;pid=null};canvas.addEventListener('pointerup',end);canvas.addEventListener('pointercancel',end);$(clearId)?.addEventListener('click',reset)}
+function signatureData(id){const canvas=$(id);if(!canvas||canvas.dataset.hasInk!=='1')return null;const out=document.createElement('canvas');out.width=520;out.height=156;const c=out.getContext('2d');c.fillStyle='#fff';c.fillRect(0,0,out.width,out.height);c.drawImage(canvas,0,0,out.width,out.height);return out.toDataURL('image/png')}
+function signatureBlock(prefix){const name=esc(state.profile?.display_name||state.user?.email||'');return `<div class="full signature-wrap"><label>Digital signature name<input id="${prefix}SignatureName" value="${name}"></label><div><div class="signature-label">Sign below with your finger or mouse</div><canvas id="${prefix}SignaturePad" class="signature-pad"></canvas><div id="${prefix}SignatureStatus" class="signature-status">Signature not yet captured</div></div><div class="row">${btn('Clear signature','ghost',`id="${prefix}ClearSignature"`)}</div><div class="signature-note">Your signature is stored with the compliance evidence.</div></div>`}
+function signTraining(id){
+  const a=state.trainingAssignments.find(x=>x.id===id),t=state.training.find(x=>x.id===a?.training_session_id);if(!a||!t)return;const deps=trainingDependencyState(t);if(!deps.ready)return toast(trainingDependencyMessage(t));
+  const status=assignmentStatus(a,t);
+  if(!requiredTrainingMaterialOpened(a,t))return toast(`Open the required current training file before signing off: ${requiredTrainingMaterialLabel(a,t)}`);
+  if(status.method==='INSTRUCTOR_LED'&&!status.ready)return toast('Instructor confirmation is required before you can sign off.');
+  openModal('Training sign-off',`<p><strong>${esc(t.name)}</strong></p><div class="success-note">✓ Required training file opened and recorded.</div><p>I confirm I completed/attended this training, understood the relevant controls, and had the opportunity to ask questions. If anything remains unclear I will ask my manager before carrying out the task.</p>${signatureBlock('train')}<label class="check-row"><input id="trainAckCheck" type="checkbox"> I confirm this sign-off and digital signature.</label><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Sign off','primary',`data-confirm-training-sign="${id}"`)}</div>`);setupSignaturePad('trainSignaturePad','trainClearSignature')
+}
+async function confirmTrainingSign(id){
+  const a=state.trainingAssignments.find(x=>x.id===id),t=state.training.find(x=>x.id===a?.training_session_id);if(!a||!t)return;const deps=trainingDependencyState(t);if(!deps.ready)return toast(trainingDependencyMessage(t));
+  if(!requiredTrainingMaterialOpened(a,t))return toast(`Open the required current training file before signing off: ${requiredTrainingMaterialLabel(a,t)}`);
+  if(!$('trainAckCheck').checked)return toast('Tick the confirmation first.');
+  const sig=signatureData('trainSignaturePad'),sigName=clean($('trainSignatureName').value);if(!sig)return toast('Please sign in the box.');if(!sigName)return toast('Enter the signature name.');
+  const c=latestTrainingConfirmation(a),statement='I confirm I completed/attended this training, understood the relevant controls, and had the opportunity to ask questions. If anything remains unclear I will ask my manager before carrying out the task.';
+  const r=await sb.from('training_signoffs').insert({training_assignment_id:id,training_session_id:t.id,user_id:state.user.id,statement_snapshot:statement,training_name_snapshot:t.name,trainer_snapshot:t.trainer_name,delivered_date_snapshot:c?.delivery_date||t.delivered_date,signature_data:sig,signature_name:sigName});
+  if(r.error)return toast(r.error.message.includes('required current training file')?'Open the required current training file before signing off.':r.error.message);
+  if(t.source_document_id){const v=state.versions.find(x=>x.id===t.source_document_version_id)||currentVersion(t.source_document_id);if(v)await logDocumentActivity('TRAINING_COMPLETED',{...activityVersionSnapshot(v),training_session_id:t.id,source_context:'TRAINING'},null,false)}else{const f=latestTrainingFile(t.id);if(f)await logDocumentActivity('TRAINING_COMPLETED',{...activityTrainingFileSnapshot(f),source_context:'TRAINING'},null,false)}
+  closeModal();await refresh('Training sign-off and digital signature recorded.')
+}
+function showTrainingException(id){
+  if(!isAdmin())return toast('Admin access is required for a training exception.');
+  const a=state.trainingAssignments.find(x=>x.id===id),t=state.training.find(x=>x.id===a?.training_session_id);
+  if(!a||!t)return;const deps=trainingDependencyState(t);if(!deps.ready)return toast(trainingDependencyMessage(t));
+  if(a.user_id!==state.user?.id)return toast('A training exception can only be completed for your own assignment.');
+  const status=assignmentStatus(a,t);
+  if(status.code==='COMPLETED')return toast('This training assignment is already complete.');
+  if(status.method!=='INSTRUCTOR_LED')return toast('The exception is only available for instructor-led training.');
+  if(status.ready)return toast('Instructor attendance has already been confirmed. Use Sign attendance instead.');
+  if(!requiredTrainingMaterialOpened(a,t))return toast(`Open the required current training file before using the exception: ${requiredTrainingMaterialLabel(a,t)}`);
+  openModal('Complete training as admin exception',`<p><strong>${esc(t.name)}</strong></p><div class="success-note">✓ Required training file opened and recorded.</div><div class="hint-box"><strong>Administrator exception.</strong> Use this only for your own instructor-led assignment when an independent instructor confirmation is not available. The reason, your identity, date/time and digital signature are retained as separate compliance evidence. This does not create an instructor attendance record.</div><label>Reason for exception<textarea id="trainingExceptionReason" rows="4" minlength="10" placeholder="Enter at least 10 characters explaining why instructor confirmation is unavailable."></textarea><span id="trainingExceptionValidation" class="muted">Minimum 10 characters.</span></label>${signatureBlock('exception')}<label class="check-row"><input id="trainingExceptionAck" type="checkbox"> I confirm this is my own training assignment and the exception reason is accurate.</label><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Complete as exception','danger',`data-confirm-training-exception="${id}"`)}</div>`);
+  setupSignaturePad('exceptionSignaturePad','exceptionClearSignature');
+  const reasonBox=$('trainingExceptionReason'),validation=$('trainingExceptionValidation');reasonBox?.addEventListener('input',()=>{const n=clean(reasonBox.value).length;if(validation)validation.textContent=n>=10?`✓ Reason entered (${n} characters)`:`Minimum 10 characters (${n}/10).`});
+}
+async function confirmTrainingException(id){
+  if(!isAdmin())return toast('Admin access is required for a training exception.');
+  const a=state.trainingAssignments.find(x=>x.id===id),t=state.training.find(x=>x.id===a?.training_session_id);
+  if(!a||!t||a.user_id!==state.user?.id)return toast('This exception can only be used for your own assignment.');const deps=trainingDependencyState(t);if(!deps.ready)return toast(trainingDependencyMessage(t));
+  const status=assignmentStatus(a,t);
+  if(status.code==='COMPLETED')return toast('This training assignment is already complete.');
+  if(status.method!=='INSTRUCTOR_LED'||status.ready)return toast('This assignment is not eligible for an administrator exception.');
+  if(!requiredTrainingMaterialOpened(a,t))return toast(`Open the required current training file before using the exception: ${requiredTrainingMaterialLabel(a,t)}`);
+  const reason=clean($('trainingExceptionReason')?.value),sig=signatureData('exceptionSignaturePad'),sigName=clean($('exceptionSignatureName')?.value);
+  if(reason.length<10){const v=$('trainingExceptionValidation');if(v)v.textContent=`Reason is too short (${reason.length}/10). Enter at least 10 characters.`;return toast('Exception reason must be at least 10 characters.');}
+  if(!$('trainingExceptionAck')?.checked)return toast('Tick the exception confirmation first.');
+  if(!sig)return toast('Please sign in the box.');
+  if(!sigName)return toast('Enter the signature name.');
+  const statement='Administrator training exception: I confirm this is my own instructor-led training assignment. I have reviewed/completed the required training content and controls. An independent instructor confirmation is not available for the recorded reason, so I am using the administrator exception.';
+  const r=await sb.from('training_exceptions').insert({training_assignment_id:id,training_session_id:t.id,user_id:state.user.id,reason,statement_snapshot:statement,signature_data:sig,signature_name:sigName});
+  if(r.error)return toast(r.error.message.includes('training_exceptions')?'Run the v2.1.5 SQL migration first.':r.error.message);
+  if(t.source_document_id){const v=state.versions.find(x=>x.id===t.source_document_version_id)||currentVersion(t.source_document_id);if(v)await logDocumentActivity('TRAINING_COMPLETED',{...activityVersionSnapshot(v),training_session_id:t.id,source_context:'TRAINING',metadata:{completion_mode:'ADMIN_EXCEPTION'}},null,false)}else{const f=latestTrainingFile(t.id);if(f)await logDocumentActivity('TRAINING_COMPLETED',{...activityTrainingFileSnapshot(f),source_context:'TRAINING',metadata:{completion_mode:'ADMIN_EXCEPTION'}},null,false)}
+  closeModal();await refresh('Training completed using the administrator exception.');
+}
+
+function requestInstructor(id){const a=state.trainingAssignments.find(x=>x.id===id),t=state.training.find(x=>x.id===a?.training_session_id);if(!a||!t)return;if(effectiveTrainingMethod(t,a)!=='SELF_TRAINING')return toast('This assignment is already instructor-led.');openModal('Request instructor-led training',`<p><strong>${esc(t.name)}</strong></p><div class="hint-box"><strong>Need a question answered only?</strong><br>You can ask your manager without changing this assignment. Use this option when you need extra instruction, demonstration or guided training before you can confirm competence/understanding.</div><p>This changes <strong>your assignment only</strong> from self-training to instructor-led. It does not change the master RA/COSHH training method for anyone else.</p><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Request instructor-led training','primary',`data-confirm-instructor-request="${id}"`)}</div>`)}
+async function confirmInstructorRequest(id){const a=state.trainingAssignments.find(x=>x.id===id);if(!a)return;const r=await sb.from('training_assignments').update({delivery_method_override:'INSTRUCTOR_LED'}).eq('id',id);if(r.error)return toast(r.error.message);closeModal();await refresh('Instructor-led training requested for your assignment. Your manager can now record attendance.')}
+
+function showInstructorGroupAttendance(trainingId){const t=state.training.find(x=>x.id===trainingId),deps=trainingDependencyState(t);if(!deps.ready)return toast(trainingDependencyMessage(t));const assigns=state.trainingAssignments.filter(a=>a.training_session_id===trainingId&&a.active!==false&&effectiveTrainingMethod(t,a)==='INSTRUCTOR_LED');if(!assigns.length)return toast('No active instructor-led assignees.');const rows=assigns.map(a=>{const s=assignmentStatus(a,t),selectable=s.code!=='COMPLETED'&&!s.ready;return `<label class="check-row">${selectable?`<input type="checkbox" class="group-attendee" value="${a.id}">`:'<span style="width:18px"></span>'}<span style="flex:1"><strong>${esc(personName(a.user_id))}</strong><span class="muted" style="display:block">${esc(s.label)}${s.due?' · Due '+fmtDate(s.due):''}</span></span></label>`}).join('');openModal('Group training attendance',`<p><strong>${esc(t.name)}</strong></p><p class="muted">Tick only the people covered by this session. People not selected remain unchanged.</p><div class="row">${btn('Select all eligible','ghost','id="selectAllAttendees"')}${btn('Clear','ghost','id="clearAttendees"')}</div><div class="checkbox-list">${rows}</div><div class="form-grid" style="margin-top:12px"><label>Training date<input id="groupTrainingDate" type="date" value="${todayISO()}"></label><label>Status<select id="groupTrainingStatus"><option value="ATTENDED">Attended / training delivered</option><option value="ABSENT">Absent / not attended</option></select></label><label class="full">Instructor note<textarea id="groupTrainingNote"></textarea></label></div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Save selected','primary',`data-save-group-attendance="${trainingId}"`)}</div>`);$('selectAllAttendees').addEventListener('click',()=>document.querySelectorAll('.group-attendee').forEach(x=>x.checked=true));$('clearAttendees').addEventListener('click',()=>document.querySelectorAll('.group-attendee').forEach(x=>x.checked=false))}
+async function saveGroupAttendance(trainingId){const t=state.training.find(x=>x.id===trainingId),deps=trainingDependencyState(t);if(!deps.ready)return toast(trainingDependencyMessage(t));const ids=[...document.querySelectorAll('.group-attendee:checked')].map(x=>x.value);if(!ids.length)return toast('Tick at least one person.');const date=$('groupTrainingDate').value||todayISO(),status=$('groupTrainingStatus').value,note=clean($('groupTrainingNote').value)||null;for(const id of ids){const a=state.trainingAssignments.find(x=>x.id===id),r=await sb.from('training_delivery_confirmations').insert({assignment_id:id,user_id:a.user_id,confirmed_by:state.user.id,confirmation_type:'INSTRUCTOR',reason:note,delivery_date:date,attendance_status:status});if(r.error)return toast(r.error.message)}closeModal();await refresh(status==='ATTENDED'?`${ids.length} attendee${ids.length===1?'':'s'} confirmed.`:'Absence recorded.')}
+function renderInstructor(){const rows=[];for(const t of activeTraining())for(const a of state.trainingAssignments.filter(a=>a.training_session_id===t.id&&a.active!==false&&effectiveTrainingMethod(t,a)==='INSTRUCTOR_LED')){const s=assignmentStatus(a,t);if(s.code!=='COMPLETED')rows.push({t,a,s})}$('instructorList').innerHTML=rows.length?rows.map(({t,a,s})=>`<div class="item-card"><div class="row-between"><div><strong>${esc(personName(a.user_id))}</strong><div>${esc(t.name)}</div><div class="meta"><span>${esc(kindLabel(trainingKind(t)))}</span><span class="badge ${s.badge}">${esc(s.label)}</span></div></div>${btn('Record attendance','secondary',`data-single-attendance="${a.id}"`)}</div></div>`).join(''):'<div class="empty">No outstanding instructor-led training.</div>'}
+function showSingleAttendance(id){const a=state.trainingAssignments.find(x=>x.id===id),t=state.training.find(x=>x.id===a.training_session_id),deps=trainingDependencyState(t);if(!deps.ready)return toast(trainingDependencyMessage(t));openModal('Record training attendance',`<p><strong>${esc(personName(a.user_id))}</strong> · ${esc(t.name)}</p><div class="form-grid"><label>Training date<input id="singleDate" type="date" value="${todayISO()}"></label><label>Status<select id="singleStatus"><option value="ATTENDED">Attended / training delivered</option><option value="ABSENT">Absent / not attended</option></select></label><label class="full">Instructor note<textarea id="singleNote"></textarea></label></div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Save','primary',`data-save-single-attendance="${id}"`)}</div>`)}
+async function saveSingleAttendance(id){const a=state.trainingAssignments.find(x=>x.id===id),t=state.training.find(x=>x.id===a?.training_session_id),deps=trainingDependencyState(t);if(!deps.ready)return toast(trainingDependencyMessage(t));const r=await sb.from('training_delivery_confirmations').insert({assignment_id:id,user_id:a.user_id,confirmed_by:state.user.id,confirmation_type:'INSTRUCTOR',reason:clean($('singleNote').value)||null,delivery_date:$('singleDate').value||todayISO(),attendance_status:$('singleStatus').value});if(r.error)return toast(r.error.message);closeModal();await refresh('Attendance recorded.')}
+
+function complianceRows(){const out=[];for(const t of state.training)if(t.status!=='ARCHIVED'&&(!t.source_document_version_id||trainingSourceApproved(t)))for(const a of state.trainingAssignments.filter(a=>a.training_session_id===t.id&&a.active!==false)){const s=assignmentStatus(a,t);out.push({t,a,...s,user_id:a.user_id})}return out}
+function renderCompliance(){const p=$('compliancePersonFilter').value,type=$('complianceTypeFilter').value,status=$('complianceStatusFilter').value,rows=complianceRows().filter(r=>(!p||r.user_id===p)&&(!type||trainingKind(r.t)===type)&&(!status||r.code===status));const counts={overdue:rows.filter(r=>r.code==='OVERDUE').length,outstanding:rows.filter(r=>r.code!=='COMPLETED').length,complete:rows.filter(r=>r.code==='COMPLETED').length};$('complianceStats').innerHTML=[['Rows',rows.length],['Outstanding',counts.outstanding],['Overdue',counts.overdue],['Completed',counts.complete]].map(([l,n])=>`<div class="stat"><strong>${n}</strong><span>${l}</span></div>`).join('');$('complianceList').innerHTML=rows.length?rows.map(r=>`<div class="item-card"><div class="row-between"><div><strong>${esc(personName(r.user_id))}</strong><div>${esc(r.t.name)}</div><div class="meta"><span>${esc(kindLabel(trainingKind(r.t)))}</span><span>${esc(deliveryText(r.method))}</span><span>Due ${fmtDate(r.due)}</span></div></div><span class="badge ${r.badge}">${esc(r.label)}</span></div></div>`).join(''):'<div class="empty">No matching compliance rows.</div>'}
+
+function profileAccessLabel(p){return p?.report_only===true?'Report Viewer':(p?.role||'user')}
+function renderPeople(){
+  $('peopleList').innerHTML=state.people.length?state.people.map(p=>`<div class="item-card"><div class="row-between"><div><strong>${esc(p.display_name||p.email)}</strong><div class="meta"><span>${esc(p.email||'')}</span><span class="badge">${esc(profileAccessLabel(p))}</span><span class="badge">${esc(userDepartmentName(p.id))}</span><span>${p.active===false?'Disabled':'Active'}</span>${p.report_only===true?'<span>Reports/download only</span>':''}</div></div>${isAdmin()?`<div class="row">${btn('Edit user','secondary',`data-set-role="${p.id}"`)}${p.id!==state.user?.id?btn('Resend access','ghost',`data-resend-user="${p.id}"`):''}${btn(p.active===false?'Enable':'Disable',p.active===false?'primary':'danger',`data-toggle-user="${p.id}"`)}</div>`:''}</div></div>`).join(''):'<div class="empty">No users found.</div>'
+}
+function showInviteUser(){
+  const deptOpts=activeDepartments().map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('');
+  openModal('Invite user',`<div class="form-grid"><label>Name<input id="inviteName"></label><label>Email<input id="inviteEmail" type="email"></label><label>Role / access<select id="inviteRole"><option value="user">User</option><option value="manager">Manager</option><option value="admin">Admin</option><option value="report_viewer">Report Viewer — reports/download only</option></select></label><label>Department<select id="inviteDepartment"><option value="">No department</option>${deptOpts}</select></label><div class="hint-box full"><strong>Department:</strong> users automatically receive current training targeted to their department. Company-wide documents use the Everyone audience. Report Viewers receive no Training, Safety Awareness or PPE assignments.</div></div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Send invite','primary','data-send-invite')}</div>`)
+}
+async function edgeAction(body){const {data:{session}}=await sb.auth.getSession();if(!session?.access_token)throw new Error('Session expired. Sign out and sign back in.');const res=await fetch(`${CFG.supabaseUrl}/functions/v1/invite-user`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${session.access_token}`,'apikey':CFG.supabaseKey},body:JSON.stringify(body)}),raw=await res.text();let out={};try{out=raw?JSON.parse(raw):{}}catch{out={error:raw}}if(!res.ok)throw new Error(out.error||out.message||`HTTP ${res.status}`);return out}
+async function setReportOnlyAccess(userId,enabled){const r=await sb.rpc('set_report_only_access_v224',{p_user_id:userId,p_enabled:!!enabled});if(r.error)throw r.error;return true}
+async function findProfileByEmail(email){for(let i=0;i<8;i++){const r=await sb.from('profiles').select('*').ilike('email',email).limit(1);if(!r.error&&r.data?.[0])return r.data[0];await new Promise(res=>setTimeout(res,400))}return null}
+async function sendInvite(){
+  const email=clean($('inviteEmail').value).toLowerCase(),name=clean($('inviteName').value),requested=$('inviteRole').value,departmentId=$('inviteDepartment')?.value||null;
+  if(!email)return toast('Email is required.');
+  const baseRole=requested==='report_viewer'?'user':requested;
+  try{
+    const out=await edgeAction({action:'invite',email,display_name:name,role:baseRole,redirect_to:`${location.origin}${location.pathname}?invite=1`});
+    let userId=out?.user_id||out?.user?.id||out?.id||null;
+    if(!userId){
+      for(let i=0;i<5&&!userId;i++){const p=await findProfileByEmail(email);userId=p?.id||null;if(!userId)await new Promise(resolve=>setTimeout(resolve,300))}
     }
-    return '';
-  }
-
-  function getCategoryModel() {
-    if(S.categoryModel)return S.categoryModel;
-    // Legacy placeholders such as "Imported" mean "not categorised yet".
-    // They must never be learned from and must never become a suggestion target.
-    const categories=categoryNames().filter(c=>!categoryIsPlaceholder(c));
-    const tokenStats=new Map(),bigramStats=new Map();
-    const add=(map,key,category)=>{
-      if(!key)return;
-      if(!map.has(key))map.set(key,new Map());
-      const row=map.get(key);row.set(category,(row.get(category)||0)+1);
-    };
-    S.items.filter(i=>i.active&&!categoryIsPlaceholder(i.category)).forEach(i=>{
-      const category=String(i.category||'').trim();
-      const tokens=[...new Set(categoryTokenise(`${i.name||''} ${i.item_code||''}`))];
-      const bigrams=[...new Set(categoryBigrams(categoryTokenise(i.name||'')))];
-      tokens.forEach(t=>add(tokenStats,t,category));
-      bigrams.forEach(t=>add(bigramStats,t,category));
-    });
-    S.categoryModel={categories,tokenStats,bigramStats};
-    return S.categoryModel;
-  }
-
-  function addCategoryScore(scores,category,points,evidence) {
-    if(!category||!Number.isFinite(points)||points<=0)return;
-    if(!scores.has(category))scores.set(category,{score:0,evidence:[]});
-    const row=scores.get(category);row.score+=points;
-    if(evidence&&!row.evidence.includes(evidence)&&row.evidence.length<3)row.evidence.push(evidence);
-  }
-
-  function suggestCategoryFromText(text,currentCategory='') {
-    const clean=categoryNorm(text);
-    if(clean.length<2)return null;
-    const model=getCategoryModel(),scores=new Map();
-    const tokens=[...new Set(categoryTokenise(clean))];
-    const bigrams=[...new Set(categoryBigrams(categoryTokenise(clean)))];
-
-    // Direct category-name mentions are useful where item names are explicit.
-    model.categories.forEach(category=>{
-      const cn=categoryNorm(category);
-      if(cn.length>=4&&phraseIn(clean,cn))addCategoryScore(scores,category,6,`name includes “${category}”`);
-    });
-
-    // Curated maintenance vocabulary gives useful suggestions even before the
-    // inventory has enough examples to learn from.
-    CATEGORY_SEED_GROUPS.forEach(group=>{
-      const category=resolveSeedCategory(group.aliases,model.categories);
-      if(!category)return;
-      group.terms.forEach(([term,weight])=>{
-        if(phraseIn(clean,term))addCategoryScore(scores,category,weight,`matched “${term}”`);
-      });
-    });
-
-    // Learn from categories already approved in this inventory. A token/bigram
-    // only becomes strong when it mostly points to one category.
-    const learned=(map,key,base,label)=>{
-      const stat=map.get(key);if(!stat)return;
-      const total=[...stat.values()].reduce((a,b)=>a+b,0)||1;
-      stat.forEach((count,category)=>{
-        const purity=count/total;
-        if(purity<0.58)return;
-        const strength=base*purity*Math.min(2.6,0.7+count*0.45);
-        addCategoryScore(scores,category,strength,`${label} “${key}”`);
-      });
-    };
-    tokens.forEach(t=>learned(model.tokenStats,t,1.25,'learned from'));
-    bigrams.forEach(t=>learned(model.bigramStats,t,2.6,'learned phrase'));
-
-    const ranked=[...scores.entries()].map(([category,v])=>({category,...v})).sort((a,b)=>b.score-a.score);
-    if(!ranked.length)return null;
-    const top=ranked[0],second=ranked[1]?.score||0,margin=top.score-second;
-    if(top.score<4.4||margin<0.8)return null;
-    const percent=Math.max(62,Math.min(97,Math.round(55+Math.min(top.score,12)*2.7+Math.min(margin,8)*2.2)));
-    const confidence=(top.score>=7.2&&margin>=2.0)?'High':'Medium';
-    return {category:top.category,score:top.score,confidence,percent,evidence:top.evidence,currentMatches:sameCategory(currentCategory,top.category)};
-  }
-
-  function categorySuggestionForItem(item) {
-    if(!item?.active)return null;
-    const current=categoryIsPlaceholder(item.category)?'':(item.category||'');
-    return suggestCategoryFromText(`${item.name||''} ${item.item_code||''}`,current);
-  }
-
-  function categoryReviewSuggestion(item) {
-    const suggestion=categorySuggestionForItem(item);
-    if(!suggestion||suggestion.currentMatches)return null;
-    const placeholder=categoryIsPlaceholder(item.category);
-    // Legacy/import placeholders are treated as uncategorised, so useful medium/high
-    // suggestions are shown instead of being hidden as a supposed category mismatch.
-    if(!placeholder&&suggestion.confidence!=='High')return null;
-    return {item,suggestion,kind:placeholder?'uncategorised':'mismatch'};
-  }
-
-  function categoryReviewRows() {
-    return S.items.filter(i=>i.active).map(categoryReviewSuggestion).filter(Boolean)
-      .sort((a,b)=>(a.kind===b.kind?b.suggestion.percent-a.suggestion.percent:(a.kind==='uncategorised'?-1:1))||a.item.name.localeCompare(b.item.name));
-  }
-
-  function filteredItems() {
-    const q=S.search.toLowerCase().trim();
-    return S.items.filter(i=>S.showArchived?!i.active:i.active).filter(i=>{
-      if(S.categoryFilter && String(i.category||'')!==S.categoryFilter) return false;
-      if(!q) return true;
-      const positionText=itemPositions(i.id).map(b=>locationLabel(byId(S.locations,b.location_id))).join(' ');
-      return [i.name,i.item_code,i.qr_value,i.category,positionText].join(' ').toLowerCase().includes(q);
-    });
-  }
-
-  function itemsHtml() {
-    const filtered=filteredItems();
-    const reviewCount=canManage()?categoryReviewRows().length:0;
-    return `<div class="toolbar"><input id="itemSearch" value="${esc(S.search)}" placeholder="Search item, code, location or bin"><select id="categoryFilter"><option value="">All categories</option>${categoryNames().map(c=>`<option value="${esc(c)}" ${S.categoryFilter===c?'selected':''}>${esc(c)}</option>`).join('')}</select>${canManage()?`<button class="btn" id="addItemBtn">Add new item</button><button class="btn ${reviewCount?'warn':'ghost'}" id="categoryReviewBtn">Category Review${reviewCount?` (${reviewCount})`:' ✓'}</button>`:''}${canAdmin()?`<button class="btn ghost" id="toggleArchivedBtn">${S.showArchived?'Active items':'Archived items'}</button><button class="btn ghost" id="manageCategoriesBtn">Categories</button>`:''}</div>
-      <div id="itemCount" class="muted" style="margin-bottom:.6rem">${filtered.length} item${filtered.length===1?'':'s'}</div>
-      <div id="itemList" class="item-list">${filtered.map(itemRowHtml).join('') || '<div class="card">No matching items.</div>'}</div>`;
-  }
-
-  function refreshItemSearchResults() {
-    const filtered=filteredItems();
-    const count=document.getElementById('itemCount'), list=document.getElementById('itemList');
-    if(count) count.textContent=`${filtered.length} item${filtered.length===1?'':'s'}`;
-    if(list) {
-      list.innerHTML=filtered.map(itemRowHtml).join('') || '<div class="card">No matching items.</div>';
-      list.querySelectorAll('[data-item]').forEach(el=>el.onclick=()=>openItem(el.dataset.item));
-      hydrateItemThumbnails(list);
+    if(requested==='report_viewer'){
+      if(!userId)throw new Error('Invitation was created but the new profile was not available yet. Open People and set Role / department to Report Viewer once it appears.');
+      await setReportOnlyAccess(userId,true)
     }
-  }
-
-  function locationsHtml() {
-    const positive=S.balances.filter(b=>num(b.quantity)>0);
-    const names=locationNames();
-    const overall=positive.reduce((a,b)=>a+num(b.quantity),0);
-    const locCards=names.map(name=>{
-      const ids=new Set(positionsForLocation(name).map(l=>l.id));
-      const balances=positive.filter(b=>ids.has(b.location_id));
-      const units=balances.reduce((a,b)=>a+num(b.quantity),0);
-      const items=new Set(balances.map(b=>b.item_id));
-      const controlled=controlledBinSummary(name);
-      return `<div class="card"><div class="muted">Location</div><div class="item-title" style="margin:.2rem 0 .45rem">${esc(name)}</div><div class="stat">${qty(units)}</div><div class="muted">${items.size} item${items.size===1?'':'s'} · total units</div>${controlled?`<div class="badge good" style="margin-top:.55rem">${esc(controlled)}</div>`:'<div class="badge muted" style="margin-top:.55rem">Manual Bin Ref</div>'}${canManage()?`<div class="actions"><button class="btn ghost" data-rename-location="${esc(name)}">Rename</button><button class="btn danger" data-delete-location="${esc(name)}">Delete</button></div>`:''}</div>`;
-    }).join('');
-    return `<div class="toolbar">${canManage()?'<button class="btn" id="addLocationBtn">Add location</button>':''}${canAdmin()?'<button class="btn secondary" data-go="binsetup">Bin Setup</button>':''}</div>
-      <div class="card"><h2>Locations</h2><p class="muted">Locations can use a controlled bin dropdown or a flexible manual Bin Ref. Admin can create and change controlled bin lists at any time from <strong>Bin Setup</strong>.</p></div>
-      <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Overall stock</div><div class="stat">${qty(overall)}</div></div>${locCards||'<div class="card">No active locations yet.</div>'}</div>`;
-  }
-
-  function completedMonthWindows(count=3) {
-    const now=new Date();
-    const out=[];
-    for(let back=count;back>=1;back--){
-      const start=new Date(now.getFullYear(),now.getMonth()-back,1);
-      const end=new Date(now.getFullYear(),now.getMonth()-back+1,1);
-      out.push({
-        start,end,
-        label:start.toLocaleDateString(undefined,{month:'short',year:'numeric'})
-      });
+    if(requested!=='report_viewer'){
+      if(!userId&&departmentId)throw new Error('Invitation was sent, but the profile is still being created so the Department could not be applied yet. Open People in a moment and set the Department.');
+      if(userId){const dr=await sb.rpc('set_user_department_v230',{p_user_id:userId,p_department_id:departmentId||null});
+      if(dr.error)throw dr.error;}
     }
-    return out;
-  }
-
-  function suggestedOrderRows() {
-    const months=completedMonthWindows(3);
-    return S.items.filter(i=>i.active).map(i=>{
-      const monthly=months.map(w=>S.transactions
-        .filter(t=>countsAsUsage(t)&&t.item_id===i.id&&new Date(t.occurred_at)>=w.start&&new Date(t.occurred_at)<w.end)
-        .reduce((a,t)=>a+num(t.quantity),0));
-      const used3=monthly.reduce((a,v)=>a+v,0);
-      const avg=used3/3;
-      const current=itemTotal(i.id);
-      const onOrder=itemOnOrder(i.id);
-      const suggested=Math.max(0,Math.ceil(Math.max(0,avg-current-onOrder)-1e-9));
-      const coverage=avg>0?(current+onOrder)/avg:null;
-      return {item:i,monthly,used3,avg,current,onOrder,suggested,coverage,supplier:preferredSupplier(i.id)};
-    }).sort((a,b)=>b.suggested-a.suggested||b.avg-a.avg||a.item.name.localeCompare(b.item.name));
-  }
-
-  function orderStatusLabel(v) {
-    return ({OPEN:'On order',PART_RECEIVED:'Part received',COMPLETED:'Completed',CANCELLED:'Cancelled'})[v] || v;
-  }
-
-  function purchaseOrderCard(o) {
-    const item=byId(S.items,o.item_id);
-    const remaining=orderRemaining(o);
-    const received=num(o.quantity_received);
-    const statusClass=o.status==='PART_RECEIVED'?'warn':o.status==='COMPLETED'?'good':o.status==='CANCELLED'?'muted':'order';
-    const expected=o.expected_date?fmtShortDate(o.expected_date):'—';
-    return `<div class="card order-card">
-      <div class="order-card-head"><div><div class="item-title">${esc(item?.name||'Unknown item')}</div><div class="muted">${esc(o.supplier_name||'Supplier not set')}${o.supplier_ref?` · Ref ${esc(o.supplier_ref)}`:''}</div></div><span class="badge ${statusClass}">${esc(orderStatusLabel(o.status))}</span></div>
-      <div class="order-metrics">
-        <div><span>Ordered</span><strong>${qty(o.quantity_ordered)}</strong></div>
-        <div><span>Received</span><strong>${qty(received)}</strong></div>
-        <div><span>Still on order</span><strong>${qty(remaining)}</strong></div>
-      </div>
-      <div class="muted">Order ref: ${esc(o.order_reference||'—')} · Ordered ${fmtShortDate(o.ordered_at)} · Expected ${expected}</div>
-      ${o.notes?`<div class="muted" style="margin-top:.35rem">${esc(o.notes)}</div>`:''}
-      <div class="actions">
-        ${['OPEN','PART_RECEIVED'].includes(o.status)?`<button class="btn good" data-receive-order="${o.id}">Receive delivery</button>`:''}
-        ${canManage()&&['OPEN','PART_RECEIVED'].includes(o.status)?`<button class="btn ghost" data-edit-order="${o.id}">Edit order</button><button class="btn danger" data-cancel-order="${o.id}">Close / cancel</button>`:''}
-        <button class="btn ghost" data-item="${o.item_id}">Open item</button>
-      </div>
-    </div>`;
-  }
-
-  function ordersHtml() {
-    const months=completedMonthWindows(3);
-    const all=suggestedOrderRows();
-    const needs=all.filter(r=>r.suggested>0);
-    const totalSuggested=needs.reduce((a,r)=>a+r.suggested,0);
-    const outstanding=S.purchaseOrders.filter(o=>['OPEN','PART_RECEIVED'].includes(o.status));
-    const outstandingUnits=outstanding.reduce((a,o)=>a+orderRemaining(o),0);
-    const history=S.purchaseOrders.filter(o=>['COMPLETED','CANCELLED'].includes(o.status));
-
-    const tabs=`<div class="order-tabs">
-      <button class="${S.orderTab==='suggested'?'active':''}" data-order-tab="suggested">Suggested</button>
-      <button class="${S.orderTab==='open'?'active':''}" data-order-tab="open">On Order <span class="count">${outstanding.length}</span></button>
-      <button class="${S.orderTab==='history'?'active':''}" data-order-tab="history">History</button>
-    </div>`;
-
-    if(S.orderTab==='open') {
-      return `<div class="card"><h2>Orders</h2><p class="muted">Everyone can see what has been ordered. Any active user can receive a delivery; only admins/managers can create, edit or close orders.</p>${tabs}</div>
-        <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Open orders</div><div class="stat">${outstanding.length}</div></div><div class="card"><div class="muted">Units still on order</div><div class="stat">${qty(outstandingUnits)}</div></div></div>
-        <div class="order-list" style="margin-top:1rem">${outstanding.map(purchaseOrderCard).join('')||'<div class="card">Nothing is currently on order.</div>'}</div>`;
-    }
-
-    if(S.orderTab==='history') {
-      const rows=history.map(o=>`<tr><td>${fmtShortDate(o.ordered_at)}</td><td>${esc(itemName(o.item_id))}</td><td>${esc(o.supplier_name||'—')}</td><td>${qty(o.quantity_ordered)}</td><td>${qty(o.quantity_received)}</td><td>${esc(orderStatusLabel(o.status))}</td><td>${esc(o.order_reference||'—')}</td></tr>`).join('');
-      return `<div class="card"><h2>Orders</h2>${tabs}</div>
-        <div class="card" style="margin-top:1rem"><h3>Completed / closed orders</h3><div class="table-wrap"><table><thead><tr><th>Ordered</th><th>Item</th><th>Supplier</th><th>Ordered qty</th><th>Received qty</th><th>Status</th><th>Order ref</th></tr></thead><tbody>${rows||'<tr><td colspan="7">No completed or cancelled orders yet.</td></tr>'}</tbody></table></div></div>`;
-    }
-
-    const rows=all.map(r=>`<tr class="${r.suggested>0?'order-needed':'order-ok'}">
-      <td data-item="${r.item.id}">${esc(r.item.name)}</td>
-      <td>${qty(r.monthly[0])}</td><td>${qty(r.monthly[1])}</td><td>${qty(r.monthly[2])}</td>
-      <td>${qty(r.avg)}</td><td>${qty(r.current)}</td><td>${r.onOrder>0?`<strong>${qty(r.onOrder)}</strong>`:'—'}</td>
-      <td><strong>${r.suggested>0?qty(r.suggested):'—'}</strong></td>
-      <td>${esc(r.supplier?.supplier_name||'—')}</td>
-      <td>${canManage()&&r.suggested>0?`<button class="btn small" data-create-order="${r.item.id}">Add to order</button>`:'—'}</td>
-    </tr>`).join('');
-
-    return `<div class="card"><h2>Orders</h2>
-      <p class="muted">Suggested quantities use actual <strong>USE</strong> transactions from the previous 3 completed months. Existing stock and anything already <strong>On Order</strong> are subtracted so the same item is not ordered twice.</p>
-      ${tabs}
-      <div class="actions"><button class="btn secondary" id="exportOrdersCsv">Download CSV</button><button class="btn" id="exportOrdersExcel">Download Excel</button></div>
-    </div>
-    <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Items needing order</div><div class="stat">${needs.length}</div></div><div class="card"><div class="muted">Suggested units</div><div class="stat">${qty(totalSuggested)}</div></div><div class="card"><div class="muted">Already on order</div><div class="stat">${qty(outstandingUnits)}</div></div><div class="card"><div class="muted">Usage period</div><div style="font-weight:800;margin-top:.45rem">${esc(months.map(m=>m.label).join(' · '))}</div></div></div>
-    <div class="card" style="margin-top:1rem"><h3>Suggested orders</h3><p class="muted">Tap an item to open it. Admins/managers can turn a suggestion into an open order.</p><div class="table-wrap"><table><thead><tr><th>Item</th><th>${esc(months[0].label)}</th><th>${esc(months[1].label)}</th><th>${esc(months[2].label)}</th><th>Avg / month</th><th>In stock</th><th>On order</th><th>Suggested</th><th>Supplier</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="10">No active items.</td></tr>'}</tbody></table></div></div>`;
-  }
-
-  function reportTransactions() {
-    const r=S.report;
-    let list=S.transactions.filter(countsAsUsage);
-    if(r.period==='month') { const from=new Date(monthStartISO()+'T00:00:00'); list=list.filter(t=>new Date(t.occurred_at)>=from); }
-    if(r.period==='custom') {
-      if(r.from) { const from=new Date(r.from+'T00:00:00'); list=list.filter(t=>new Date(t.occurred_at)>=from); }
-      if(r.to) { const to=new Date(r.to+'T23:59:59'); list=list.filter(t=>new Date(t.occurred_at)<=to); }
-    }
-    if(r.item) list=list.filter(t=>t.item_id===r.item);
-    if(r.user) list=list.filter(t=>(t.user_id||'legacy')===r.user);
-    if(r.location) list=list.filter(t=>locationNameForId(t.from_location_id)===r.location);
-    if(r.bin) list=list.filter(t=>binRefForId(t.from_location_id).toLowerCase()===r.bin.trim().toLowerCase());
-    return list;
-  }
-
-  function activityTransactions() {
-    const r=S.report;
-    let list=[...S.transactions];
-    if(r.period==='month') { const from=new Date(monthStartISO()+'T00:00:00'); list=list.filter(t=>new Date(t.occurred_at)>=from); }
-    if(r.period==='custom') {
-      if(r.from) { const from=new Date(r.from+'T00:00:00'); list=list.filter(t=>new Date(t.occurred_at)>=from); }
-      if(r.to) { const to=new Date(r.to+'T23:59:59'); list=list.filter(t=>new Date(t.occurred_at)<=to); }
-    }
-    if(r.item) list=list.filter(t=>t.item_id===r.item);
-    if(r.user) list=list.filter(t=>(t.user_id||'legacy')===r.user);
-    if(r.location) list=list.filter(t=>[t.from_location_id,t.to_location_id].some(id=>locationNameForId(id)===r.location));
-    if(r.bin) list=list.filter(t=>[t.from_location_id,t.to_location_id].some(id=>binRefForId(id).toLowerCase()===r.bin.trim().toLowerCase()));
-    return list;
-  }
-
-  function reportsHtml() {
-    const list=reportTransactions();
-    const activity=activityTransactions();
-    const totals=new Map();
-    list.forEach(t=>totals.set(t.item_id,(totals.get(t.item_id)||0)+num(t.quantity)));
-    const summary=[...totals.entries()].map(([id,q])=>({id,q,name:itemName(id)})).sort((a,b)=>b.q-a.q);
-    const totalUsage=list.reduce((a,t)=>a+num(t.quantity),0);
-    const reportName=S.report.period==='month'?'This month':S.report.period==='all'?'All time':'Custom dates';
-    const activeItems=S.items.filter(i=>i.active).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));
-    const graphSelected=S.report.graphItem || S.report.item || summary[0]?.id || '';
-
-    const userActivity=new Map();
-    for(const t of activity){
-      const key=t.user_id||'legacy';
-      if(!userActivity.has(key))userActivity.set(key,{ADD:0,USE:0,MOVE:0,ADJUST:0,count:0});
-      const g=userActivity.get(key);g[t.transaction_type]=(g[t.transaction_type]||0)+num(t.quantity);g.count++;
-    }
-    const activityRows=[...userActivity.entries()].map(([id,g])=>`<tr><td>${esc(id==='legacy'?'Legacy import':userName(id))}</td><td>${qty(g.ADD)}</td><td>${qty(g.USE)}</td><td>${qty(g.MOVE)}</td><td>${qty(g.ADJUST)}</td><td>${g.count}</td></tr>`).join('');
-
-    return `<div class="card"><h2>Usage & activity reports</h2>
-      <div class="form-grid">
-        <div><label>Period</label><select id="reportPeriod"><option value="month" ${S.report.period==='month'?'selected':''}>This month</option><option value="all" ${S.report.period==='all'?'selected':''}>All time</option><option value="custom" ${S.report.period==='custom'?'selected':''}>Custom dates</option></select></div>
-        <div><label>Item</label><select id="reportItem"><option value="">All items</option>${S.items.filter(i=>i.active).map(i=>`<option value="${i.id}" ${S.report.item===i.id?'selected':''}>${esc(i.name)}</option>`).join('')}</select></div>
-        <div><label>User</label><select id="reportUser"><option value="">All users</option><option value="legacy" ${S.report.user==='legacy'?'selected':''}>Legacy import</option>${S.profiles.map(p=>`<option value="${p.id}" ${S.report.user===p.id?'selected':''}>${esc(p.display_name)}</option>`).join('')}</select></div>
-        <div><label>Location</label><select id="reportLocation"><option value="">All locations</option>${locationNames().map(name=>`<option value="${esc(name)}" ${S.report.location===name?'selected':''}>${esc(name)}</option>`).join('')}</select></div>
-        <div><label>Bin Ref (optional)</label><input id="reportBin" value="${esc(S.report.bin)}" placeholder="e.g. B12"></div>
-        <div class="customDates ${S.report.period==='custom'?'':'hidden'}"><label>From</label><input type="date" id="reportFrom" value="${esc(S.report.from)}"></div>
-        <div class="customDates ${S.report.period==='custom'?'':'hidden'}"><label>To</label><input type="date" id="reportTo" value="${esc(S.report.to)}"></div>
-      </div>
-      <div class="actions"><button class="btn secondary" id="exportReport">Usage CSV</button><button class="btn" id="exportReportExcel">Usage Excel</button><button class="btn ghost" id="exportActivity">Activity CSV</button><button class="btn ghost" id="exportActivityExcel">Activity Excel</button></div>
-    </div>
-    <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">${esc(reportName)} usage</div><div class="stat">${qty(totalUsage)}</div></div><div class="card"><div class="muted">Usage transactions</div><div class="stat">${list.length}</div></div><div class="card"><div class="muted">Different items used</div><div class="stat">${summary.length}</div></div><div class="card"><div class="muted">All stock actions</div><div class="stat">${activity.length}</div></div></div>
-    <div class="split" style="margin-top:1rem"><div class="card"><h3>Usage by item</h3><p class="muted">Tap an item below to show it on the 12-month graph.</p><div class="table-wrap usage-item-table"><table><thead><tr><th>Item</th><th>Used</th></tr></thead><tbody>${summary.map(x=>`<tr class="graph-item-row ${graphSelected===x.id?'selected':''}" data-graph-item="${x.id}" tabindex="0" role="button" aria-label="Show ${esc(x.name)} on 12-month usage graph"><td>${esc(x.name)}</td><td>${qty(x.q)}</td></tr>`).join('')||'<tr><td colspan="2">No usage in this period.</td></tr>'}</tbody></table></div></div><div class="card"><h3>12-month usage trend</h3><div class="graph-item-picker"><label for="graphItem">Graph item</label><select id="graphItem"><option value="">Select an item…</option>${activeItems.map(i=>`<option value="${i.id}" ${graphSelected===i.id?'selected':''}>${esc(i.name)}</option>`).join('')}</select></div><p class="muted graph-help">Choose an item here, or tap an item in the usage table.</p><canvas id="trendChart" height="250"></canvas></div></div>
-    <div class="card" style="margin-top:1rem"><h3>Who added, used, moved or adjusted stock</h3><div class="table-wrap"><table><thead><tr><th>User</th><th>Added</th><th>Used</th><th>Moved</th><th>Adjusted</th><th>Actions</th></tr></thead><tbody>${activityRows||'<tr><td colspan="6">No activity in this period.</td></tr>'}</tbody></table></div></div>
-    <div class="card" style="margin-top:1rem"><h3>Detailed usage</h3>${transactionTable(list)}</div>`;
-  }
-
-  function historyHtml() {
-    return `<div class="card"><h2>Full audit history</h2><p class="muted">Adds, uses, moves and adjustments are all recorded with the user and location.</p>${transactionTable(S.transactions)}</div>`;
-  }
-
-  function transactionTable(list) {
-    const rows=list.slice(0,500).map(t=>`<tr><td>${fmtDate(t.occurred_at)}</td><td>${esc(itemName(t.item_id))}</td><td><span class="badge">${esc(t.transaction_type)}</span></td><td>${qty(t.quantity)}</td><td>${esc(userName(t.user_id))}</td><td>${esc(locName(t.from_location_id))}</td><td>${esc(locName(t.to_location_id))}</td><td>${esc(t.reason||t.notes||'—')}</td></tr>`).join('');
-    return `<div class="table-wrap"><table><thead><tr><th>Date/time</th><th>Item</th><th>Action</th><th>Qty</th><th>User</th><th>From</th><th>To</th><th>Reason / note</th></tr></thead><tbody>${rows||'<tr><td colspan="8">No transactions yet.</td></tr>'}</tbody></table></div>${list.length>500?'<p class="muted">Showing the newest 500 rows.</p>':''}`;
-  }
-
-
-  function anyPosition(locationName, binRef) {
-    const ref=normalizeBin(binRef).toLowerCase();
-    return S.locations.find(l=>l.location_name===locationName && effectiveBinCode(l).trim().toLowerCase()===ref) || null;
-  }
-
-  function binPresetUsed(row) {
-    const stock=S.balances.filter(b=>b.location_id===row.id).reduce((a,b)=>a+num(b.quantity),0);
-    const defaultItems=S.items.filter(i=>i.default_location_id===row.id);
-    return {stock,defaultItems};
-  }
-
-  async function ensurePresetBin(locationName, binRef) {
-    const ref=normalizeBin(binRef);
-    if(!locationName||!ref) throw new Error('Choose a location and enter a bin reference.');
-    const existing=anyPosition(locationName,ref);
-    if(existing){
-      const notes=addPresetMarker(existing.notes);
-      const {error}=await sb.from('stock_locations').update({active:true,notes}).eq('id',existing.id);
-      if(error)throw error;
-      return existing.id;
-    }
-    const {data,error}=await sb.from('stock_locations')
-      .insert({location_name:locationName,area_name:'',bin_code:ref,active:true,notes:BIN_PRESET_MARKER})
-      .select('id').single();
-    if(error)throw error;
-    return data.id;
-  }
-
-  async function removePresetBin(row) {
-    const {stock,defaultItems}=binPresetUsed(row);
-    const notes=stripPresetMarker(row.notes)||null;
-    // Preserve a live/default position. It leaves the controlled preset list,
-    // but remains available as an existing bin until the stock/default is moved.
-    const keepActive=stock>0||defaultItems.length>0;
-    const {error}=await sb.from('stock_locations').update({active:keepActive,notes}).eq('id',row.id);
-    if(error)throw error;
-    return {kept:keepActive,stock,defaults:defaultItems.length};
-  }
-
-  function selectedBinSetupLocation() {
-    const names=locationNames();
-    if(!names.length)return '';
-    if(S.binSetupLocation&&names.includes(S.binSetupLocation))return S.binSetupLocation;
-    S.binSetupLocation=names[0];
-    return S.binSetupLocation;
-  }
-
-  function binSetupHtml() {
-    if(!canAdmin()) return '<div class="notice error">Admin access required.</div>';
-    const names=locationNames();
-    if(!names.length)return `<div class="card"><h2>Bin Setup</h2><p>Add a stock location first.</p><div class="actions"><button class="btn" data-go="locations">Open Locations</button></div></div>`;
-
-    const location=selectedBinSetupLocation();
-    const presets=presetRowsForLocation(location);
-    const actual=positionsForLocation(location).filter(l=>effectiveBinCode(l));
-    const actualRefs=[...new Set(actual.map(effectiveBinCode))].sort(naturalBinSort);
-    const controlled=presets.length>0;
-    const options=names.map(n=>`<option value="${esc(n)}" ${n===location?'selected':''}>${esc(n)}</option>`).join('');
-
-    const presetCards=presets.map(row=>{
-      const ref=effectiveBinCode(row),use=binPresetUsed(row);
-      const detail=[
-        use.stock>0?`${qty(use.stock)} in stock`:'',
-        use.defaultItems.length?`default for ${use.defaultItems.length} item${use.defaultItems.length===1?'':'s'}`:''
-      ].filter(Boolean).join(' · ');
-      return `<div class="bin-chip"><span><strong>${esc(ref)}</strong>${detail?`<small>${esc(detail)}</small>`:''}</span><button class="btn ghost small" data-remove-preset="${row.id}">Remove</button></div>`;
-    }).join('');
-
-    return `
-      <div class="card">
-        <div class="row-between"><div><h2>Admin Bin Setup</h2><p class="muted">Create and manage controlled bin dropdowns yourself. Changes are shared with every user/device.</p></div><button class="btn ghost" data-go="locations">Locations</button></div>
-        ${S.offline||!navigator.onLine?'<div class="notice warn"><strong>Online connection required.</strong> Bin Setup cannot be changed while offline.</div>':''}
-        <label>Location</label><select id="binSetupLocation">${options}</select>
-        <div class="grid cards" style="margin-top:1rem">
-          <div class="card"><div class="muted">Mode</div><div class="stat-text">${controlled?'Controlled dropdown':'Manual Bin Ref'}</div></div>
-          <div class="card"><div class="muted">Configured bins</div><div class="stat">${presets.length}</div></div>
-          <div class="card"><div class="muted">Existing bin positions</div><div class="stat">${actualRefs.length}</div></div>
-        </div>
-      </div>
-
-      <div class="split" style="margin-top:1rem">
-        <div class="card">
-          <h3>Generate a bin range</h3>
-          <p class="muted">Example: prefix <strong>Bin </strong>, start 1, end 50 creates Bin 1 to Bin 50. Prefix <strong>C</strong>, start 1, end 15 creates C1 to C15.</p>
-          <form id="binRangeForm" class="form-grid">
-            <div><label>Prefix</label><input id="binPrefix" value="Bin " placeholder="Bin "></div>
-            <div><label>Start number</label><input id="binStart" type="number" min="0" max="9999" value="1" required></div>
-            <div><label>End number</label><input id="binEnd" type="number" min="0" max="9999" value="50" required></div>
-            <div class="full"><div id="binRangePreview" class="notice compact">Preview: Bin 1 … Bin 50 (50 bins)</div></div>
-            <div class="full actions"><button class="btn" type="submit">Add range</button></div>
-          </form>
-        </div>
-
-        <div class="card">
-          <h3>Add individual bin</h3>
-          <form id="singleBinForm">
-            <label>Bin Ref</label><input id="singleBinRef" placeholder="e.g. Shelf A or C16" required>
-            <div class="actions"><button class="btn" type="submit">Add bin</button></div>
-          </form>
-          ${actualRefs.length?`<hr><h3>Use existing bins</h3><p class="muted">If this location already has manually-created bin positions, add them to the controlled dropdown in one step.</p><button class="btn secondary" id="presetExistingBins">Add all existing bins</button>`:''}
-        </div>
-      </div>
-
-      <div class="card" style="margin-top:1rem">
-        <div class="row-between"><div><h3>Controlled bins for ${esc(location)}</h3><p class="muted">${controlled?'These are the standard choices users see in the bin dropdown.':'No controlled bins yet. Users currently get manual Bin Ref entry.'}</p></div>${presets.length?'<button class="btn danger" id="clearBinSetup">Clear controlled setup</button>':''}</div>
-        <div class="bin-chip-list">${presetCards||'<div class="empty">No controlled bins configured.</div>'}</div>
-        <div class="notice compact" style="margin-top:1rem"><strong>Safe removal:</strong> removing a configured bin never deletes transaction history. If a bin still contains stock or is an item's default, it remains available as an existing bin until that stock/default is changed.</div>
-      </div>`;
-  }
-
-  function bindBinSetup() {
-    if(!canAdmin())return;
-    const disabled=S.offline||!navigator.onLine;
-    const loc=document.getElementById('binSetupLocation');
-    if(loc)loc.onchange=()=>{S.binSetupLocation=loc.value;render();};
-
-    const preview=()=>{
-      const prefix=document.getElementById('binPrefix')?.value??'';
-      const start=Number(document.getElementById('binStart')?.value);
-      const end=Number(document.getElementById('binEnd')?.value);
-      const out=document.getElementById('binRangePreview');
-      if(!out)return;
-      if(!Number.isInteger(start)||!Number.isInteger(end)||end<start||end-start>499){
-        out.textContent='Choose a valid range of up to 500 bins.';
-        return;
-      }
-      out.textContent=`Preview: ${prefix}${start} … ${prefix}${end} (${end-start+1} bins)`;
-    };
-    ['binPrefix','binStart','binEnd'].forEach(id=>document.getElementById(id)?.addEventListener('input',preview));
-    preview();
-
-    const rangeForm=document.getElementById('binRangeForm');
-    if(rangeForm)rangeForm.onsubmit=async e=>{
-      e.preventDefault();
-      if(disabled){setNotice('Reconnect to the internet before changing Bin Setup.','error');render();return;}
-      const location=selectedBinSetupLocation();
-      const prefix=document.getElementById('binPrefix').value;
-      const start=Number(document.getElementById('binStart').value);
-      const end=Number(document.getElementById('binEnd').value);
-      if(!Number.isInteger(start)||!Number.isInteger(end)||end<start||end-start>499){
-        setNotice('Choose a valid bin range of up to 500 bins.','error');render();return;
-      }
-      try{
-        for(let n=start;n<=end;n++)await ensurePresetBin(location,`${prefix}${n}`);
-        await loadData({transactions:false});
-        S.binSetupLocation=location;
-        setNotice(`${end-start+1} bin${end-start===0?'':'s'} added to ${location}.`);
-        render();
-      }catch(err){setNotice(parseError(err),'error');render();}
-    };
-
-    const singleForm=document.getElementById('singleBinForm');
-    if(singleForm)singleForm.onsubmit=async e=>{
-      e.preventDefault();
-      if(disabled){setNotice('Reconnect to the internet before changing Bin Setup.','error');render();return;}
-      const location=selectedBinSetupLocation();
-      const ref=normalizeBin(document.getElementById('singleBinRef').value);
-      if(!ref){setNotice('Enter a Bin Ref.','error');render();return;}
-      try{
-        await ensurePresetBin(location,ref);
-        await loadData({transactions:false});
-        S.binSetupLocation=location;
-        setNotice(`${ref} added to the controlled bin list.`);
-        render();
-      }catch(err){setNotice(parseError(err),'error');render();}
-    };
-
-    const existing=document.getElementById('presetExistingBins');
-    if(existing)existing.onclick=async()=>{
-      if(disabled){setNotice('Reconnect to the internet before changing Bin Setup.','error');render();return;}
-      const location=selectedBinSetupLocation();
-      const refs=[...new Set(positionsForLocation(location).map(effectiveBinCode).filter(Boolean))].sort(naturalBinSort);
-      try{
-        for(const ref of refs)await ensurePresetBin(location,ref);
-        await loadData({transactions:false});
-        S.binSetupLocation=location;
-        setNotice(`${refs.length} existing bin${refs.length===1?'':'s'} added to the controlled list.`);
-        render();
-      }catch(err){setNotice(parseError(err),'error');render();}
-    };
-
-    document.querySelectorAll('[data-remove-preset]').forEach(btn=>btn.onclick=async()=>{
-      if(disabled){setNotice('Reconnect to the internet before changing Bin Setup.','error');render();return;}
-      const location=selectedBinSetupLocation();
-      const row=byId(S.locations,btn.dataset.removePreset);
-      if(!row)return;
-      try{
-        const result=await removePresetBin(row);
-        await loadData({transactions:false});
-        S.binSetupLocation=location;
-        setNotice(result.kept?`${effectiveBinCode(row)} removed from the controlled list. It remains available because it still has stock or is used as a default.`:`${effectiveBinCode(row)} removed from the controlled list.`);
-        render();
-      }catch(err){setNotice(parseError(err),'error');render();}
-    });
-
-    const clear=document.getElementById('clearBinSetup');
-    if(clear)clear.onclick=async()=>{
-      if(disabled){setNotice('Reconnect to the internet before changing Bin Setup.','error');render();return;}
-      const location=selectedBinSetupLocation();
-      if(!confirm(`Clear the controlled bin setup for ${location}? Stock and history will be preserved.`))return;
-      try{
-        const rows=presetRowsForLocation(location);
-        let kept=0;
-        for(const row of rows){const result=await removePresetBin(row);if(result.kept)kept++;}
-        await loadData({transactions:false});
-        S.binSetupLocation=location;
-        setNotice(kept?`Controlled setup cleared. ${kept} bin${kept===1?'':'s'} remain available because they contain stock or are item defaults.`:'Controlled setup cleared. This location now uses manual Bin Ref entry.');
-        render();
-      }catch(err){setNotice(parseError(err),'error');render();}
-    };
-  }
-
-
-  function usersHtml() {
-    if(!canAdmin()) return '<div class="notice error">Admin access required.</div>';
-    const rows=S.profiles.map(p=>{
-      const access=p.id===S.profile.id
-        ? ''
-        : p.active===false
-          ? `<button class="btn good small" data-user-enable="${p.id}">Re-enable</button>`
-          : `<button class="btn danger small" data-user-disable="${p.id}">Disable</button>`;
-      return `<tr><td>${esc(p.display_name)}<div class="muted">${esc(p.email||'')}</div></td><td>${esc(roleLabel(p.role))}</td><td>${p.active===false?'<span class="badge muted">Disabled</span>':'<span class="badge good">Active</span>'}</td><td><select data-role-user="${p.id}" ${p.id===S.profile.id?'disabled':''}><option value="staff" ${p.role==='staff'?'selected':''}>User</option><option value="manager" ${p.role==='manager'?'selected':''}>Manager</option><option value="admin" ${p.role==='admin'?'selected':''}>Admin</option></select></td><td><div class="actions user-actions">${access}<button class="btn ghost small" data-user-email="${p.id}">Change email</button></div></td></tr>`;
-    }).join('');
-    return `<div class="split"><div class="card"><h2>Users</h2><p class="muted">Correct a registered email without deleting the account. Password, role and stock history are preserved. Disable users instead of deleting them when they leave.</p><div class="table-wrap"><table><thead><tr><th>Name / email</th><th>Role</th><th>Status</th><th>Change role</th><th>Account</th></tr></thead><tbody>${rows}</tbody></table></div></div>
-      <div class="card"><h2>Invite user</h2><p class="muted">The invited person receives an email and must set their own password before entering the tracker. The v7.4.1 invite-user Edge Function must be deployed in Supabase.</p><form id="inviteForm"><label>Name</label><input id="inviteName" required><label>Email</label><input id="inviteEmail" type="email" required><label>Role</label><select id="inviteRole"><option value="staff">User</option><option value="manager">Manager</option><option value="admin">Admin</option></select><div class="actions"><button class="btn" type="submit">Send invite</button></div></form></div></div>`;
-  }
-
-
-  async function hydrateItemThumbnails(root=document) {
-    if(S.offline||!navigator.onLine)return;
-    const imgs=[...root.querySelectorAll?.('img.item-thumb[data-photo-path]')||[]].filter(x=>!x.getAttribute('src'));
-    if(!imgs.length) return;
-    const paths=[...new Set(imgs.map(x=>x.dataset.photoPath).filter(Boolean))];
-    try{
-      const {data,error}=await sb.storage.from('item-photos').createSignedUrls(paths,900);
-      if(error) return;
-      const map=new Map((data||[]).map(x=>[x.path,x.signedUrl]));
-      imgs.forEach(img=>{const u=map.get(img.dataset.photoPath);if(u)img.src=u;});
-    }catch(_){}
-  }
-
-  async function touchRecentItem(itemId) {
-    if(!S.profile?.id) return;
-    const now=new Date().toISOString();
-    const current=itemPref(itemId);
-    let error;
-    if(current){
-      ({error}=await sb.from('user_item_preferences').update({last_viewed_at:now,view_count:num(current.view_count)+1}).eq('user_id',S.profile.id).eq('item_id',itemId));
-      current.last_viewed_at=now; current.view_count=num(current.view_count)+1;
+    closeModal();toast(`Invitation sent to ${email}${requested==='report_viewer'?' as Report Viewer':departmentId?' with department assignment':''}.`);setTimeout(()=>refresh(),500)
+  }catch(e){toast(`Invite failed: ${e.message}`)}
+}
+function showSetRole(id){
+  const p=state.people.find(x=>x.id===id),selected=p?.report_only===true?'report_viewer':p?.role,currentDept=userDepartmentId(id)||'',own=id===state.user?.id;
+  const deptOpts=activeDepartments().map(d=>`<option value="${d.id}" ${currentDept===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
+  openModal('Edit user',`<div class="form-grid"><label>Name<input id="editUserName" value="${esc(p?.display_name||'')}" maxlength="120"></label><label>Email<input id="editUserEmail" type="email" value="${esc(p?.email||'')}"></label><label>Role / access<select id="roleSelect"><option value="user" ${selected==='user'?'selected':''}>User</option><option value="manager" ${selected==='manager'?'selected':''}>Manager</option><option value="admin" ${selected==='admin'?'selected':''}>Admin</option><option value="report_viewer" ${selected==='report_viewer'?'selected':''}>Report Viewer — reports/download only</option></select></label><label>Department<select id="roleDepartment"><option value="">No department</option>${deptOpts}</select></label></div><div class="hint-box">${own?'<strong>Your own account:</strong> you can edit your name, email and Department here, but you cannot demote, disable or change your own access level. ':''}Changing department immediately recalculates department-based training requirements. Previous sign-offs/evidence are retained. Changing someone to Report Viewer deactivates current Training, Safety Awareness and PPE assignments but keeps previous evidence/sign-offs.</div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Save changes','primary',`data-save-role="${id}"`)}</div>`)
+}
+async function saveRole(id){
+  const requested=$('roleSelect').value,departmentId=$('roleDepartment')?.value||null,p=state.people.find(x=>x.id===id),currentAccess=p?.report_only===true?'report_viewer':p?.role,own=id===state.user?.id;
+  const displayName=clean($('editUserName')?.value),email=clean($('editUserEmail')?.value).toLowerCase();
+  try{
+    if(!displayName)throw new Error('Name is required.');
+    if(!email||!/^\S+@\S+\.\S+$/.test(email))throw new Error('A valid email address is required.');
+    if(own&&requested!==currentAccess)throw new Error('You can edit your own details and Department, but you cannot change your own role/access level.');
+    if(displayName!==clean(p?.display_name)||email!==clean(p?.email).toLowerCase())await edgeAction({action:'update_user',user_id:id,display_name:displayName,email});
+    if(requested==='report_viewer'){
+      if(!own)await edgeAction({action:'set_role',user_id:id,role:'user'});
+      await setReportOnlyAccess(id,true);
+      const dr=await sb.rpc('set_user_department_v230',{p_user_id:id,p_department_id:null});if(dr.error)throw dr.error
     }else{
-      const row={user_id:S.profile.id,item_id:itemId,favourite:false,last_viewed_at:now,view_count:1};
-      ({error}=await sb.from('user_item_preferences').insert(row));
-      if(!error)S.userPrefs.push(row);
+      await setReportOnlyAccess(id,false);
+      if(!own||requested!==currentAccess)await edgeAction({action:'set_role',user_id:id,role:requested});
+      const dr=await sb.rpc('set_user_department_v230',{p_user_id:id,p_department_id:departmentId||null});if(dr.error)throw dr.error
     }
-    if(error) console.warn('Recent item update failed',error);
+    closeModal();await refresh(own?'Your user details and department have been updated.':requested==='report_viewer'?'User updated with Report Viewer access.':'User details, role and department updated.')
+  }catch(e){toast(e.message)}
+}
+function showResendUser(id){const p=state.people.find(x=>x.id===id);if(!p||id===state.user?.id)return;openModal('Resend access email',`<p>Send a fresh Safety Tracker access/password setup email to:</p><p><strong>${esc(p.display_name||p.email)}</strong><br><span class="muted">${esc(p.email||'')}</span></p><div class="hint-box">This sends a new secure password setup/recovery link to the live Safety Tracker. It does not remove any training history or assignments.</div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Send email','primary',`data-confirm-resend-user="${id}"`)}</div>`)}
+async function resendUserAccess(id){try{const out=await edgeAction({action:'resend_access',user_id:id});closeModal();toast(out?.message||'Access email sent.')}catch(e){toast(`Could not resend access email: ${e.message}`)}}
+async function toggleUser(id){const p=state.people.find(x=>x.id===id);try{await edgeAction({action:p.active===false?'enable':'disable',user_id:id});await refresh('User updated.')}catch(e){toast(e.message)}}
+
+
+function renderDepartments(){
+  const box=$('departmentList');if(!box)return;
+  const rows=[...state.departments].sort((a,b)=>{if((a.active!==false)!==(b.active!==false))return a.active===false?1:-1;return String(a.name||'').localeCompare(String(b.name||''))});
+  box.innerHTML=rows.length?rows.map(d=>{const members=state.userDepartments.filter(x=>x.department_id===d.id).length,used=state.documentAudiences.filter(x=>x.target_type==='DEPARTMENT'&&x.department_id===d.id).length;return `<div class="item-card compact"><div class="row-between"><div><strong>${esc(d.name)}</strong><div class="meta"><span>${members} user${members===1?'':'s'}</span><span>${used} document audience${used===1?'':'s'}</span><span class="badge ${d.active===false?'neutral':'complete'}">${d.active===false?'Archived':'Active'}</span></div></div><div class="row">${btn('Rename','secondary',`data-edit-department="${d.id}"`)}${btn(d.active===false?'Restore':'Archive',d.active===false?'primary':'ghost',`data-toggle-department="${d.id}"`)}</div></div></div>`}).join(''):'<div class="empty">No departments yet. Create your first department.</div>';
+}
+function showDepartmentEditor(id=''){
+  if(!isAdmin())return;const d=id?state.departments.find(x=>x.id===id):null;
+  openModal(d?'Rename department':'New department',`<label>Department name<input id="departmentName" maxlength="80" value="${esc(d?.name||'')}" placeholder="e.g. Maintenance"></label><div class="hint-box">Departments are managed here, so you can add or rename them without changing the app. Archived departments remain in historical assignment records.</div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn(d?'Save name':'Create department','primary',`data-save-department="${d?.id||''}"`)}</div>`)
+}
+async function saveDepartment(id=''){
+  if(!isAdmin())return;const name=clean($('departmentName')?.value);if(!name)return toast('Department name is required.');
+  const r=await sb.rpc('save_department_v230',{p_department_id:id||null,p_name:name});if(r.error)return toast(r.error.message);closeModal();await refresh(id?'Department renamed.':'Department created.')
+}
+async function toggleDepartment(id){
+  if(!isAdmin())return;const d=state.departments.find(x=>x.id===id);if(!d)return;
+  const active=d.active===false;const r=await sb.rpc('set_department_active_v230',{p_department_id:id,p_active:active});if(r.error)return toast(r.error.message);await refresh(active?'Department restored.':'Department archived. Existing users and historical rules are retained.')
+}
+function approvalAudienceHtml(d){
+  if(!documentUsesFormalTraining(d))return '';
+  const a=audienceTargetsForDocument(d.id),deptRows=activeDepartments().map(x=>`<label class="check-row"><input type="checkbox" class="approval-department-choice" value="${x.id}" ${a.departmentIds.has(x.id)?'checked':''}>${esc(x.name)}</label>`).join('')||'<span class="muted">No active departments. Create them in Admin → Departments.</span>';
+  const peopleRows=activePeople().map(p=>`<label class="check-row"><input type="checkbox" class="approval-person-choice" value="${p.id}" ${a.userIds.has(p.id)?'checked':''}>${esc(p.display_name||p.email)} <span class="muted">· ${esc(userDepartmentName(p.id))}</span></label>`).join('');
+  return `<div id="approvalAudienceSection" class="section-card approval-audience-card"><div class="row-between"><div><h4>Automatic training audience</h4><p class="muted">Choose who requires training when this version is approved. Department and person selections are combined. Everyone covers all current and future active users.</p></div></div><label class="check-row audience-everyone"><input id="approvalAssignEveryone" type="checkbox" ${a.everyone?'checked':''}> <strong>Everyone</strong> — company-wide requirement</label><div class="form-grid"><label>Completion due after assignment<input id="approvalAssignDueDays" type="number" min="1" max="365" value="${a.dueDays||14}"><span class="muted">days</span></label></div><div class="audience-grid"><div><h5>Departments</h5><div class="checkbox-list">${deptRows}</div></div><div><h5>Specific people</h5><div class="checkbox-list">${peopleRows||'<span class="muted">No active users.</span>'}</div></div></div><div id="approvalAudienceSummary" class="hint-box"></div></div>`;
+}
+function approvalAudienceSelection(){
+  const everyone=!!$('approvalAssignEveryone')?.checked,departmentIds=[...document.querySelectorAll('.approval-department-choice:checked')].map(x=>x.value),userIds=[...document.querySelectorAll('.approval-person-choice:checked')].map(x=>x.value),dueDays=Math.max(1,Math.min(365,Number($('approvalAssignDueDays')?.value||14)));
+  return {everyone,departmentIds,userIds,dueDays};
+}
+function updateApprovalAudienceSummary(){
+  const box=$('approvalAudienceSummary');if(!box)return;const a=approvalAudienceSelection(),people=activePeople(),ids=new Set();
+  document.querySelectorAll('.approval-department-choice,.approval-person-choice').forEach(x=>x.disabled=a.everyone);
+  if(a.everyone)people.forEach(p=>ids.add(p.id));else{people.forEach(p=>{const dep=userDepartmentId(p.id);if((dep&&a.departmentIds.includes(dep))||a.userIds.includes(p.id))ids.add(p.id)})}
+  const bits=[];if(a.everyone)bits.push('Everyone');else{if(a.departmentIds.length)bits.push(`${a.departmentIds.length} department${a.departmentIds.length===1?'':'s'}`);if(a.userIds.length)bits.push(`${a.userIds.length} specific person${a.userIds.length===1?'':'s'}`)}
+  box.innerHTML=ids.size?`<strong>${ids.size} active user${ids.size===1?'':'s'} will be assigned automatically.</strong> ${esc(bits.join(' + '))}`:'<strong>No automatic training audience selected.</strong> You can still use manual Training assignments later.';
+}
+function wireApprovalAudience(){
+  const section=$('approvalAudienceSection');if(!section)return;
+  const decision=$('approvalDecision'),toggle=()=>{section.hidden=decision?decision.value!=='APPROVED':false};decision?.addEventListener('change',toggle);toggle();
+  section.addEventListener('change',updateApprovalAudienceSummary);updateApprovalAudienceSummary();
+}
+function showDocumentAudience(id){
+  if(!isManager())return;
+  const d=state.documents.find(x=>x.id===id),v=approvedCurrentVersion(id);if(!d||!v)return toast('Only an approved/current document can have an automatic training audience.');
+  if(!documentUsesFormalTraining(d))return toast('Automatic training audiences apply to approved Risk Assessments, COSHH Risk Assessments and SSW documents.');
+  openModal('Edit training audience',`<div class="section-card"><h3>${esc(d.reference?d.reference+' - '+documentDisplayTitle(d):documentDisplayTitle(d))}</h3><div class="meta"><span class="badge complete">Approved/current · v${esc(v.version_label||'—')}</span></div><div class="hint-box"><strong>This does not change the approved document.</strong> It only changes who is required to complete the linked training. Existing completed sign-offs/evidence are retained.</div></div>${approvalAudienceHtml(d)}<div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Save training audience','primary',`data-save-doc-audience="${d.id}"`)}</div>`);
+  wireApprovalAudience();
+}
+async function saveDocumentAudience(id){
+  if(!isManager())return;
+  const d=state.documents.find(x=>x.id===id),v=approvedCurrentVersion(id);if(!d||!v)return toast('Approved/current document not found.');
+  const audience=approvalAudienceSelection();
+  const r=await sb.rpc('set_document_training_audience_v230',{p_document_id:id,p_everyone:audience.everyone,p_department_ids:audience.departmentIds,p_user_ids:audience.userIds,p_due_days:audience.dueDays});
+  if(r.error)return toast(r.error.message);
+  const sr=await sb.rpc('sync_training_audience_assignments_v230',{p_document_id:id,p_user_id:null});if(sr.error)return toast(`Audience saved, but assignment sync failed: ${sr.error.message}`);
+  closeModal();await refresh(`Training audience updated. ${Number(sr.data||0)} assignment change${Number(sr.data||0)===1?'':'s'} applied.`);
+}
+
+function approvalContextLabel(v){return ({INITIAL_ISSUE:'Initial issue',REVISED_VERSION:'Revised version',POST_INCIDENT_REVIEW:'Following incident / near miss',SCHEDULED_REVIEW_CHANGE:'Change from scheduled review',AUDIT_OR_OTHER_CHANGE:'Audit / other change',OTHER:'Other'})[v]||String(v||'').replaceAll('_',' ')}
+function showVersionApproval(versionId){
+  if(!isManager())return;
+  const v=state.versions.find(x=>x.id===versionId),d=state.documents.find(x=>x.id===v?.document_id);if(!v||!d)return;
+  if(versionApprovalStatus(v)!=='PENDING')return toast('This version is no longer pending approval.');
+  const opened=hasOpenedVersion(v.id),current=approvedCurrentVersion(d.id),isSds=d.doc_type==='SDS';
+  openModal(isSds?'Review & accept document':'Review & approve document',`<div class="document-status-card traffic-amber section-card"><div class="row-between"><div><h3>${esc(d.reference?d.reference+' - '+documentDisplayTitle(d):documentDisplayTitle(d))}</h3><div class="meta"><span class="badge due">${esc(versionApprovalLabel(v,d))}</span><span>v${esc(v.version_label||'—')}</span><span>Issue ${fmtDate(v.issue_date)}</span>${isSds?'':`<span>Review ${fmtDate(v.review_date)}</span>`}</div></div><span id="approvalOpenStatus" data-version-id="${v.id}" class="badge ${opened?'complete':'due'}">${opened?'Opened ✓':'Not opened'}</span></div>${current&&current.id!==v.id?`<div class="request-note">Approved/current v${esc(current.version_label||'—')} remains in use until this decision is approved.</div>`:'<div class="pending-use-warning">This version is not authorised for use or Training yet.</div>'}<div class="row">${btn('Open pending file','secondary',`data-open-doc="${v.id}"`)}</div></div><div class="form-grid"><label>Approval context<select id="approvalContext"><option value="${current?'REVISED_VERSION':'INITIAL_ISSUE'}">${current?'Revised version':'Initial issue'}</option><option value="POST_INCIDENT_REVIEW">Following incident / near miss</option><option value="SCHEDULED_REVIEW_CHANGE">Change from scheduled review</option><option value="AUDIT_OR_OTHER_CHANGE">Audit / other change</option><option value="OTHER">Other</option></select></label><label>Decision<select id="approvalDecision"><option value="APPROVED">${isSds?'Accept for records / use':'Approve for use'}</option><option value="REJECTED">Return for changes</option></select></label><label class="full">Decision notes<textarea id="approvalNote" placeholder="Record checks made, any conditions, or reason for return."></textarea></label>${signatureBlock('approval')}<label class="check-row full"><input id="approvalAck" type="checkbox"> I confirm this ${isSds?'acceptance':'approval'} decision and digital signature.</label></div>${approvalAudienceHtml(d)}<div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn(isSds?'Save acceptance decision':'Save approval decision','primary',`data-save-version-approval="${v.id}"`)}</div>`);
+  setupSignaturePad('approvalSignaturePad','approvalClearSignature');wireApprovalAudience();
+}
+async function saveVersionApproval(versionId){
+  if(!isManager())return;
+  const v=state.versions.find(x=>x.id===versionId),d=state.documents.find(x=>x.id===v?.document_id);if(!v||!d)return;
+  if(versionApprovalStatus(v)!=='PENDING')return toast('This version is no longer pending approval.');
+  if(!hasOpenedVersion(v.id))return toast('Open the exact pending PDF before approving or accepting it.');
+  if(!$('approvalAck')?.checked)return toast('Tick the confirmation first.');
+  const decision=$('approvalDecision')?.value,context=$('approvalContext')?.value,note=clean($('approvalNote')?.value),sig=signatureData('approvalSignaturePad'),sigName=clean($('approvalSignatureName')?.value),audience=documentUsesFormalTraining(d)?approvalAudienceSelection():null;
+  if(!sig||!sigName)return toast('Digital signature and signature name are required.');
+  if(decision==='REJECTED'&&note.length<5)return toast('Add a short reason for returning the document for changes.');
+  let r;
+  if(decision==='APPROVED'&&audience){
+    r=await sb.rpc('decide_document_version_with_audience_v230',{p_document_version_id:v.id,p_decision:decision,p_context:context,p_note:note||null,p_signature_data:sig,p_signature_name:sigName,p_everyone:audience.everyone,p_department_ids:audience.departmentIds,p_user_ids:audience.userIds,p_due_days:audience.dueDays});
+  }else{
+    r=await sb.rpc('decide_document_version_v221',{p_document_version_id:v.id,p_decision:decision,p_context:context,p_note:note||null,p_signature_data:sig,p_signature_name:sigName});
   }
-
-  async function toggleFavourite(itemId) {
-    const current=itemPref(itemId);
-    const value=!current?.favourite;
-    const now=new Date().toISOString();
-    let error;
-    if(current){({error}=await sb.from('user_item_preferences').update({favourite:value,last_viewed_at:now}).eq('user_id',S.profile.id).eq('item_id',itemId));}
-    else {({error}=await sb.from('user_item_preferences').insert({user_id:S.profile.id,item_id:itemId,favourite:value,last_viewed_at:now,view_count:1}));}
-    if(error){setNotice(parseError(error),'error');render();return;}
-    await loadData({transactions:false});
-    openItem(itemId);
-  }
-
-  function companyPopularItems(limit=6) {
-    const totals=new Map();
-    S.transactions.filter(countsAsUsage).forEach(t=>totals.set(t.item_id,(totals.get(t.item_id)||0)+num(t.quantity)));
-    return [...totals.entries()].map(([id,q])=>({item:byId(S.items,id),q})).filter(x=>x.item?.active).sort((a,b)=>b.q-a.q).slice(0,limit);
-  }
-
-  function dashboardPersonalHtml() {
-    if(!S.profile) return '';
-    const fav=S.userPrefs.filter(x=>x.user_id===S.profile.id&&x.favourite).map(x=>byId(S.items,x.item_id)).filter(i=>i?.active).slice(0,6);
-    const recent=S.userPrefs.filter(x=>x.user_id===S.profile.id&&x.last_viewed_at).sort((a,b)=>new Date(b.last_viewed_at)-new Date(a.last_viewed_at)).map(x=>byId(S.items,x.item_id)).filter(i=>i?.active&&!fav.some(f=>f.id===i.id)).slice(0,6);
-    const popular=companyPopularItems(6);
-    const cards=(items,metric='')=>items.length?`<div class="quick-grid">${items.map(x=>{const i=x.item||x;return `<button class="quick-item" data-item="${i.id}">${i.primary_photo_path?`<img class="item-thumb" data-photo-path="${esc(i.primary_photo_path)}" alt="">`:''}<span><strong>${esc(i.name)}</strong><small>${metric&&x.q!=null?`${qty(x.q)} used overall · `:''}${qty(itemTotal(i.id))} in stock</small></span></button>`;}).join('')}</div>`:'<p class="muted">Nothing here yet.</p>';
-    return `<div class="personal-grid" style="margin-top:1rem"><div class="card"><h3>My Favourites</h3>${cards(fav)}</div><div class="card"><h3>My Recent Items</h3>${cards(recent)}</div><div class="card"><h3>Company Popular</h3>${cards(popular,'used')}</div></div>`;
-  }
-
-  async function archiveItem(item) {
-    if(!canAdmin())return;
-    const stock=itemTotal(item.id);
-    const reason=prompt(`Archive ${item.name}?${stock>0?` WARNING: ${qty(stock)} units are still in stock.`:''}\n\nOptional reason:`, 'No longer stocked');
-    if(reason===null)return;
-    const {error}=await sb.from('items').update({active:false,archived_at:new Date().toISOString(),archived_by:S.profile.id,archive_reason:reason||null,updated_at:new Date().toISOString()}).eq('id',item.id);
-    if(error){setNotice(parseError(error),'error');render();return;}
-    await loadData();closeModal();setNotice('Item archived. History has been kept.');render();
-  }
-
-  async function restoreItem(item) {
-    if(!canAdmin())return;
-    const {error}=await sb.from('items').update({active:true,archived_at:null,archived_by:null,archive_reason:null,updated_at:new Date().toISOString()}).eq('id',item.id);
-    if(error){setNotice(parseError(error),'error');render();return;}
-    await loadData();closeModal();setNotice('Item restored.');render();
-  }
-
-  function assignedOpenStocktake() {
-    return S.stocktakeTasks.find(t=>t.assigned_user_id===S.profile?.id&&['OPEN','OVERDUE'].includes(t.status)) || null;
-  }
-  function stocktakeItemsFor(taskId){return S.stocktakeItems.filter(x=>x.task_id===taskId);}
-
-  function stocktakeHtml() {
-    const task=assignedOpenStocktake();
-    const myHistory=S.stocktakeTasks.filter(t=>t.assigned_user_id===S.profile?.id&&t.status==='COMPLETED').slice(0,10);
-    const taskBlock=task?`<div class="card"><h2>${task.status==='OVERDUE'?'Overdue':'Assigned'} stocktake</h2><p class="muted">Due ${fmtDate(task.due_at)}. Count the actual quantity in each location/bin. Differences create audited stock adjustments when you complete the task.</p><div class="table-wrap"><table><thead><tr><th>Item</th><th>Location / Bin</th><th>Expected</th><th>Counted</th></tr></thead><tbody>${stocktakeItemsFor(task.id).map(x=>`<tr><td>${esc(itemName(x.item_id))}</td><td>${esc(locName(x.location_id))}</td><td>${qty(x.expected_quantity)}</td><td><input class="stocktake-count" data-stocktake-item="${x.id}" type="number" inputmode="decimal" min="0" step="0.01" value="${x.counted_quantity??''}" placeholder="Count"></td></tr>`).join('')}</tbody></table></div><div class="actions"><button class="btn good" id="completeStocktake">Complete stocktake</button></div></div>`:`<div class="card"><h2>Stocktake</h2><p>No stocktake is currently assigned to you.</p><p class="muted">The tracker creates the next random task automatically when the configured interval is due.</p></div>`;
-    const admin=canAdmin()?`<div class="card" style="margin-top:1rem"><h3>Admin stocktake settings</h3><form id="stocktakeSettingsForm" class="form-grid"><div><label>Enabled</label><select id="stocktakeEnabled"><option value="true" ${S.stocktakeSettings?.enabled!==false?'selected':''}>Yes</option><option value="false" ${S.stocktakeSettings?.enabled===false?'selected':''}>No</option></select></div><div><label>Interval (days)</label><input id="stocktakeInterval" type="number" min="1" max="365" value="${S.stocktakeSettings?.interval_days||14}"></div><div><label>Items per task</label><input id="stocktakeCount" type="number" min="1" max="100" value="${S.stocktakeSettings?.item_count||12}"></div><div><label>Due within (days)</label><input id="stocktakeDueDays" type="number" min="1" max="60" value="${S.stocktakeSettings?.due_days||7}"></div><div class="full"><div class="muted">Next automatic task: ${fmtDate(S.stocktakeSettings?.next_task_at)}</div><div class="actions"><button class="btn" type="submit">Save stocktake settings</button><button class="btn ghost" type="button" id="generateStocktakeNow">Create next stocktake now</button></div></div></form><h3>Open / overdue tasks</h3>${S.stocktakeTasks.filter(t=>['OPEN','OVERDUE'].includes(t.status)).map(t=>`<div class="item-row"><div><strong>${esc(userName(t.assigned_user_id))}</strong><div class="muted">${stocktakeItemsFor(t.id).length} items · due ${fmtShortDate(t.due_at)} · ${esc(t.status)}</div></div><div><select data-reassign-task="${t.id}">${S.profiles.filter(p=>p.active!==false).map(p=>`<option value="${p.id}" ${p.id===t.assigned_user_id?'selected':''}>${esc(p.display_name)}</option>`).join('')}</select></div></div>`).join('')||'<p class="muted">No open tasks.</p>'}</div>`:'';
-    return `${taskBlock}<div class="card" style="margin-top:1rem"><h3>My completed stocktakes</h3>${myHistory.length?myHistory.map(t=>`<div class="muted">${fmtDate(t.completed_at)} · ${stocktakeItemsFor(t.id).length} items</div>`).join(''):'<p class="muted">No completed stocktakes yet.</p>'}</div>${admin}`;
-  }
-
-  function bindStocktake() {
-    const complete=document.getElementById('completeStocktake');
-    if(complete) complete.onclick=async()=>{
-      const task=assignedOpenStocktake(); if(!task)return;
-      const rows=stocktakeItemsFor(task.id);
-      const values=new Map([...document.querySelectorAll('[data-stocktake-item]')].map(x=>[x.dataset.stocktakeItem,x.value]));
-      if(rows.some(r=>values.get(r.id)==='')){setNotice('Enter a counted quantity for every stocktake item.','error');render();return;}
-      complete.disabled=true;
-      try{
-        for(const row of rows){
-          const counted=num(values.get(row.id));
-          const current=num(S.balances.find(b=>b.item_id===row.item_id&&b.location_id===row.location_id)?.quantity);
-          let txId=null;
-          if(Math.abs(counted-current)>1e-9){
-            const {data,error}=await sb.rpc('apply_stock_transaction',{p_item_id:row.item_id,p_type:'ADJUST',p_quantity:0,p_from_location_id:row.location_id,p_to_location_id:null,p_new_quantity:counted,p_reason:'Stocktake correction',p_reference:task.id,p_notes:'Random scheduled stocktake'});
-            if(error)throw error; txId=data;
-          }
-          const {error}=await sb.from('stocktake_task_items').update({counted_quantity:counted,discrepancy:counted-num(row.expected_quantity),adjusted_transaction_id:txId,completed_at:new Date().toISOString()}).eq('id',row.id);
-          if(error)throw error;
-        }
-        const {error}=await sb.from('stocktake_tasks').update({status:'COMPLETED',completed_at:new Date().toISOString(),completed_by:S.profile.id}).eq('id',task.id);
-        if(error)throw error;
-        await loadData();setNotice('Stocktake completed. Any differences were recorded as audited adjustments.');render();
-      }catch(e){setNotice(parseError(e),'error');render();}
-    };
-    document.querySelectorAll('[data-reassign-task]').forEach(sel=>sel.onchange=async()=>{
-      const {error}=await sb.from('stocktake_tasks').update({assigned_user_id:sel.value}).eq('id',sel.dataset.reassignTask);
-      if(error){setNotice(parseError(error),'error');render();return;}await loadData({transactions:false});setNotice('Stocktake reassigned.');render();
-    });
-    const settings=document.getElementById('stocktakeSettingsForm'); if(settings)settings.onsubmit=async e=>{
-      e.preventDefault();const row={enabled:document.getElementById('stocktakeEnabled').value==='true',interval_days:Math.round(num(document.getElementById('stocktakeInterval').value)),item_count:Math.round(num(document.getElementById('stocktakeCount').value)),due_days:Math.round(num(document.getElementById('stocktakeDueDays').value)),updated_at:new Date().toISOString()};
-      const {error}=await sb.from('stocktake_settings').update(row).eq('singleton',true);if(error){setNotice(parseError(error),'error');render();return;}await loadData({transactions:false});setNotice('Stocktake settings saved.');render();
-    };
-    const generate=document.getElementById('generateStocktakeNow'); if(generate)generate.onclick=async()=>{
-      try{let {error}=await sb.from('stocktake_settings').update({next_task_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq('singleton',true);if(error)throw error;({error}=await sb.rpc('ensure_stocktake_task',{p_force:true}));if(error)throw error;await loadData({transactions:false});setNotice('Stocktake task created if no other task is open.');render();}catch(e){setNotice(parseError(e),'error');render();}
-    };
-  }
-
-  function legacyFilteredRows() {
-    let rows=S.transactions.filter(t=>t.legacy_import);
-    if(S.legacyItemFilter)rows=rows.filter(t=>t.item_id===S.legacyItemFilter);
-    if(S.legacyFrom)rows=rows.filter(t=>new Date(t.occurred_at)>=new Date(S.legacyFrom+'T00:00:00'));
-    if(S.legacyTo)rows=rows.filter(t=>new Date(t.occurred_at)<=new Date(S.legacyTo+'T23:59:59'));
-    return rows;
-  }
-
-
-  function safetyWordTokens(v){
-    const stop=new Set(['the','and','for','with','from','using','use','general','replacement','of','to','in','a','an','guest','room','rooms','item','items']);
-    return [...new Set(String(v||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').split(/\s+/).filter(x=>x.length>2&&!stop.has(x)))];
-  }
-  function safetySuggestionScore(item,entry){
-    const name=String(item?.name||'').toLowerCase(),cat=String(item?.category||'').toLowerCase();
-    const hay=`${String(entry?.reference||'')} ${String(entry?.title||'')} ${String(entry?.type||'')}`.toLowerCase();
-    const itemTokens=safetyWordTokens(`${item?.name||''} ${item?.category||''}`),docTokens=new Set(safetyWordTokens(hay));
-    let score=0,reasons=[];const overlap=itemTokens.filter(t=>docTokens.has(t));
-    if(overlap.length){score+=overlap.length*18;reasons.push(`matching terms: ${overlap.slice(0,4).join(', ')}`);}
-    const rules=[[/electrical|socket|switch|transformer|driver|light fitting|fuse|contactor|relay/,/electrical|isolation|lockout|tagout/,42,'electrical item'],[/bulb|lamp|gu10|mr16|led/,/electrical|light fittings|isolation/,28,'lighting/electrical item'],[/fan coil|fcu|valve actuator|thermostat|air filter|motor/,/fan coil|safe isolation|lockout|tagout/,45,'fan-coil item'],[/plumb|tap|hose|shower rail|waste|trap|valve/,/plumbing|shower|water/,36,'plumbing item'],[/paint|hammerite/,/paint|hazardous paint/,44,'paint item'],[/wd.?40/,/wd.?40|lubricating hinges/,65,'WD-40 product'],[/grout|mapei|ultracolor/,/grout|mapei|tiling/,65,'grout/tiling product'],[/spray adhesive|stick2|adhesive/,/adhesive|stick2|flooring/,60,'adhesive product'],[/diesel/,/diesel|sprinkler engine/,60,'diesel item'],[/solder/,/solder/,60,'soldering item'],[/shower head|descaler/,/shower head|descaler|sanitiser/,60,'shower-head/descaling item'],[/whirlpool|spa|hot tub/,/whirlpool|spa|hot tub|pro-kleen/,60,'whirlpool cleaner'],[/ahu.*belt|drive belt/,/ahu|drive belt/,60,'AHU belt item'],[/glass.*screen|shower screen/,/glass|shower.*screen/,55,'glass screen item'],[/tool|cutter|drill|saw|grinder/,/hand tools|powered hand tools|equipment/,30,'tool/equipment item']];
-    for(const [a,b,pts,label] of rules){if((a.test(name)||a.test(cat))&&b.test(hay)){score+=pts;reasons.push(label);}}
-    for(const f of (S.safetyBridgeFeedback||[])){if(f.target_kind!==entry.target_kind||f.safety_target_id!==entry.target_id)continue;const sameCat=String(f.item_category_snapshot||'').toLowerCase()===cat&&cat;const fTokens=safetyWordTokens(f.item_name_snapshot||'');const common=fTokens.filter(t=>itemTokens.includes(t)).length;if(f.decision==='APPROVED'){if(sameCat){score+=35;reasons.push('learned from approved item in same category');}if(common){score+=Math.min(35,common*15);reasons.push('learned from similar approved item');}}else if(f.decision==='REJECTED'){if(sameCat)score-=45;if(common)score-=Math.min(55,common*20);}}
-    return {score,reasons:[...new Set(reasons)]};
-  }
-  function generateSafetySuggestions(){
-    const linked=new Set((S.safetyBridgeLinks||[]).filter(x=>x.active!==false).map(x=>`${x.item_id}|${x.target_kind}|${x.safety_target_id}`));
-    const rejected=new Set((S.safetyBridgeFeedback||[]).filter(x=>x.decision==='REJECTED').map(x=>`${x.item_id}|${x.target_kind}|${x.safety_target_id}`));
-    const out=[];for(const item of S.items.filter(x=>x.active)){for(const entry of (S.safetyCatalogue||[])){const key=`${item.id}|${entry.target_kind}|${entry.target_id}`;if(linked.has(key)||rejected.has(key))continue;const r=safetySuggestionScore(item,entry);if(r.score>=45)out.push({item_id:item.id,item_name:item.name,item_category:item.category||'',entry,score:r.score,reasons:r.reasons});}}
-    out.sort((a,b)=>b.score-a.score||a.item_name.localeCompare(b.item_name));const per=new Map(),trim=[];for(const x of out){const n=per.get(x.item_id)||0;if(n>=4)continue;per.set(x.item_id,n+1);trim.push(x);}S.safetySuggestions=trim;S.safetySuggestionsGenerated=true;return trim;
-  }
-  async function saveSafetyFeedback(s,decision){const e=s.entry;const {error}=await sb.rpc('save_safety_bridge_feedback_v843',{p_item_id:s.item_id,p_target_kind:e.target_kind,p_safety_target_id:e.target_id,p_safety_reference:e.reference||null,p_safety_title:e.title,p_safety_type:e.type||null,p_decision:decision});if(error)throw error;}
-
-  function safetyBridgeHtml(){
-    if(!canAdmin())return '<div class="notice error">Admin access required.</div>';
-    const settings=S.safetyBridgeSettings||{enabled:false},activeItems=S.items.filter(i=>i.active).sort((a,b)=>a.name.localeCompare(b.name));
-    const selected=S.selectedItemId&&activeItems.some(i=>i.id===S.selectedItemId)?S.selectedItemId:(activeItems[0]?.id||'');if(selected&&!S.selectedItemId)S.selectedItemId=selected;
-    const links=selected?safetyLinksForItem(selected):[],catalogue=S.safetyCatalogue||[],linkedIds=new Set(links.map(x=>`${x.target_kind}:${x.safety_target_id}`));
-    const options=catalogue.filter(x=>!linkedIds.has(`${x.target_kind}:${x.target_id}`)).map(x=>`<option value="${esc(x.target_kind)}|${esc(x.target_id)}">${esc((x.reference?x.reference+' - ':'')+x.title)} · ${esc(x.type||x.target_kind)}</option>`).join('');
-    const linkRows=links.map(x=>`<div class="item-row"><div><strong>${esc((x.safety_reference?x.safety_reference+' - ':'')+x.safety_title)}</strong><div class="muted">${esc(x.safety_type||x.target_kind)}</div></div><button class="btn danger small" data-remove-safety-link="${x.id}">Remove</button></div>`).join('')||'<p class="muted">No approved Safety Tracker links for this item yet.</p>';
-    const suggestions=S.safetySuggestionsGenerated?S.safetySuggestions:[];
-    const suggestionRows=suggestions.slice(0,120).map((x,idx)=>`<div class="item-row safety-suggestion"><div><strong>${esc(x.item_name)}</strong><div>${esc((x.entry.reference?x.entry.reference+' - ':'')+x.entry.title)}</div><div class="muted">${esc(x.entry.type||x.entry.target_kind)} · confidence ${Math.min(99,Math.max(1,Math.round(x.score)))}${x.reasons.length?` · ${esc(x.reasons.slice(0,2).join('; '))}`:''}</div></div><div class="actions compact"><button class="btn small" data-approve-safety-suggestion="${idx}">Approve</button><button class="btn ghost small" data-reject-safety-suggestion="${idx}">Not relevant</button></div></div>`).join('')||'<p class="muted">No unreviewed suggestions at the moment.</p>';
-    const eventRows=(S.safetyBridgeEvents||[]).map(e=>`<tr><td>${fmtDate(e.created_at)}</td><td>${esc(e.user_name||'Unknown')}</td><td>${esc(e.item_name||'Unknown')}</td><td>${esc(e.event_type.replaceAll('_',' '))}</td><td>${e.attempted_quantity==null?'—':qty(e.attempted_quantity)}</td><td>${esc((e.safety_snapshot?.lacking||[]).map(x=>x.reference||x.title).filter(Boolean).join(', ')||e.safety_snapshot?.message||'—')}</td></tr>`).join('');
-    return `<div class="card"><h2>Safety Bridge <span class="badge ${settings.enabled?'good':''}">${settings.enabled?'ENABLED':'DISABLED'}</span></h2><p class="muted">Optional link between Inventory Tracker and Safety Tracker. Checks happen only when a user taps <strong>Use stock</strong>. Add, Move and Adjust are never checked.</p><div class="notice ${settings.enabled?'warn':''}">${settings.enabled?'<strong>Bridge is ON.</strong> Approved links can stop Use when required training is missing or out of date.':'<strong>Bridge is OFF.</strong> Inventory works exactly as before while you review suggested links.'}</div><label class="ack-check"><input id="safetyBridgeEnabled" type="checkbox" ${settings.enabled?'checked':''}> Enable Safety Bridge</label><p class="muted">This switch saves immediately. Turning it off does not delete links or reports.</p></div>
-    <div class="card" style="margin-top:1rem"><h3>Suggested links — review first</h3><p class="muted">Inventory compares item names and categories with approved Safety Tracker records. Nothing becomes active until you approve it. Approvals and “Not relevant” decisions are remembered and improve later suggestions.</p><div class="actions"><button class="btn" id="generateSafetySuggestions" type="button">${S.safetySuggestionsGenerated?'Refresh suggestions':'Find suggested links'}</button><button class="btn secondary" id="refreshSafetyCatalogue" type="button">Refresh Safety documents</button></div><div style="margin-top:1rem">${S.safetySuggestionsGenerated?suggestionRows:'<p class="muted">Press Find suggested links to create a review list.</p>'}</div></div>
-    <div class="card" style="margin-top:1rem"><h3>Review / manually link an item</h3><label>Inventory item<select id="safetyBridgeItem">${activeItems.map(i=>`<option value="${i.id}" ${i.id===selected?'selected':''}>${esc(i.name)}</option>`).join('')}</select></label><div id="safetyBridgeLinks" style="margin-top:.8rem">${linkRows}</div><div class="form-grid" style="margin-top:1rem"><label>Safety requirement<select id="safetyCatalogueSelect"><option value="">${S.safetyCatalogueLoading?'Loading Safety Tracker…':'Select approved safety record'}</option>${options}</select></label><div class="actions align-end"><button class="btn" id="addSafetyLink" type="button" ${!options?'disabled':''}>Approve link</button></div></div></div>
-    <div class="card" style="margin-top:1rem"><h3>Stopped / cancelled Use attempts</h3><p class="muted">Records blocked, cancelled, successful rechecks and connection failures. It does not alter stock.</p><div class="table-wrap"><table><thead><tr><th>When</th><th>User</th><th>Item</th><th>Event</th><th>Qty</th><th>Safety requirement</th></tr></thead><tbody>${eventRows||'<tr><td colspan="6">No Safety Bridge events yet.</td></tr>'}</tbody></table></div></div>`;
-  }
-
-  async function loadSafetyCatalogue(force=false){
-    if(S.safetyCatalogueLoading)return;
-    if(!force&&(S.safetyCatalogue.length||S.safetyCatalogueAttempted))return;
-    if(force)S.safetyCatalogue=[];
-    S.safetyCatalogueAttempted=true;
-    S.safetyCatalogueLoading=true;if(S.page==='safetybridge')render();
-    try{const out=await callSafetyBridge({action:'catalogue'});S.safetyCatalogue=out.catalogue||[];if(out.safety_app_url&&!S.safetyBridgeSettings?.safety_tracker_url)S.safetyBridgeSettings={...(S.safetyBridgeSettings||{}),safety_tracker_url:out.safety_app_url};if(canAdmin())generateSafetySuggestions();}
-    catch(e){setNotice(`Could not load Safety Tracker catalogue: ${parseError(e)}`,'error');}
-    finally{S.safetyCatalogueLoading=false;if(S.page==='safetybridge')render();}
-  }
-  async function loadSafetyBridgeEvents(){
-    try{const {data,error}=await sb.rpc('safety_bridge_event_report_v836',{p_limit:150});if(error)throw error;S.safetyBridgeEvents=data||[];}catch(e){console.warn('Safety Bridge report unavailable',e);S.safetyBridgeEvents=[];}
-  }
-  function bindSafetyBridge(){
-    if(!canAdmin())return;
-    const toggle=document.getElementById('safetyBridgeEnabled');if(toggle)toggle.onchange=async()=>{const wanted=toggle.checked;toggle.disabled=true;try{const {data,error}=await sb.rpc('set_safety_bridge_enabled_v843',{p_enabled:wanted});if(error)throw error;S.safetyBridgeSettings={...(S.safetyBridgeSettings||{}),enabled:data===true};setNotice(`Safety Bridge ${data===true?'enabled':'disabled'}.`);render();}catch(err){setNotice(`Could not change Safety Bridge: ${parseError(err)}`,'error');await loadData({transactions:false});render();}};
-    const item=document.getElementById('safetyBridgeItem');if(item)item.onchange=()=>{S.selectedItemId=item.value;render();};
-    document.querySelectorAll('[data-remove-safety-link]').forEach(b=>b.onclick=async()=>{try{const {error}=await sb.rpc('set_safety_bridge_item_link_active_v836',{p_link_id:b.dataset.removeSafetyLink,p_active:false});if(error)throw error;await loadData({transactions:false});S.safetySuggestionsGenerated=false;setNotice('Safety link removed.');render();}catch(e){setNotice(parseError(e),'error');render();}});
-    const refresh=document.getElementById('refreshSafetyCatalogue');if(refresh)refresh.onclick=async()=>{S.safetyCatalogueAttempted=false;S.safetySuggestionsGenerated=false;await loadSafetyCatalogue(true);if(S.page==='safetybridge')render();};
-    const gen=document.getElementById('generateSafetySuggestions');if(gen)gen.onclick=async()=>{if(!S.safetyCatalogue.length)await loadSafetyCatalogue(true);generateSafetySuggestions();render();};
-    document.querySelectorAll('[data-approve-safety-suggestion]').forEach(b=>b.onclick=async()=>{const x=S.safetySuggestions[Number(b.dataset.approveSafetySuggestion)];if(!x)return;try{const e=x.entry;const {error}=await sb.rpc('save_safety_bridge_item_link_v836',{p_item_id:x.item_id,p_target_kind:e.target_kind,p_safety_target_id:e.target_id,p_safety_reference:e.reference||null,p_safety_title:e.title,p_safety_type:e.type||null});if(error)throw error;await saveSafetyFeedback(x,'APPROVED');await loadData({transactions:false});generateSafetySuggestions();setNotice(`Approved safety link for ${x.item_name}.`);render();}catch(e){setNotice(parseError(e),'error');render();}});
-    document.querySelectorAll('[data-reject-safety-suggestion]').forEach(b=>b.onclick=async()=>{const x=S.safetySuggestions[Number(b.dataset.rejectSafetySuggestion)];if(!x)return;try{await saveSafetyFeedback(x,'REJECTED');await loadData({transactions:false});generateSafetySuggestions();setNotice('Marked not relevant. Future suggestions will learn from this.');render();}catch(e){setNotice(parseError(e),'error');render();}});
-    const add=document.getElementById('addSafetyLink');if(add)add.onclick=async()=>{const sel=document.getElementById('safetyCatalogueSelect');if(!sel?.value||!S.selectedItemId)return;const [kind,id]=sel.value.split('|');const entry=S.safetyCatalogue.find(x=>x.target_kind===kind&&x.target_id===id);if(!entry)return;const x={item_id:S.selectedItemId,entry};try{const {error}=await sb.rpc('save_safety_bridge_item_link_v836',{p_item_id:S.selectedItemId,p_target_kind:entry.target_kind,p_safety_target_id:entry.target_id,p_safety_reference:entry.reference||null,p_safety_title:entry.title,p_safety_type:entry.type||null});if(error)throw error;await saveSafetyFeedback(x,'APPROVED');await loadData({transactions:false});S.safetySuggestionsGenerated=false;setNotice('Safety requirement approved and linked to inventory item.');render();}catch(e){setNotice(parseError(e),'error');render();}};
-    if(!S.safetyCatalogue.length&&!S.safetyCatalogueLoading&&!S.safetyCatalogueAttempted)setTimeout(()=>loadSafetyCatalogue(),0);
-    if(!S.safetyBridgeEvents.length)setTimeout(async()=>{await loadSafetyBridgeEvents();if(S.page==='safetybridge')render();},0);
-  }
-
-  function legacyReviewHtml() {
-    if(!canAdmin())return '<div class="notice error">Admin access required.</div>';
-    const rows=legacyFilteredRows();
-    const included=rows.filter(countsAsUsage).reduce((a,t)=>a+num(t.quantity),0);
-    return `<div class="card"><h2>Legacy Review</h2><p class="muted">Reclassify old InStock decreases without changing the historic stock balances. Only records classified as <strong>Use</strong> count toward usage trends and Suggested Orders.</p><div class="form-grid"><div><label>Item</label><select id="legacyItem"><option value="">All legacy items</option>${S.items.map(i=>`<option value="${i.id}" ${S.legacyItemFilter===i.id?'selected':''}>${esc(i.name)}</option>`).join('')}</select></div><div><label>From</label><input id="legacyFrom" type="date" value="${esc(S.legacyFrom)}"></div><div><label>To</label><input id="legacyTo" type="date" value="${esc(S.legacyTo)}"></div></div><div class="notice">Filtered records: ${rows.length} · Currently counted as usage: ${qty(included)}</div><div class="toolbar"><select id="legacyClassification"><option value="USE">Use / consumption</option><option value="ADJUSTMENT">Stock adjustment</option><option value="DAMAGE_LOSS">Damage / loss</option><option value="TRANSFER">Transfer / move</option><option value="EXCLUDE">Exclude from usage</option></select><button class="btn" id="applyLegacyReview">Apply to selected</button></div></div><div class="card" style="margin-top:1rem"><div class="table-wrap"><table><thead><tr><th><input id="legacySelectAll" type="checkbox"></th><th>Date</th><th>Item</th><th>Qty</th><th>Current treatment</th><th>Reviewed by</th></tr></thead><tbody>${rows.slice(0,300).map(t=>`<tr><td><input type="checkbox" data-legacy-row="${t.id}"></td><td>${fmtDate(t.occurred_at)}</td><td>${esc(itemName(t.item_id))}</td><td>${qty(t.quantity)}</td><td>${esc(t.legacy_classification||'Use (unreviewed)')}${t.exclude_from_usage?' · Excluded':''}</td><td>${t.legacy_reviewed_by?esc(userName(t.legacy_reviewed_by)):'—'}</td></tr>`).join('')||'<tr><td colspan="6">No matching legacy records.</td></tr>'}</tbody></table></div>${rows.length>300?'<p class="muted">Showing newest 300 filtered records. Narrow the filters to review older records.</p>':''}</div>`;
-  }
-
-  function bindLegacyReview() {
-    const item=document.getElementById('legacyItem'); if(item)item.onchange=()=>{S.legacyItemFilter=item.value;render();};
-    const from=document.getElementById('legacyFrom'); if(from)from.onchange=()=>{S.legacyFrom=from.value;render();};
-    const to=document.getElementById('legacyTo'); if(to)to.onchange=()=>{S.legacyTo=to.value;render();};
-    const all=document.getElementById('legacySelectAll'); if(all)all.onchange=()=>document.querySelectorAll('[data-legacy-row]').forEach(x=>x.checked=all.checked);
-    const apply=document.getElementById('applyLegacyReview'); if(apply)apply.onclick=async()=>{
-      const ids=[...document.querySelectorAll('[data-legacy-row]:checked')].map(x=>x.dataset.legacyRow);if(!ids.length){setNotice('Select at least one legacy record.','error');render();return;}
-      const classification=document.getElementById('legacyClassification').value;
-      const {data,error}=await sb.rpc('review_legacy_transactions',{p_ids:ids,p_classification:classification});
-      if(error){setNotice(parseError(error),'error');render();return;}await loadData();setNotice(`${data||ids.length} legacy record(s) reviewed.`);render();
-    };
-  }
-
-
-
-
-
-
-
-
-  function backupHtml() {
-    if(!canAdmin()) return '<div class="notice error">Admin access required.</div>';
-    const last=lastBackupAt();
-    const status=S.backupStatus
-      ? `<div class="notice ${S.backupRunning?'':'success'}">${esc(S.backupStatus)}</div>`
-      : '';
-    return `<div class="card">
-      <h2>Admin backup</h2>
-      <p class="muted">Creates a dated ZIP backup on this device. It includes the inventory database records and, by default, uploaded item photos.</p>
-      <div class="notice"><strong>Not included:</strong> user passwords, Supabase database password, publishable/secret keys, or authentication secrets.</div>
-      <div class="grid cards" style="margin-top:1rem">
-        <div class="card"><div class="muted">Last backup on this device</div><div>${last?esc(fmtDate(last)):'Never'}</div></div>
-        <div class="card"><div class="muted">Reminder</div><div>${backupDue()?'Backup due':'Up to date'}</div></div>
-      </div>
-      <label class="ack-check" style="margin-top:1rem"><input id="backupFiles" type="checkbox" checked> Include item photos</label>
-      <div class="actions">
-        <button class="btn good" id="backupNow" ${S.backupRunning?'disabled':''}>${S.backupRunning?'Creating backup…':'Back up now'}</button>
-      </div>
-      ${status}
-      <p class="muted">Weekly is a sensible default for this tracker. The reminder is stored on the device that creates the backup.</p>
-    </div>`;
-  }
-
-  const backupTables = [
-    'items',
-    'stock_locations',
-    'stock_balances',
-    'transactions',
-    'profiles',
-    'inventory_categories',
-    'item_suppliers',
-    'purchase_orders',
-    'user_item_preferences',
-    'stocktake_settings',
-    'stocktake_tasks',
-    'stocktake_task_items'
-  ];
-
-  function csvFromObjects(rows) {
-    if(!rows?.length) return '\ufeff';
-    const keys=[...new Set(rows.flatMap(r=>Object.keys(r||{})))];
-    const quote=v=>{
-      if(v===null||v===undefined) return '""';
-      const x=typeof v==='object' ? JSON.stringify(v) : String(v);
-      return `"${x.replace(/"/g,'""')}"`;
-    };
-    return '\ufeff'+[
-      keys.map(quote).join(','),
-      ...rows.map(r=>keys.map(k=>quote(r?.[k])).join(','))
-    ].join('\n');
-  }
-
-  async function downloadStorageFile(bucket,path) {
-    if(!path) return null;
-    const {data,error}=await sb.storage.from(bucket).download(path);
-    if(error) throw error;
-    return data;
-  }
-
-  async function createAdminBackup(includeFiles=true) {
-    if(!canAdmin()) throw new Error('Admin access required');
-    if(!window.JSZip) throw new Error('Backup ZIP library did not load. Refresh while online and try again.');
-
-    const zip=new JSZip();
-    const dbFolder=zip.folder('database');
-    const fileFolder=zip.folder('files');
-    const manifest={
-      backup_format:'inventory-tracker-backup-v1',
-      created_at:new Date().toISOString(),
-      created_by:{id:S.profile?.id||null,name:S.profile?.display_name||null,role:S.profile?.role||null},
-      app_version:'8.3.4',
-      project_url:cfg.supabaseUrl,
-      tables:{},
-      uploaded_files:{requested:!!includeFiles,downloaded:0,failed:[]}
-    };
-
-    for(let i=0;i<backupTables.length;i++){
-      const table=backupTables[i];
-      S.backupStatus=`Backing up database ${i+1}/${backupTables.length}: ${table}`;
-      render();
-      const rows=await fetchAll(table,'*');
-      manifest.tables[table]=rows.length;
-      dbFolder.file(`${table}.json`,JSON.stringify(rows,null,2));
-      dbFolder.file(`${table}.csv`,csvFromObjects(rows));
-    }
-
-    if(includeFiles){
-      const items=JSON.parse(await dbFolder.file('items.json').async('string'));
-      const targets=[];
-      const seen=new Set();
-
-      for(const item of items){
-        const path=String(item.primary_photo_path||'').trim();
-        const key=`item-photos:${path}`;
-        if(path && !seen.has(key)){
-          seen.add(key);
-          targets.push({bucket:'item-photos',path,folder:'item-photos'});
-        }
-      }
-
-      for(let i=0;i<targets.length;i++){
-        const t=targets[i];
-        S.backupStatus=`Downloading uploaded files ${i+1}/${targets.length}`;
-        render();
-        try{
-          const blob=await downloadStorageFile(t.bucket,t.path);
-          fileFolder.folder(t.folder).file(t.path,blob);
-          manifest.uploaded_files.downloaded++;
-        }catch(e){
-          manifest.uploaded_files.failed.push({
-            bucket:t.bucket,
-            path:t.path,
-            error:parseError(e)
-          });
-        }
-      }
-    }
-
-    zip.file('manifest.json',JSON.stringify(manifest,null,2));
-    zip.file('README.txt',
-`Inventory Tracker backup
-
-Created: ${manifest.created_at}
-Created by: ${manifest.created_by.name||'Unknown admin'}
-
-This ZIP contains database exports in both JSON and CSV format.
-Uploaded item photos are included when requested and accessible.
-
-This backup does NOT contain passwords, Supabase secret keys, or database credentials.
-
-Keep this file somewhere secure.
-`);
-
-    S.backupStatus='Creating ZIP file…';
-    render();
-    const blob=await zip.generateAsync({
-      type:'blob',
-      compression:'DEFLATE',
-      compressionOptions:{level:6}
-    });
-
-    const stamp=new Date().toISOString().replace(/[:.]/g,'-');
-    const filename=`Inventory-Backup-${stamp}.zip`;
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');
-    a.href=url;
-    a.download=filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url),3000);
-
-    localStorage.setItem(backupStorageKey,new Date().toISOString());
-    return {filename,manifest};
-  }
-
-  function bindBackup() {
-    const btn=document.getElementById('backupNow');
-    if(!btn) return;
-    btn.onclick=async()=>{
-      if(S.backupRunning) return;
-      const includeFiles=document.getElementById('backupFiles')?.checked !== false;
-      S.backupRunning=true;
-      S.backupStatus='Starting backup…';
-      render();
-      try{
-        const result=await createAdminBackup(includeFiles);
-        S.backupStatus=`Backup downloaded: ${result.filename}${result.manifest.uploaded_files.failed.length?` · ${result.manifest.uploaded_files.failed.length} uploaded file(s) could not be downloaded and are listed in the manifest.`:''}`;
-      }catch(e){
-        S.backupStatus='';
-        setNotice(`Backup failed: ${parseError(e)}`,'error');
-      }finally{
-        S.backupRunning=false;
-        render();
-      }
-    };
-  }
-
-  function bindPage() {
-    document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>{if(b.dataset.orderTabGo)S.orderTab=b.dataset.orderTabGo;navigatePage(b.dataset.go);});
-    document.querySelectorAll('[data-item]').forEach(el=>el.onclick=()=>openItem(el.dataset.item));
-    if(S.page==='dashboard') {
-      const b=document.getElementById('dashAddItem'); if(b) b.onclick=openAddItem;
-    }
-    if(S.page==='scan') bindScan();
-    if(S.page==='items') bindItems();
-    if(S.page==='locations') bindLocations();
-    if(S.page==='orders') bindOrders();
-    if(S.page==='stocktake') bindStocktake();
-    if(S.page==='reports') bindReports();
-    if(S.page==='users') bindUsers();
-    if(S.page==='binsetup') bindBinSetup();
-    if(S.page==='safetybridge') bindSafetyBridge();
-    if(S.page==='legacy') bindLegacyReview();
-    if(S.page==='backup') bindBackup();
-    hydrateItemThumbnails(document);
-  }
-
-  function bindScan() {
-    const find=()=>findScanned(document.getElementById('scanText').value.trim());
-    document.getElementById('scanFind').onclick=find;
-    document.getElementById('scanText').onkeydown=e=>{if(e.key==='Enter') find();};
-    document.getElementById('stopScan').onclick=stopScanner;
-
-    const smallBtn=document.getElementById('smallQrBtn');
-    if(smallBtn) smallBtn.onclick=toggleSmallQrMode;
-    const torchBtn=document.getElementById('torchBtn');
-    if(torchBtn) torchBtn.onclick=toggleTorch;
-    const refocusBtn=document.getElementById('refocusBtn');
-    if(refocusBtn) refocusBtn.onclick=refocusCamera;
-    const zoomSlider=document.getElementById('zoomSlider');
-    if(zoomSlider) zoomSlider.oninput=()=>setCameraZoom(Number(zoomSlider.value));
-
-    const photoBtn=document.getElementById('scanPhotoBtn');
-    const photoInput=document.getElementById('scanPhotoInput');
-    if(photoBtn && photoInput) {
-      photoBtn.onclick=()=>photoInput.click();
-      photoInput.onchange=async()=>{
-        const file=photoInput.files && photoInput.files[0];
-        if(!file || !window.Html5Qrcode) return;
-        const status=document.getElementById('scanStatus');
-        try {
-          if(status) status.textContent='Reading QR from photo…';
-          await stopScanner();
-          let decoded=await decodeQrFromPhoto(file);
-          if(!decoded && window.Html5Qrcode) {
-            let decoder=document.getElementById('photoQrDecoder');
-            if(!decoder) {
-              decoder=document.createElement('div');
-              decoder.id='photoQrDecoder';
-              decoder.className='hidden';
-              document.body.appendChild(decoder);
-            }
-            S.scanner=new Html5Qrcode('photoQrDecoder', qrScannerOptions());
-            decoded=await S.scanner.scanFile(file,true);
-          }
-          if(!decoded) throw new Error('No QR found');
-          if(status) { status.className='notice success'; status.textContent='QR found.'; }
-          signalScanSuccess();
-          findScanned(decoded);
-        } catch(e) {
-          if(status) {
-            status.className='notice error';
-            status.textContent='No QR code found in that photo. Try moving closer and keeping the code sharp.';
-          }
-        } finally {
-          photoInput.value='';
-        }
-      };
-    }
-
-    startQrScanner();
-  }
-
-  function qrScannerOptions() {
-    const opts={verbose:false};
-    if(window.Html5QrcodeSupportedFormats) opts.formatsToSupport=[Html5QrcodeSupportedFormats.QR_CODE];
-    return opts;
-  }
-
-  function clamp(v,min,max) {
-    return Math.min(max,Math.max(min,v));
-  }
-
-  function updateCameraControls() {
-    const smallBtn=document.getElementById('smallQrBtn');
-    const torchBtn=document.getElementById('torchBtn');
-    const refocusBtn=document.getElementById('refocusBtn');
-    const reader=document.getElementById('reader');
-    const badge=document.getElementById('scanModeBadge');
-    const zoomWrap=document.getElementById('zoomWrap');
-    const zoomSlider=document.getElementById('zoomSlider');
-    const zoomValue=document.getElementById('zoomValue');
-    if(smallBtn) {
-      smallBtn.setAttribute('aria-pressed',S.smallQrMode?'true':'false');
-      smallBtn.textContent=S.smallQrMode?'Small QR Auto: ON':'Small QR Auto';
-      smallBtn.classList.toggle('active-tool',S.smallQrMode);
-    }
-    if(reader) reader.classList.toggle('small-qr-mode',S.smallQrMode);
-    if(badge) badge.textContent=S.smallQrMode?'Small QR enhanced scan':'Normal scan';
-    const hasTorch=!!S.cameraCaps?.torch;
-    if(torchBtn) {
-      torchBtn.classList.toggle('hidden',!hasTorch);
-      torchBtn.setAttribute('aria-pressed',S.torchOn?'true':'false');
-      torchBtn.textContent=S.torchOn?'Torch: ON':'Torch';
-      torchBtn.classList.toggle('active-tool',S.torchOn);
-    }
-    const focusModes=S.cameraCaps?.focusMode;
-    const canRefocus=Array.isArray(focusModes)&&focusModes.some(x=>['continuous','single-shot','manual'].includes(x));
-    if(refocusBtn) refocusBtn.classList.toggle('hidden',!canRefocus);
-    const z=S.cameraCaps?.zoom;
-    const hasZoom=z&&typeof z.min==='number'&&typeof z.max==='number'&&z.max>z.min;
-    if(zoomWrap) zoomWrap.classList.toggle('hidden',!hasZoom);
-    if(hasZoom&&zoomSlider) {
-      zoomSlider.min=String(z.min);zoomSlider.max=String(z.max);zoomSlider.step=String(z.step||0.1);
-      const current=Number(S.cameraZoom??S.cameraBaseZoom??z.min);
-      zoomSlider.value=String(clamp(current,z.min,z.max));
-      if(zoomValue) zoomValue.textContent=`${Number(zoomSlider.value).toFixed(1)}×`;
-    }
-  }
-
-  async function configureCameraTrack(track) {
-    S.cameraTrack=track;
-    S.cameraCaps=track?.getCapabilities ? track.getCapabilities() : {};
-    const settings=track?.getSettings ? track.getSettings() : {};
-    S.cameraBaseZoom=typeof settings.zoom==='number' ? settings.zoom : (typeof S.cameraCaps?.zoom?.min==='number' ? S.cameraCaps.zoom.min : null);
-    S.cameraZoom=S.cameraBaseZoom;
-    try {
-      const focusModes=S.cameraCaps?.focusMode;
-      if(Array.isArray(focusModes) && focusModes.includes('continuous')) {
-        await track.applyConstraints({advanced:[{focusMode:'continuous'}]});
-      }
-    } catch(_) {}
-    updateCameraControls();
-  }
-
-  async function setCameraZoom(value) {
-    const track=S.cameraTrack, caps=S.cameraCaps?.zoom;
-    if(!track||!caps||typeof caps.min!=='number'||typeof caps.max!=='number')return;
-    const target=clamp(Number(value),caps.min,caps.max);
+  if(r.error)return toast(r.error.message);
+  await logDocumentActivity('CONTROLLED_REVIEW',{...activityVersionSnapshot(v),source_context:'VERSION_APPROVAL'},{decision,context,approval_context:approvalContextLabel(context),note:note||null},false);
+  closeModal();await loadAll();
+  if(decision==='APPROVED'){
+    toast(`${d.doc_type==='SDS'?'Document accepted':'Version approved'}. Updating current links and Training…`);
     try{
-      await track.applyConstraints({advanced:[{zoom:target}]});
-      S.cameraZoom=target;
-      const zoomValue=document.getElementById('zoomValue');if(zoomValue)zoomValue.textContent=`${target.toFixed(1)}×`;
-      const slider=document.getElementById('zoomSlider');if(slider&&Math.abs(Number(slider.value)-target)>.01)slider.value=String(target);
-    }catch(_){}
-  }
+      await runSafetySync({scan:'full',rebuildLinks:true});
+      if(documentUsesFormalTraining(d)){const sr=await sb.rpc('sync_training_audience_assignments_v230',{p_document_id:d.id,p_user_id:null});if(sr.error)console.warn('Audience assignment sync',sr.error)}
+    }catch(e){console.warn('Post-approval sync',e)}
+    await refresh(`${d.doc_type==='SDS'?'Accepted':'Approved'} v${v.version_label||''} is now current.${documentUsesFormalTraining(d)?' Automatic department/person assignments have been recalculated.':' Any required source Training has been updated.'}`);
+  }else await refresh('Version returned for changes. Any previously approved/current version remains in use.');
+}
+function showDocumentReview(id){const d=state.documents.find(x=>x.id===id),v=approvedCurrentVersion(id);if(!v)return toast('Only an approved/current version can have a controlled review. Pending versions use Review & approve.');openModal('Controlled document review',`<p><strong>${esc(d.reference?d.reference+' - '+documentDisplayTitle(d):documentDisplayTitle(d))}</strong> · v${esc(v.version_label)}</p><div class="hint-box">This is the formal management review of the controlled document. It is separate from employee training and file-access records.</div><div class="form-grid"><label>Reason for review<select id="reviewReason"><option value="SCHEDULED_REVIEW">Scheduled review</option><option value="INCIDENT_NEAR_MISS">Incident / near miss</option><option value="PROCESS_EQUIPMENT_CHANGE">Process / equipment change</option><option value="AUDIT_FINDING">Audit finding</option><option value="LEGISLATION_GUIDANCE_CHANGE">Legislation / guidance change</option><option value="OTHER">Other</option></select></label><label>Outcome<select id="reviewOutcome"><option value="NO_CHANGE">No change needed</option><option value="NEW_VERSION_REQUIRED">New version required</option><option value="OTHER_ACTION">Other action required</option></select></label><label id="nextReviewWrap">Next review date<input id="nextReviewDate" type="date" value="${plusYear(todayISO())}"></label><label class="full">Review note<textarea id="reviewNote" placeholder="Record what was checked, findings and actions."></textarea></label>${signatureBlock('review')}<label class="check-row full"><input id="reviewAck" type="checkbox"> I confirm this controlled review and digital signature.</label></div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Save controlled review','primary',`data-save-doc-review="${id}"`)}</div>`);const sync=()=>{$('nextReviewWrap').hidden=$('reviewOutcome').value!=='NO_CHANGE'};$('reviewOutcome').addEventListener('change',sync);sync();setupSignaturePad('reviewSignaturePad','reviewClearSignature')}
+function controlledReviewReasonLabel(v){return ({SCHEDULED_REVIEW:'Scheduled review',INCIDENT_NEAR_MISS:'Incident / near miss',PROCESS_EQUIPMENT_CHANGE:'Process / equipment change',AUDIT_FINDING:'Audit finding',LEGISLATION_GUIDANCE_CHANGE:'Legislation / guidance change',OTHER:'Other'})[v]||v||'Controlled review'}
+async function saveDocumentReview(id){if(!$('reviewAck').checked)return toast('Tick the confirmation first.');const d=state.documents.find(x=>x.id===id),v=approvedCurrentVersion(id),outcome=$('reviewOutcome').value,reason=$('reviewReason').value,note=clean($('reviewNote').value),next=$('nextReviewDate').value||null,sig=signatureData('reviewSignaturePad'),sigName=clean($('reviewSignatureName').value);if(!sig)return toast('Please sign in the box.');if(!sigName)return toast('Enter the signature name.');if(outcome==='NO_CHANGE'&&!next)return toast('Choose the next review date.');const storedNote=`Review reason: ${controlledReviewReasonLabel(reason)}${note?`
+${note}`:''}`;const r=await sb.rpc('record_document_review',{p_document_version_id:v.id,p_outcome:outcome,p_review_note:storedNote,p_next_review_date:next,p_signature_data:sig,p_signature_name:sigName});if(r.error)return toast(r.error.message);if(outcome==='NO_CHANGE')await sb.from('documents').update({review_required:false,review_reason:null}).eq('id',d.id);await logDocumentActivity('CONTROLLED_REVIEW',{...activityVersionSnapshot(v),source_context:'CONTROLLED_REVIEW'},{reason,outcome,next_review_date:next,review_note:note||null},false);closeModal();await refresh(outcome==='NEW_VERSION_REQUIRED'?'Controlled review recorded. The current version remains in use until a replacement version is published.':'Controlled review recorded.');}
 
-  async function toggleSmallQrMode() {
-    S.smallQrMode=!S.smallQrMode;
-    const caps=S.cameraCaps?.zoom;
-    if(caps&&typeof caps.min==='number'&&typeof caps.max==='number') {
-      const target=S.smallQrMode
-        ? clamp(Math.max(2.5,caps.min+(caps.max-caps.min)*0.24),caps.min,caps.max)
-        : clamp(S.cameraBaseZoom??caps.min,caps.min,caps.max);
-      await setCameraZoom(target);
-    }
-    updateCameraControls();
-    const status=document.getElementById('scanStatus');
-    if(status&&S.cameraStream){
-      status.className='notice';
-      status.textContent=S.smallQrMode
-        ? 'Small QR enhanced scan — centre the label, hold about 15–25 cm away and tap Refocus if needed.'
-        : 'Normal scan mode — hold the QR steady inside the guide.';
-    }
-  }
-
-  async function refocusCamera() {
-    const track=S.cameraTrack,modes=S.cameraCaps?.focusMode;
-    if(!track||!Array.isArray(modes))return;
-    const status=document.getElementById('scanStatus');
-    try{
-      if(modes.includes('single-shot')) {
-        await track.applyConstraints({advanced:[{focusMode:'single-shot'}]});
-        setTimeout(()=>{try{if(S.cameraTrack&&modes.includes('continuous'))S.cameraTrack.applyConstraints({advanced:[{focusMode:'continuous'}]});}catch(_){}},700);
-      } else if(modes.includes('continuous')) {
-        await track.applyConstraints({advanced:[{focusMode:'continuous'}]});
-      }
-      if(status){status.className='notice';status.textContent='Refocusing camera — hold the QR still for a moment.';}
-    }catch(_){if(status){status.className='notice warn';status.textContent='Manual refocus is not available on this camera.';}}
-  }
-
-  async function toggleTorch() {
-    if(!S.cameraTrack || !S.cameraCaps?.torch) return;
-    const next=!S.torchOn;
-    try {
-      await S.cameraTrack.applyConstraints({advanced:[{torch:next}]});
-      S.torchOn=next;
-      updateCameraControls();
-    } catch(_) {
-      const status=document.getElementById('scanStatus');
-      if(status) {
-        status.className='notice warn';
-        status.textContent='Torch control is not available on this camera.';
+function productWords(s){return productMatchTokens(s).filter(x=>x.length>2)}
+function similarity(a,b){return productNameMatchScore(a,b)}
+function refsInText(t){return [...new Set((String(t||'').match(refRx)||[]).map(canonicalRef))]}
+async function copyAssignment(a,newTrainingId,seen){if(seen.has(a.user_id))return 0;seen.add(a.user_id);const payload={training_session_id:newTrainingId,user_id:a.user_id,due_date:daysFromNow(14),renewal_value:a.renewal_value,renewal_unit:a.renewal_unit,assigned_by:state.user.id,active:true,assignment_origin:a.assignment_origin||'MANUAL'};if('delivery_method_override' in a)payload.delivery_method_override=a.delivery_method_override||null;const r=await sb.from('training_assignments').insert(payload);return r.error?0:1}
+async function createSourceTraining(d,v,prior=null){const dr={value:d.default_renewal_value||null,unit:d.default_renewal_unit||null};const payload={name:`${d.reference?d.reference+' - ':''}${d.title}`,session_type:d.doc_type,delivery_method:sourceDelivery(d.doc_type),description:`Controlled document training. Source: ${d.reference||''} - ${d.title}. Automatically managed by Safety Tracker v${APP_VERSION}.`,delivered_date:null,trainer_name:null,trainer_user_id:state.user.id,review_date:v.review_date||plusYear(v.issue_date||todayISO()),default_due_date:daysFromNow(14),renewal_value:dr.value,renewal_unit:dr.unit,status:'ACTIVE',created_by:state.user.id,reference:d.reference||null,source_kind:d.doc_type,source_document_id:d.id,source_document_version_id:v.id,auto_managed:true,review_required:false,review_reason:null};const ins=await sb.from('training_sessions').insert(payload).select().single();if(ins.error){console.warn('createSourceTraining',ins.error);return {changes:0,training:null}}const t=ins.data;state.training.push(t);let changes=1;const seen=new Set();if(prior){for(const a of state.trainingAssignments.filter(a=>a.training_session_id===prior.id&&a.active!==false)){changes+=await copyAssignment(a,t.id,seen);await sb.from('training_assignments').update({active:false}).eq('id',a.id);changes++}await sb.from('training_sessions').update({status:'ARCHIVED'}).eq('id',prior.id);prior.status='ARCHIVED';changes++}return {changes,training:t}}
+async function syncSourceTrainings(){
+  let changes=0;
+  for(const d of state.documents.filter(d=>d.status!=='ARCHIVED'&&sourceDocTypes.has(d.doc_type))){
+    const v=approvedCurrentVersion(d.id);if(!v)continue;
+    let active=state.training.find(t=>t.auto_managed===true&&t.source_document_id===d.id&&t.status!=='ARCHIVED');
+    if(!active||active.source_document_version_id!==v.id){const r=await createSourceTraining(d,v,active||null);changes+=r.changes;active=r.training||active}
+    if(!active)continue;
+    const dr={value:d.default_renewal_value||null,unit:d.default_renewal_unit||null};
+    const desired={name:`${d.reference?d.reference+' - ':''}${d.title}`,session_type:d.doc_type,reference:d.reference||null,source_kind:d.doc_type,source_document_id:d.id,source_document_version_id:v.id,delivery_method:sourceDelivery(d.doc_type),review_date:v.review_date||plusYear(v.issue_date||todayISO()),renewal_value:dr.value,renewal_unit:dr.unit,auto_managed:true};
+    if(Object.entries(desired).some(([k,val])=>String(active[k]??'')!==String(val??''))){const u=await sb.from('training_sessions').update(desired).eq('id',active.id);if(!u.error){Object.assign(active,desired);changes++}}
+    for(const a of state.trainingAssignments.filter(a=>a.training_session_id===active.id&&a.active!==false)){
+      if(String(a.renewal_value??'')!==String(dr.value??'')||String(a.renewal_unit??'')!==String(dr.unit??'')){
+        const u=await sb.from('training_assignments').update({renewal_value:dr.value,renewal_unit:dr.unit}).eq('id',a.id);
+        if(!u.error){a.renewal_value=dr.value;a.renewal_unit=dr.unit;changes++;}
       }
     }
   }
-
-  function signalScanSuccess() {
-    try { if(navigator.vibrate) navigator.vibrate(100); } catch(_) {}
-    try {
-      const AC=window.AudioContext||window.webkitAudioContext;
-      if(!AC) return;
-      const ac=new AC();
-      const osc=ac.createOscillator();
-      const gain=ac.createGain();
-      osc.frequency.value=880;
-      gain.gain.setValueAtTime(0.045,ac.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.08);
-      osc.connect(gain); gain.connect(ac.destination);
-      osc.start(); osc.stop(ac.currentTime+0.08);
-      setTimeout(()=>{try{ac.close();}catch(_){}},180);
-    } catch(_) {}
-  }
-
-  function drawScanRegion(ctx,canvas,video,region) {
-    const vw=video.videoWidth,vh=video.videoHeight;
-    ctx.imageSmoothingEnabled=false;
-    if(region==='full') {
-      const maxDim=1500,ratio=Math.min(1,maxDim/Math.max(vw,vh));
-      const outW=Math.max(1,Math.round(vw*ratio)),outH=Math.max(1,Math.round(vh*ratio));
-      canvas.width=outW;canvas.height=outH;ctx.imageSmoothingEnabled=false;
-      ctx.drawImage(video,0,0,vw,vh,0,0,outW,outH);return;
-    }
-    const scale=Number(region)||0.7;
-    const crop=Math.max(160,Math.floor(Math.min(vw,vh)*scale));
-    const sx=Math.floor((vw-crop)/2),sy=Math.floor((vh-crop)/2);
-    const out=Math.min(1700,Math.max(crop,S.smallQrMode?900:crop));
-    canvas.width=out;canvas.height=out;ctx.imageSmoothingEnabled=false;
-    ctx.drawImage(video,sx,sy,crop,crop,0,0,out,out);
-  }
-
-  async function nativeDetectQr(detector,video,smallMode,cycle) {
-    if(!detector)return '';
-    try{
-      const found=await detector.detect(video);if(found?.length)return String(found[0].rawValue||'').trim();
-      if(!smallMode||cycle%2)return '';
-      const vw=video.videoWidth,vh=video.videoHeight,crop=Math.floor(Math.min(vw,vh)*0.48);
-      const sx=Math.floor((vw-crop)/2),sy=Math.floor((vh-crop)/2);
-      const bitmap=await createImageBitmap(video,sx,sy,crop,crop);
-      try{const close=await detector.detect(bitmap);if(close?.length)return String(close[0].rawValue||'').trim();}finally{bitmap.close?.();}
-    }catch(_){}
-    return '';
-  }
-
-  async function decodeQrFromPhoto(file) {
-    let bitmap;
-    try{bitmap=await createImageBitmap(file);}catch(_){return '';}
-    try{
-      if('BarcodeDetector' in window){
-        try{const formats=await BarcodeDetector.getSupportedFormats();if(formats.includes('qr_code')){const detector=new BarcodeDetector({formats:['qr_code']});const found=await detector.detect(bitmap);if(found?.length)return String(found[0].rawValue||'').trim();}}catch(_){}
-      }
-      if(!window.jsQR)return '';
-      const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
-      const regions=['full',0.86,0.68,0.50,0.36];
-      for(const region of regions){
-        const w=bitmap.width,h=bitmap.height;
-        let sx=0,sy=0,sw=w,sh=h;
-        if(region!=='full'){const crop=Math.floor(Math.min(w,h)*Number(region));sx=Math.floor((w-crop)/2);sy=Math.floor((h-crop)/2);sw=sh=crop;}
-        const max=1800,ratio=Math.min(1,max/Math.max(sw,sh));
-        const ow=Math.max(1,Math.round(sw*ratio)),oh=Math.max(1,Math.round(sh*ratio));
-        canvas.width=ow;canvas.height=oh;ctx.imageSmoothingEnabled=false;ctx.drawImage(bitmap,sx,sy,sw,sh,0,0,ow,oh);
-        const image=ctx.getImageData(0,0,ow,oh),code=jsQR(image.data,ow,oh,{inversionAttempts:'attemptBoth'});
-        if(code?.data)return String(code.data).trim();
-      }
-    }catch(_){}finally{bitmap?.close?.();}
-    return '';
-  }
-
-  async function startQrScanner() {
-    const status=document.getElementById('scanStatus');
-    const video=document.getElementById('qrVideo');
-    const canvas=document.getElementById('qrCanvas');
-
-    if(!video || !canvas || !navigator.mediaDevices?.getUserMedia) {
-      if(status) {
-        status.className='notice error';
-        status.textContent='Live camera scanning is not supported here. Use Scan QR from photo instead.';
-      }
-      return;
-    }
-
-    try {
-      if(status) {
-        status.className='notice';
-        status.textContent='Starting high-resolution rear camera…';
-      }
-
-      S.smallQrMode=false;
-      S.torchOn=false;
-      S.cameraCaps=null;
-      const stream=await navigator.mediaDevices.getUserMedia({
-        audio:false,
-        video:{
-          facingMode:{ideal:'environment'},
-          width:{ideal:3840},
-          height:{ideal:2160},
-          frameRate:{ideal:30}
-        }
-      });
-
-      S.cameraStream=stream;
-      const track=stream.getVideoTracks()[0] || null;
-      await configureCameraTrack(track);
-      video.srcObject=stream;
-      await video.play();
-
-      const actual=track?.getSettings ? track.getSettings() : {};
-      if(status) {
-        status.className='notice';
-        status.textContent=`Camera ready${actual.width&&actual.height?` · ${actual.width}×${actual.height}`:''} — centre the QR and hold steady.`;
-      }
-
-      const ctx=canvas.getContext('2d',{willReadFrequently:true});
-      let lastScan=0;
-      let detector=null;
-      let regionIndex=0;
-      let scanCycle=0;
-
-      if('BarcodeDetector' in window) {
-        try {
-          const formats=await BarcodeDetector.getSupportedFormats();
-          if(formats.includes('qr_code')) detector=new BarcodeDetector({formats:['qr_code']});
-        } catch(_) {}
-      }
-
-      const scanFrame=async(ts)=>{
-        if(!S.cameraStream || !video.videoWidth || !video.videoHeight) {
-          S.scanFrame=requestAnimationFrame(scanFrame);
-          return;
-        }
-
-        if(ts-lastScan < 105) {
-          S.scanFrame=requestAnimationFrame(scanFrame);
-          return;
-        }
-        lastScan=ts;
-
-        try {
-          let decoded='';
-
-          scanCycle++;
-          // Native detector checks the full frame and, in small-label mode, a centre crop too.
-          if(detector) decoded=await nativeDetectQr(detector,video,S.smallQrMode,scanCycle);
-
-          // jsQR checks more than one centre crop per cycle in small-label mode.
-          if(!decoded && window.jsQR) {
-            const regions=S.smallQrMode?[0.58,0.44,0.32,0.72,'full']:['full',0.84,0.66,0.50];
-            const attempts=S.smallQrMode?2:1;
-            for(let n=0;n<attempts&&!decoded;n++){
-              const region=regions[regionIndex%regions.length];regionIndex++;
-              drawScanRegion(ctx,canvas,video,region);
-              const image=ctx.getImageData(0,0,canvas.width,canvas.height);
-              const code=jsQR(image.data,image.width,image.height,{inversionAttempts:'attemptBoth'});
-              if(code?.data)decoded=String(code.data).trim();
-            }
-          }
-
-          if(decoded) {
-            if(status) {
-              status.className='notice success';
-              status.textContent='QR found.';
-            }
-            signalScanSuccess();
-            await stopScanner();
-            findScanned(decoded);
-            return;
-          }
-        } catch(_) {}
-
-        if(S.cameraStream) S.scanFrame=requestAnimationFrame(scanFrame);
-      };
-
-      S.scanFrame=requestAnimationFrame(scanFrame);
-
-    } catch(e) {
-      if(status) {
-        status.className='notice error';
-        status.textContent='Camera could not start. Use Scan QR from photo or manual search.';
-      }
-    }
-  }
-
-  async function stopScanner() {
-    if(S.scanFrame) {
-      cancelAnimationFrame(S.scanFrame);
-      S.scanFrame=null;
-    }
-
-    if(S.cameraStream) {
-      try { S.cameraStream.getTracks().forEach(t=>t.stop()); } catch(_) {}
-      S.cameraStream=null;
-    }
-    S.cameraTrack=null;
-    S.cameraCaps=null;
-    S.cameraBaseZoom=null;
-    S.cameraZoom=null;
-    S.torchOn=false;
-
-    const video=document.getElementById('qrVideo');
-    if(video) {
-      try { video.pause(); video.srcObject=null; } catch(_) {}
-    }
-
-    if(S.scanner) {
-      try {
-        if(S.scanner.isScanning) await S.scanner.stop();
-        await S.scanner.clear();
-      } catch(_) {}
-      S.scanner=null;
-    }
-  }
-
-  function findScanned(value) {
-    if(!value) return;
-    const v=value.trim().toLowerCase();
-    const exact=S.items.find(i=>i.active && [i.qr_value,i.item_code,i.name].some(x=>String(x||'').trim().toLowerCase()===v));
-    if(exact) return openItem(exact.id);
-    S.search=value; setNotice('No exact QR match. Showing manual search results.','error'); navigatePage('items');
-  }
-
-  function bindItems() {
-    const inp=document.getElementById('itemSearch');
-    inp.oninput=()=>{S.search=inp.value; clearTimeout(inp._t); inp._t=setTimeout(refreshItemSearchResults,120);};
-    const cat=document.getElementById('categoryFilter'); if(cat) cat.onchange=()=>{S.categoryFilter=cat.value;refreshItemSearchResults();};
-    const add=document.getElementById('addItemBtn'); if(add) add.onclick=openAddItem;
-    const archived=document.getElementById('toggleArchivedBtn'); if(archived) archived.onclick=()=>{S.showArchived=!S.showArchived;S.search='';render();};
-    const review=document.getElementById('categoryReviewBtn'); if(review) review.onclick=openCategoryReview;
-    const manage=document.getElementById('manageCategoriesBtn'); if(manage) manage.onclick=openCategoryManager;
-    hydrateItemThumbnails(document);
-  }
-
-  function bindLocations() {
-    const b=document.getElementById('addLocationBtn'); if(b) b.onclick=openAddLocation;
-    document.querySelectorAll('[data-rename-location]').forEach(btn=>btn.onclick=()=>openRenameLocation(btn.dataset.renameLocation));
-    document.querySelectorAll('[data-delete-location]').forEach(btn=>btn.onclick=()=>openDeleteLocation(btn.dataset.deleteLocation));
-  }
-
-  function bindOrders() {
-    const csv=document.getElementById('exportOrdersCsv'); if(csv) csv.onclick=exportOrdersCSV;
-    const xls=document.getElementById('exportOrdersExcel'); if(xls) xls.onclick=exportOrdersExcel;
-    document.querySelectorAll('[data-order-tab]').forEach(b=>b.onclick=()=>{S.orderTab=b.dataset.orderTab;render();});
-    document.querySelectorAll('[data-create-order]').forEach(b=>b.onclick=e=>{e.stopPropagation();openCreateOrder(b.dataset.createOrder);});
-    document.querySelectorAll('[data-receive-order]').forEach(b=>b.onclick=e=>{e.stopPropagation();openReceiveOrder(b.dataset.receiveOrder);});
-    document.querySelectorAll('[data-edit-order]').forEach(b=>b.onclick=e=>{e.stopPropagation();openEditOrder(b.dataset.editOrder);});
-    document.querySelectorAll('[data-cancel-order]').forEach(b=>b.onclick=e=>{e.stopPropagation();openCancelOrder(b.dataset.cancelOrder);});
-  }
-
-
-  function openCreateOrder(itemId) {
-    if(!canManage()){setNotice('Admin or manager access required to create orders.','error');render();return;}
-    const item=byId(S.items,itemId); if(!item)return;
-    const forecast=suggestedOrderRows().find(r=>r.item.id===itemId);
-    const suppliers=suppliersForItem(itemId);
-    const preferred=preferredSupplier(itemId);
-    const suggested=forecast?.suggested||1;
-    showModal(`<header><div><h2>Add to order</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header>
-      <form id="createOrderForm">
-        <div class="form-grid">
-          <div><label>Quantity ordered</label><input id="orderQty" type="number" inputmode="decimal" min="0.01" step="0.01" value="${esc(suggested)}" required></div>
-          <div><label>Supplier</label><select id="orderSupplier"><option value="">Manual supplier</option>${suppliers.map(s=>`<option value="${s.id}" ${preferred?.id===s.id?'selected':''}>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</option>`).join('')}</select></div>
-          <div><label>Supplier name</label><input id="orderSupplierName" list="globalSupplierNames" value="${esc(preferred?.supplier_name||'')}" required><datalist id="globalSupplierNames">${globalSupplierNames().map(n=>`<option value="${esc(n)}"></option>`).join('')}</datalist></div>
-          <div><label>Supplier part ref</label><input id="orderSupplierRef" value="${esc(preferred?.supplier_ref||'')}"></div>
-          <div><label>Order / PO reference</label><input id="orderRef" placeholder="e.g. PO-1024"></div>
-          <div><label>Expected delivery date</label><input id="orderExpected" type="date"></div>
-          <div class="full"><label>Notes (optional)</label><textarea id="orderNotes" rows="2"></textarea></div>
-        </div>
-        <div class="notice">Current stock: <strong>${qty(itemTotal(itemId))}</strong> · Already on order: <strong>${qty(itemOnOrder(itemId))}</strong> · Suggested now: <strong>${qty(suggested)}</strong></div>
-        <div class="actions"><button class="btn" type="submit">Mark as ordered</button></div>
-      </form>`);
-    const sel=document.getElementById('orderSupplier');
-    const name=document.getElementById('orderSupplierName');
-    const ref=document.getElementById('orderSupplierRef');
-    sel.onchange=()=>{
-      const s=byId(S.itemSuppliers,sel.value);
-      name.value=s?.supplier_name||'';
-      ref.value=s?.supplier_ref||'';
-      const exp=document.getElementById('orderExpected');
-      if(s?.lead_time_days!=null && !exp.value){
-        const d=new Date();d.setDate(d.getDate()+num(s.lead_time_days));exp.value=d.toISOString().slice(0,10);
-      }
-    };
-    if(preferred?.lead_time_days!=null){
-      const d=new Date();d.setDate(d.getDate()+num(preferred.lead_time_days));
-      document.getElementById('orderExpected').value=d.toISOString().slice(0,10);
-    }
-    document.getElementById('createOrderForm').onsubmit=async e=>{
-      e.preventDefault();
-      const supplier=byId(S.itemSuppliers,sel.value);
-      const row={
-        item_id:itemId,
-        supplier_id:supplier?.id||null,
-        supplier_name:name.value.trim(),
-        supplier_ref:ref.value.trim()||null,
-        quantity_ordered:num(document.getElementById('orderQty').value),
-        quantity_received:0,
-        order_reference:document.getElementById('orderRef').value.trim()||null,
-        expected_date:document.getElementById('orderExpected').value||null,
-        ordered_by:S.profile.id,
-        notes:document.getElementById('orderNotes').value.trim()||null,
-        status:'OPEN'
-      };
-      const {error}=await sb.from('purchase_orders').insert(row);
-      if(error){setNotice(parseError(error),'error');return;}
-      await loadData();closeModal();S.orderTab='open';setNotice(`${item.name}: marked as on order.`);render();
-    };
-  }
-
-  function openReceiveOrder(orderId) {
-    const order=byId(S.purchaseOrders,orderId); if(!order)return;
-    const item=byId(S.items,order.item_id); const remaining=orderRemaining(order);
-    if(remaining<=0){setNotice('This order has already been fully received.','error');render();return;}
-    if(!locationNames().length){setNotice('Add a location before receiving stock.','error');render();return;}
-    showModal(`<header><div><h2>Receive delivery</h2><div class="muted">${esc(item?.name||'Item')}</div></div><button class="close" data-close>×</button></header>
-      <form id="receiveOrderForm">
-        <div class="order-metrics">
-          <div><span>Ordered</span><strong>${qty(order.quantity_ordered)}</strong></div>
-          <div><span>Already received</span><strong>${qty(order.quantity_received)}</strong></div>
-          <div><span>Still on order</span><strong>${qty(remaining)}</strong></div>
-        </div>
-        <label>Received now</label><input id="receiveQty" type="number" inputmode="decimal" min="0.01" max="${esc(remaining)}" step="0.01" value="${esc(remaining)}" required>
-        <label>Put into location</label><select id="receiveLocation" required>${locationNameOptions(activeLocations())}</select>
-        <label>Bin Ref (optional)</label><input id="receiveBin" list="receiveBinList" placeholder="e.g. B12"><datalist id="receiveBinList"></datalist>
-        ${item?.default_location_id?`<div class="muted">Default storage: <strong>${esc(itemDefaultLabel(item))}</strong> · change it above if this delivery belongs somewhere else.</div>`:''}
-        <label>Notes (optional)</label><textarea id="receiveNotes" rows="2" placeholder="Short delivery, damaged box, etc."></textarea>
-        <div class="notice">If fewer than ${qty(remaining)} arrive, type the amount actually received. The balance will stay visible as <strong>Back order / Still on order</strong>.</div>
-        <div class="actions"><button class="btn good" type="submit">Confirm receipt</button></div>
-      </form>`);
-    bindBinRefSuggestions('receiveLocation','receiveBin','receiveBinList',activeLocations(),null,false,item?itemDefaultPosition(item):null);
-    if(item) applyItemDefaultDestination(item,'receiveLocation','receiveBin');
-    document.getElementById('receiveOrderForm').onsubmit=async e=>{
-      e.preventDefault();
-      try{
-        const amount=num(document.getElementById('receiveQty').value);
-        if(amount<=0||amount>remaining){setNotice(`Enter an amount between 0 and ${qty(remaining)}.`, 'error');return;}
-        const locationId=await ensurePosition(document.getElementById('receiveLocation').value,document.getElementById('receiveBin').value);
-        const {error}=await sb.rpc('receive_purchase_order',{
-          p_order_id:orderId,
-          p_quantity:amount,
-          p_to_location_id:locationId,
-          p_notes:document.getElementById('receiveNotes').value.trim()||null
-        });
-        if(error)throw error;
-        await loadData();closeModal();
-        const updated=byId(S.purchaseOrders,orderId);
-        setNotice(updated&&orderRemaining(updated)>0?`${item.name}: ${qty(amount)} received. ${qty(orderRemaining(updated))} still on order.`:`${item.name}: delivery completed.`);
-        render();
-      }catch(err){setNotice(parseError(err),'error');}
-    };
-  }
-
-  function openEditOrder(orderId) {
-    if(!canManage())return;
-    const o=byId(S.purchaseOrders,orderId); if(!o)return;
-    showModal(`<header><div><h2>Edit order</h2><div class="muted">${esc(itemName(o.item_id))}</div></div><button class="close" data-close>×</button></header>
-      <form id="editOrderForm">
-        <label>Total ordered quantity</label><input id="editOrderQty" type="number" inputmode="decimal" min="${esc(o.quantity_received)}" step="0.01" value="${esc(o.quantity_ordered)}" required>
-        <label>Order / PO reference</label><input id="editOrderRef" value="${esc(o.order_reference||'')}">
-        <label>Expected delivery date</label><input id="editOrderExpected" type="date" value="${esc(o.expected_date||'')}">
-        <label>Notes</label><textarea id="editOrderNotes" rows="2">${esc(o.notes||'')}</textarea>
-        <div class="notice">Already received: <strong>${qty(o.quantity_received)}</strong>. Ordered quantity cannot be reduced below what has already arrived.</div>
-        <div class="actions"><button class="btn" type="submit">Save order</button></div>
-      </form>`);
-    document.getElementById('editOrderForm').onsubmit=async e=>{
-      e.preventDefault();
-      const ordered=num(document.getElementById('editOrderQty').value);
-      const received=num(o.quantity_received);
-      if(ordered<received){setNotice('Ordered quantity cannot be lower than the amount already received.','error');return;}
-      const status=ordered===received?'COMPLETED':received>0?'PART_RECEIVED':'OPEN';
-      const {error}=await sb.from('purchase_orders').update({
-        quantity_ordered:ordered,
-        order_reference:document.getElementById('editOrderRef').value.trim()||null,
-        expected_date:document.getElementById('editOrderExpected').value||null,
-        notes:document.getElementById('editOrderNotes').value.trim()||null,
-        status,
-        updated_at:new Date().toISOString()
-      }).eq('id',orderId);
-      if(error){setNotice(parseError(error),'error');return;}
-      await loadData();closeModal();setNotice('Order updated.');render();
-    };
-  }
-
-  function openCancelOrder(orderId) {
-    if(!canManage())return;
-    const o=byId(S.purchaseOrders,orderId); if(!o)return;
-    showModal(`<header><h2>Close / cancel order</h2><button class="close" data-close>×</button></header>
-      <p>Close the remaining <strong>${qty(orderRemaining(o))}</strong> for <strong>${esc(itemName(o.item_id))}</strong>?</p>
-      <p class="muted">Any quantity already received stays in stock. The outstanding balance will no longer count as On Order.</p>
-      <label>Reason (optional)</label><textarea id="cancelOrderReason" rows="2"></textarea>
-      <div class="actions"><button class="btn danger" id="confirmCancelOrder">Close order</button><button class="btn ghost" data-close>Keep open</button></div>`);
-    document.getElementById('confirmCancelOrder').onclick=async()=>{
-      const reason=document.getElementById('cancelOrderReason').value.trim();
-      const notes=[o.notes,reason?`Closed: ${reason}`:'Closed by admin'].filter(Boolean).join(' · ');
-      const {error}=await sb.from('purchase_orders').update({status:'CANCELLED',cancelled_at:new Date().toISOString(),cancelled_by:S.profile.id,notes,updated_at:new Date().toISOString()}).eq('id',orderId);
-      if(error){setNotice(parseError(error),'error');return;}
-      await loadData();closeModal();setNotice('Order closed.');render();
-    };
-  }
-
-  function bindReports() {
-    const ids=[['reportPeriod','period'],['reportUser','user'],['reportFrom','from'],['reportTo','to']];
-    ids.forEach(([id,key])=>{const el=document.getElementById(id); if(el) el.onchange=()=>{S.report[key]=el.value; render();};});
-    const reportItem=document.getElementById('reportItem');
-    if(reportItem) reportItem.onchange=()=>{
-      S.report.item=reportItem.value;
-      if(reportItem.value) S.report.graphItem=reportItem.value;
-      render();
-    };
-    const graphItem=document.getElementById('graphItem');
-    if(graphItem) graphItem.onchange=()=>{S.report.graphItem=graphItem.value;render();};
-    document.querySelectorAll('[data-graph-item]').forEach(row=>{
-      const selectRow=()=>{S.report.graphItem=row.dataset.graphItem||'';render();};
-      row.onclick=selectRow;
-      row.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();selectRow();}};
-    });
-    const rl=document.getElementById('reportLocation'); if(rl) rl.onchange=()=>{S.report.location=rl.value;S.report.bin='';render();};
-    const rb=document.getElementById('reportBin'); if(rb){rb.onchange=()=>{S.report.bin=rb.value.trim();render();};rb.onkeydown=e=>{if(e.key==='Enter'){S.report.bin=rb.value.trim();render();}};}
-    document.getElementById('exportReport').onclick=exportUsageCSV;
-    const ux=document.getElementById('exportReportExcel'); if(ux) ux.onclick=exportUsageExcel;
-    const ea=document.getElementById('exportActivity'); if(ea) ea.onclick=exportActivityCSV;
-    const ax=document.getElementById('exportActivityExcel'); if(ax) ax.onclick=exportActivityExcel;
-    drawTrendChart();
-  }
-
-  function drawTrendChart() {
-    const canvas=document.getElementById('trendChart'); if(!canvas || !window.Chart) return;
-    const selected=S.report.graphItem || S.report.item || (reportTransactions()[0]?.item_id || '');
-    if(!selected) return;
-    const now=new Date(); const labels=[], vals=[];
-    for(let k=11;k>=0;k--) {
-      const d=new Date(now.getFullYear(),now.getMonth()-k,1); const y=d.getFullYear(),m=d.getMonth();
-      labels.push(d.toLocaleDateString(undefined,{month:'short',year:'2-digit'}));
-      vals.push(S.transactions.filter(t=>countsAsUsage(t)&&t.item_id===selected&&new Date(t.occurred_at).getFullYear()===y&&new Date(t.occurred_at).getMonth()===m).reduce((a,t)=>a+num(t.quantity),0));
-    }
-    if(S.chart) { try{S.chart.destroy();}catch(_){} }
-    S.chart=new Chart(canvas,{type:'line',data:{labels,datasets:[{label:`Monthly usage · ${itemName(selected)}`,data:vals,tension:.25}]},options:{responsive:true,plugins:{legend:{display:true}},scales:{y:{beginAtZero:true}}}});
-  }
-
-  function downloadCSV(filename, rows) {
-    const csv='\ufeff'+rows.map(r=>r.map(v=>`"${String(v??'').replace(/"/g,'""')}"`).join(',')).join('\n');
-    const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
-    const a=document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url),1000);
-  }
-
-  function exportWorkbook(filename, sheets) {
-    if(!window.XLSX){setNotice('Excel export library did not load. Use CSV or refresh while online.','error');render();return;}
-    const wb=XLSX.utils.book_new();
-    for(const [name,rows] of sheets){
-      const ws=XLSX.utils.aoa_to_sheet(rows);
-      XLSX.utils.book_append_sheet(wb,ws,name.slice(0,31));
-    }
-    XLSX.writeFile(wb,filename);
-  }
-
-  function usageExportRows() {
-    const list=reportTransactions();
-    const rows=[['Date/time','Item','Quantity','User','Location','Reason','Legacy','Legacy classification','Excluded from usage']];
-    list.forEach(t=>rows.push([t.occurred_at,itemName(t.item_id),num(t.quantity),userName(t.user_id),locName(t.from_location_id),t.reason||t.notes||'',t.legacy_import?'Yes':'No',t.legacy_classification||'',t.exclude_from_usage?'Yes':'No']));
-    return rows;
-  }
-
-  function activityExportRows() {
-    const list=activityTransactions();
-    const rows=[['Date/time','Item','Action','Quantity','User','From','To','Reason','Legacy','Legacy classification','Excluded from usage']];
-    list.forEach(t=>rows.push([t.occurred_at,itemName(t.item_id),t.transaction_type,num(t.quantity),userName(t.user_id),locName(t.from_location_id),locName(t.to_location_id),t.reason||t.notes||'',t.legacy_import?'Yes':'No',t.legacy_classification||'',t.exclude_from_usage?'Yes':'No']));
-    return rows;
-  }
-
-  function exportUsageCSV() { downloadCSV(`inventory-usage-${todayISO()}.csv`,usageExportRows()); }
-  function exportActivityCSV() { downloadCSV(`inventory-activity-${todayISO()}.csv`,activityExportRows()); }
-  function exportUsageExcel() { exportWorkbook(`inventory-usage-${todayISO()}.xlsx`,[['Usage',usageExportRows()]]); }
-  function exportActivityExcel() { exportWorkbook(`inventory-activity-${todayISO()}.xlsx`,[['Activity',activityExportRows()]]); }
-
-
-
-
-  function orderExportRows(includeZero=false) {
-    const months=completedMonthWindows(3);
-    const list=suggestedOrderRows().filter(r=>includeZero||r.suggested>0);
-    const rows=[['Item','Item code',months[0].label,months[1].label,months[2].label,'3-month usage','Average monthly usage','Current overall stock','On order','Suggested order','Preferred supplier','Supplier ref']];
-    list.forEach(r=>rows.push([r.item.name,r.item.item_code,r.monthly[0],r.monthly[1],r.monthly[2],r.used3,Number(r.avg.toFixed(3)),r.current,r.onOrder,r.suggested,r.supplier?.supplier_name||'',r.supplier?.supplier_ref||'']));
-    return rows;
-  }
-
-  function exportOrdersCSV() {
-    downloadCSV(`suggested-orders-${todayISO()}.csv`,orderExportRows(false));
-  }
-
-  function exportOrdersExcel() {
-    const orderRows=orderExportRows(false);
-    const allRows=orderExportRows(true);
-    exportWorkbook(`suggested-orders-${todayISO()}.xlsx`,[['Suggested Orders',orderRows],['All Items Forecast',allRows]]);
-  }
-
-  function bindUsers() {
-    const invoke=async body=>{
-      const {data,error}=await sb.functions.invoke('invite-user',{body});
-      if(error||data?.error) throw new Error(parseError(error||data?.error));
-      return data;
-    };
-    document.querySelectorAll('[data-role-user]').forEach(sel=>sel.onchange=async()=>{
-      try{ await invoke({action:'set_role',user_id:sel.dataset.roleUser,role:sel.value}); await loadData({transactions:false});setNotice('User role updated.');render(); }
-      catch(e){setNotice(parseError(e),'error');await loadData({transactions:false});render();}
-    });
-    document.querySelectorAll('[data-user-disable]').forEach(b=>b.onclick=async()=>{
-      if(!confirm('Disable this user? They will no longer be able to sign in, but all history will be kept.'))return;
-      try{await invoke({action:'disable',user_id:b.dataset.userDisable});await loadData({transactions:false});setNotice('User disabled.');render();}catch(e){setNotice(parseError(e),'error');render();}
-    });
-    document.querySelectorAll('[data-user-enable]').forEach(b=>b.onclick=async()=>{
-      try{await invoke({action:'enable',user_id:b.dataset.userEnable});await loadData({transactions:false});setNotice('User re-enabled.');render();}catch(e){setNotice(parseError(e),'error');render();}
-    });
-    document.querySelectorAll('[data-user-email]').forEach(b=>b.onclick=async()=>{
-      const p=byId(S.profiles,b.dataset.userEmail); if(!p)return;
-      const entered=prompt(`Enter the corrected email address for ${p.display_name}:`,p.email||'');
-      if(entered===null)return;
-      const email=String(entered).trim().toLowerCase();
-      if(!email){setNotice('Email address cannot be blank.','error');render();return;}
-      if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){setNotice('Enter a valid email address.','error');render();return;}
-      if(email===String(p.email||'').trim().toLowerCase()){setNotice('That is already the registered email address.');render();return;}
-      if(!confirm(`Change ${p.display_name}'s registered email from\n${p.email||'—'}\nto\n${email}?\n\nTheir password, role and stock history will stay the same.`))return;
-      try{
-        await invoke({action:'change_email',user_id:p.id,email});
-        await loadData({transactions:false});
-        setNotice(`Email changed to ${email}. The user should use this address the next time they sign in.`);
-        render();
-      }catch(e){setNotice(`Email change failed: ${parseError(e)}`,'error');render();}
-    });
-    const f=document.getElementById('inviteForm'); if(f) f.onsubmit=async e=>{
-      e.preventDefault();
-      const body={action:'invite',display_name:document.getElementById('inviteName').value.trim(),email:document.getElementById('inviteEmail').value.trim(),role:document.getElementById('inviteRole').value,redirect_to:LIVE_APP_URL};
-      try{await invoke(body);setNotice('Invitation sent. The user must set their password before entering the tracker.');await loadData({transactions:false});render();}
-      catch(e){setNotice(`Invite failed: ${parseError(e)}. If this is the first invite, deploy the included invite-user Edge Function from your laptop.`, 'error');render();}
-    };
-  }
-
-
-
-
-
-
-
-
-
-  const SAFETY_BRIDGE_FUNCTION_URL='https://qvgcralroduuoptbnctt.supabase.co/functions/v1/inventory-safety-bridge';
-  const safetyBridgeEnabled=()=>S.safetyBridgeSettings?.enabled===true;
-  const safetyLinksForItem=itemId=>S.safetyBridgeLinks.filter(x=>x.item_id===itemId&&x.active!==false);
-  const safetySnapshot=result=>({code:result?.code||null,message:result?.message||null,lacking:(result?.lacking||[]).map(x=>({reference:x.reference||'',title:x.title||'',status:x.status||'',due_date:x.due_date||null}))});
-
-  async function callSafetyBridge(body){
-    const {data:{session}}=await sb.auth.getSession();
-    if(!session?.access_token)throw new Error('Session expired. Sign out and sign back in.');
-    const res=await fetch(SAFETY_BRIDGE_FUNCTION_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${session.access_token}`},body:JSON.stringify(body)});
-    const raw=await res.text();let out={};try{out=raw?JSON.parse(raw):{}}catch{out={error:raw}}
-    if(!res.ok)throw new Error(out.error||out.message||`Safety check failed (HTTP ${res.status})`);
-    return out;
-  }
-  async function recordSafetyBridgeEvent(itemId,eventType,snapshot={},attemptedQuantity=null){
-    if(S.offline||!navigator.onLine)return;
-    try{await sb.rpc('record_safety_bridge_event_v836',{p_item_id:itemId,p_event_type:eventType,p_attempted_quantity:attemptedQuantity,p_safety_snapshot:snapshot||{}});}catch(e){console.warn('Could not record safety bridge event',e)}
-  }
-  function safetyTargetsForItem(itemId){return safetyLinksForItem(itemId).map(x=>({target_kind:x.target_kind,target_id:x.safety_target_id,reference:x.safety_reference||'',title:x.safety_title||'',type:x.safety_type||''}));}
-  async function checkSafetyBeforeUse(item){
-    const targets=safetyTargetsForItem(item.id);
-    if(!safetyBridgeEnabled()||!targets.length)return {ok:true,required:false,lacking:[]};
-    if(S.offline||!navigator.onLine)throw new Error('Safety training cannot be checked while offline. No stock has been removed.');
-    return callSafetyBridge({action:'check',item_id:item.id,targets});
-  }
-  function showSafetyTrainingGate(item,result){
-    const lacking=result?.lacking||[];
-    const list=lacking.map(x=>`<div class="safety-gap-row"><div><strong>${esc(x.reference?x.reference+' - '+x.title:x.title||'Required safety training')}</strong><div class="muted">${esc(x.status||'Training action required')}${x.due_date?` · due ${esc(fmtShortDate(x.due_date))}`:''}</div></div>${x.document_url?`<a class="btn ghost small" href="${esc(x.document_url)}" target="_blank" rel="noopener">Open document</a>`:''}</div>`).join('');
-    const appUrl=result?.safety_app_url||S.safetyBridgeSettings?.safety_tracker_url||'https://grich295.github.io/Safety-tracker/';
-    S.safetyGate={itemId:item.id,snapshot:safetySnapshot(result)};
-    showModal(`<header><div><h2>Safety training required</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header><div class="notice warn"><strong>Stock has not been removed.</strong> Your Safety Tracker record shows required training that is missing or out of date. Complete/sign off the training before using this item.</div><div class="safety-gap-list">${list||'<div class="muted">Safety training needs attention.</div>'}</div><div class="actions"><a class="btn" href="${esc(appUrl)}" target="_blank" rel="noopener">Open Safety Tracker</a><button class="btn secondary" id="safetyRecheckBtn" type="button">Check again</button><button class="btn ghost" data-close type="button">Cancel use</button></div><p class="muted">If you cancel instead of completing required training, the cancelled stock-use attempt is recorded for manager/admin reporting.</p>`);
-    const b=document.getElementById('safetyRecheckBtn');
-    if(b)b.onclick=async()=>{
-      b.disabled=true;b.textContent='Checking…';
-      try{const fresh=await checkSafetyBeforeUse(item);if(fresh.ok){await recordSafetyBridgeEvent(item.id,'RECHECK_PASSED',safetySnapshot(fresh));S.safetyGate=null;openStockAction(item,'USE');return;}await recordSafetyBridgeEvent(item.id,'TRAINING_BLOCKED',safetySnapshot(fresh));showSafetyTrainingGate(item,fresh);}catch(e){setNotice(parseError(e),'error');S.safetyGate=null;closeModal();render();}
-    };
-  }
-  async function requestStockAction(item,type){
-    if(type!=='USE'||!safetyBridgeEnabled()||!safetyLinksForItem(item.id).length)return openStockAction(item,type);
-    try{
-      const result=await checkSafetyBeforeUse(item);
-      if(result.ok)return openStockAction(item,type);
-      await recordSafetyBridgeEvent(item.id,'TRAINING_BLOCKED',safetySnapshot(result));
-      showSafetyTrainingGate(item,result);
-    }catch(e){
-      await recordSafetyBridgeEvent(item.id,'CHECK_ERROR',{message:parseError(e)});
-      showModal(`<header><h2>Safety check unavailable</h2><button class="close" data-close>×</button></header><div class="notice error"><strong>No stock has been removed.</strong> ${esc(parseError(e))}</div><p class="muted">Try again when the Safety Tracker connection is available. An Admin can disable the trial Safety Bridge from Admin → Safety Bridge if necessary.</p><div class="actions"><button class="btn ghost" data-close>Close</button></div>`);
-    }
-  }
-
-
-
-  async function openItem(id) {
-    const i=byId(S.items,id); if(!i) return;
-    S.selectedItemId=id;
-    touchRecentItem(id).catch(()=>{});
-    const photoUrl=await signedUrl('item-photos',i.primary_photo_path,3600);
-    const pos=itemPositions(id), total=itemTotal(id), onOrder=itemOnOrder(id);
-    const suppliers=suppliersForItem(id), itemOrders=openOrdersForItem(id), pref=itemPref(id);
-    const locationTotals=new Map();
-    for(const b of pos){const l=byId(S.locations,b.location_id);if(!l)continue;const key=l.location_name;locationTotals.set(key,(locationTotals.get(key)||0)+num(b.quantity));}
-    const recent=S.transactions.filter(t=>t.item_id===id).slice(0,25);
-    const itemCategoryReview=canManage()?categoryReviewSuggestion(i):null;
-    showModal(`<header><div><h2>${esc(i.name)}</h2><div class="muted">${esc(i.item_code)} ${i.active?'':'· Archived'}</div></div><button class="close" data-close>×</button></header>
-      <div class="split"><div>
-        ${photoUrl?`<img class="photo zoomable" id="itemPhoto" src="${esc(photoUrl)}" alt="${esc(i.name)}" title="Tap to enlarge">`:''}
-        <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Overall stock</div><div class="stat">${qty(total)}</div></div><div class="card"><div class="muted">On order</div><div class="stat">${qty(onOrder)}</div></div><div class="card"><div class="muted">Reorder level</div><div class="stat">${qty(i.reorder_level)}</div></div></div>
-        <h3>Totals by location</h3>${locationTotals.size?[...locationTotals.entries()].map(([name,q])=>`<div class="location-chip"><strong>${esc(name)}</strong> · ${qty(q)}</div>`).join(''):'<span class="muted">No stock assigned.</span>'}
-        <h3>Exact stock positions</h3>${pos.length?pos.map(b=>{const l=byId(S.locations,b.location_id);return `<div class="location-chip"><strong>${esc(l?.location_name||'Unknown')}</strong> → ${esc(effectiveBinCode(l)?`Bin Ref ${effectiveBinCode(l)}`:'No bin ref')} · ${qty(b.quantity)}</div>`;}).join(''):'<div class="notice">No stock location currently has a positive quantity.</div>'}
-      </div><div>
-        <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div>${itemCategoryReview?`<div class="category-suggestion item-detail-suggestion"><div><strong>Suggested category: ${esc(itemCategoryReview.suggestion.category)}</strong><span>${esc(itemCategoryReview.suggestion.confidence)} confidence · ${itemCategoryReview.suggestion.percent}%${itemCategoryReview.suggestion.evidence.length?` · ${esc(itemCategoryReview.suggestion.evidence[0])}`:''}</span></div><button class="btn small" id="approveItemCategorySuggestion" type="button">Approve suggestion</button></div>`:''}<div><strong>Default storage</strong><br>${esc(itemDefaultLabel(i))}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div>${onOrder>0?`<div style="margin-top:.7rem"><span class="badge order">ON ORDER ${qty(onOrder)}</span></div>`:''}</div>
-        ${i.active?`<div class="actions quick-actions"><button class="btn good" data-stock-action="ADD">+ Add stock</button><button class="btn warn" data-stock-action="USE">− Use stock</button><button class="btn secondary" data-stock-action="ADJUST">Adjust count</button><button class="btn ghost" data-stock-action="MOVE">Move stock</button></div>`:'<div class="notice">This item is archived. Restore it before recording new stock actions.</div>'}
-        <div class="actions"><button class="btn ${pref?.favourite?'warn':'ghost'}" id="favouriteBtn">${pref?.favourite?'★ Favourite':'☆ Add favourite'}</button><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()&&i.active?'<button class="btn ghost" id="editItemBtn">Edit item</button><button class="btn ghost" id="suppliersBtn">Suppliers 1–3</button><button class="btn" id="orderItemBtn">Order item</button>':''}${canAdmin()?i.active?'<button class="btn danger" id="archiveItemBtn">Archive item</button>':'<button class="btn good" id="restoreItemBtn">Restore item</button>':''}</div>
-      </div></div>
-      <div class="card" style="margin-top:1rem"><h3>Suppliers & orders</h3>
-        ${suppliers.length?suppliers.map(s=>`<div class="supplier-line"><strong>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</strong>${s.preferred?' <span class="badge">Preferred</span>':''}<div class="muted">Ref ${esc(s.supplier_ref||'—')} · Pack ${qty(s.pack_size||1)} · Lead ${s.lead_time_days==null?'—':esc(s.lead_time_days)+' days'} · ${s.unit_price==null?'Price —':money(s.unit_price)}</div></div>`).join(''):'<p class="muted">No suppliers saved yet.</p>'}
-        ${itemOrders.length?`<div style="margin-top:.7rem"><strong>Currently on order</strong>${itemOrders.map(o=>`<div class="muted">${qty(orderRemaining(o))} from ${esc(o.supplier_name)}${o.expected_date?` · expected ${fmtShortDate(o.expected_date)}`:''}</div>`).join('')}</div>`:''}
-      </div>
-      <div class="card" style="margin-top:1rem"><h3>Recent item history</h3>${transactionTable(recent)}</div>`);
-    document.querySelectorAll('[data-stock-action]').forEach(b=>b.onclick=()=>requestStockAction(i,b.dataset.stockAction));
-    document.getElementById('printQrBtn').onclick=()=>printQr(i);
-    document.getElementById('favouriteBtn').onclick=()=>toggleFavourite(i.id);
-    const approveItemCategorySuggestion=document.getElementById('approveItemCategorySuggestion');
-    if(approveItemCategorySuggestion&&itemCategoryReview)approveItemCategorySuggestion.onclick=async()=>{
-      try{await applyCategorySuggestion(i.id,itemCategoryReview.suggestion.category);await loadData({transactions:false});setNotice(`Category updated to ${itemCategoryReview.suggestion.category}.`);openItem(i.id);}
-      catch(err){setNotice(parseError(err),'error');}
-    };
-    const photo=document.getElementById('itemPhoto'); if(photo) photo.onclick=()=>photo.classList.toggle('photo-large');
-    const edit=document.getElementById('editItemBtn'); if(edit) edit.onclick=()=>openEditItem(i);
-    const suppliersBtn=document.getElementById('suppliersBtn'); if(suppliersBtn) suppliersBtn.onclick=()=>openSupplierEditor(i);
-    const orderItemBtn=document.getElementById('orderItemBtn'); if(orderItemBtn) orderItemBtn.onclick=()=>openCreateOrder(i.id);
-    const archive=document.getElementById('archiveItemBtn'); if(archive) archive.onclick=()=>archiveItem(i);
-    const restore=document.getElementById('restoreItemBtn'); if(restore) restore.onclick=()=>restoreItem(i);
-  }
-
-
-  function locationNameOptions(rows=activeLocations(), includeNone=false) {
-    const opts=locationNames(rows).map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('');
-    return `${includeNone?'<option value="">None</option>':''}${opts}`;
-  }
-
-  function binSuggestionsForLocation(name, rows=activeLocations()) {
-    return [...new Set(positionsForLocation(name,rows).map(effectiveBinCode).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
-  }
-
-  function bindBinRefSuggestions(locationSelectId, inputId, datalistId, rows=activeLocations(), itemId=null, positiveOnly=false, defaultPosition=null) {
-    const locSel=document.getElementById(locationSelectId), input=document.getElementById(inputId), list=document.getElementById(datalistId);
-    if(!locSel||!input||!list)return;
-
-    let preset=document.getElementById(`${inputId}Preset`);
-    if(!preset){
-      preset=document.createElement('select');
-      preset.id=`${inputId}Preset`;
-      preset.className='controlled-bin-select';
-      preset.hidden=true;
-      input.parentNode.insertBefore(preset,input);
-    }
-
-    const defaultRefForCurrent=()=>{
-      if(!defaultPosition || !defaultPosition.active || defaultPosition.location_name!==locSel.value) return '';
-      return normalizeBin(effectiveBinCode(defaultPosition));
-    };
-
-    const syncPresetFromInput=()=>{
-      if(preset.hidden)return;
-      const v=normalizeBin(input.value);
-      const has=[...preset.options].some(o=>o.value===v);
-      if(has){
-        preset.value=v;
-        input.hidden=true;
-      } else if(v){
-        const other=[...preset.options].some(o=>o.value==='__OTHER__');
-        if(other){
-          preset.value='__OTHER__';
-          input.hidden=false;
-        }
-      }
-    };
-
-    const refresh=()=>{
-      let candidates=positionsForLocation(locSel.value,rows);
-      if(itemId && positiveOnly){
-        const positiveIds=new Set(itemPositions(itemId).map(b=>b.location_id));
-        candidates=candidates.filter(l=>positiveIds.has(l.id));
-      }
-
-      const actualRefs=[...new Set(candidates.map(effectiveBinCode).filter(Boolean))].sort(naturalBinSort);
-      const controlled=controlledBinPresetRefs(locSel.value);
-      const defaultRef=defaultRefForCurrent();
-
-      if(controlled){
-        let refs;
-        if(positiveOnly){
-          // For Use / Move source, only show bins that actually contain stock.
-          refs=actualRefs;
-        } else {
-          // Destination/default selection shows configured bins plus any older
-          // non-standard bin already in use, and always includes the item's default.
-          refs=[...new Set([...controlled,...actualRefs,...(defaultRef?[defaultRef]:[])])].sort(naturalBinSort);
-        }
-
-        const current=normalizeBin(input.value);
-        preset.innerHTML=
-          `<option value="">No bin / Unallocated</option>`+
-          refs.map(r=>`<option value="${esc(r)}">${esc(r)}${defaultRef&&r===defaultRef?' (Default)':''}</option>`).join('')+
-          (!positiveOnly?'<option value="__OTHER__">Other / manual entry</option>':'');
-
-        preset.hidden=false;
-        list.innerHTML='';
-
-        if(current && refs.includes(current)){
-          preset.value=current;
-          input.hidden=true;
-        } else if(current && !positiveOnly){
-          preset.value='__OTHER__';
-          input.hidden=false;
-        } else if(defaultRef && !positiveOnly && refs.includes(defaultRef)){
-          preset.value=defaultRef;
-          input.value=defaultRef;
-          input.hidden=true;
-        } else {
-          preset.value='';
-          input.value='';
-          input.hidden=true;
-        }
-
-        preset.onchange=()=>{
-          if(preset.value==='__OTHER__'){
-            input.value='';
-            input.hidden=false;
-            input.focus();
-            input.dispatchEvent(new Event('input',{bubbles:true}));
-            return;
-          }
-          input.hidden=true;
-          input.value=preset.value;
-          input.dispatchEvent(new Event('input',{bubbles:true}));
-          input.dispatchEvent(new Event('change',{bubbles:true}));
-        };
-      } else {
-        preset.hidden=true;
-        input.hidden=false;
-        const refs=[...new Set([...actualRefs,...(defaultRef?[defaultRef]:[])])].sort(naturalBinSort);
-        list.innerHTML=refs.map(r=>`<option value="${esc(r)}"${defaultRef&&r===defaultRef?' label="Default"':''}></option>`).join('');
-        if(!input.value.trim()){
-          if(defaultRef) input.value=defaultRef;
-          else if(refs.length===1) input.value=refs[0];
-        }
-      }
-    };
-
-    locSel.onchange=()=>{
-      input.value='';
-      refresh();
-      input.dispatchEvent(new Event('input',{bubbles:true}));
-    };
-    input.addEventListener('input',syncPresetFromInput);
-    refresh();
-  }
-
-  function findPosition(locationName, binRef, rows=S.locations) {
-    const ref=normalizeBin(binRef).toLowerCase();
-    const candidates=rows.filter(l=>l.active && l.location_name===locationName);
-    return candidates.find(l=>effectiveBinCode(l).trim().toLowerCase()===ref) || null;
-  }
-
-  async function ensurePosition(locationName, binRef) {
-    const existing=findPosition(locationName,binRef);
-    if(existing) return existing.id;
-    const {data,error}=await sb.rpc('get_or_create_stock_position',{p_location_name:locationName,p_bin_ref:normalizeBin(binRef)});
-    if(error) throw error;
-    return data;
-  }
-
-  function sourcePosition(itemId, locationName, binRef) {
-    const p=findPosition(locationName,binRef);
-    if(!p) return null;
-    const b=S.balances.find(x=>x.item_id===itemId&&x.location_id===p.id);
-    return b&&num(b.quantity)>0?p:null;
-  }
-
-  function sourceAvailable(itemId, locationName, binRef) {
-    const p=sourcePosition(itemId,locationName,binRef);
-    if(!p) return 0;
-    return num(S.balances.find(x=>x.item_id===itemId&&x.location_id===p.id)?.quantity);
-  }
-
-  function stockActionForm(item,type) {
-    const pos=itemPositions(item.id);
-    const positiveIds=new Set(pos.map(b=>b.location_id));
-    const sourceRows=activeLocations().filter(l=>positiveIds.has(l.id));
-    const allRows=activeLocations();
-    const title={ADD:'Add stock',USE:'Use / remove stock',MOVE:'Move stock',ADJUST:'Adjust stock'}[type];
-    const sourcePair=`<label>Location</label><select id="fromLocationName" required>${locationNameOptions(sourceRows)}</select><label>Bin Ref</label><input id="fromBinRef" list="fromBinList" placeholder="Type bin ref, e.g. B12"><datalist id="fromBinList"></datalist><div id="sourceAvailability" class="notice compact">Select the source bin to see available stock.</div>`;
-    const destinationPair=`<label>Location</label><select id="toLocationName" required>${locationNameOptions(allRows)}</select><label>Bin Ref (optional)</label><input id="toBinRef" list="toBinList" placeholder="Type bin ref, e.g. B12"><datalist id="toBinList"></datalist>${item.default_location_id?`<div class="muted">Default storage: <strong>${esc(itemDefaultLabel(item))}</strong> · change it here if this stock is going elsewhere.</div>`:''}`;
-    const adjustPair=`<label>Location</label><select id="fromLocationName" required>${locationNameOptions(allRows)}</select><label>Bin Ref (optional)</label><input id="fromBinRef" list="fromBinList" placeholder="Type bin ref, e.g. B12"><datalist id="fromBinList"></datalist>`;
-    return `<header><div><h2>${title}</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header><form id="stockActionForm" data-type="${type}">
-      ${type==='ADD'?`${destinationPair}<label>Quantity added</label><input id="actionQty" type="number" inputmode="decimal" min="0.01" step="0.01" required>`:''}
-      ${type==='USE'?`${sourcePair}<label>Quantity used / removed</label><input id="actionQty" type="number" inputmode="decimal" min="0.01" step="0.01" required>`:''}
-      ${type==='MOVE'?`<h3>Move from</h3>${sourcePair}<h3>Move to</h3>${destinationPair}<label class="ack-check"><input id="moveAllCheck" type="checkbox"> Move all stock from this bin</label><label>Quantity moved</label><input id="actionQty" type="number" inputmode="decimal" min="0.01" step="0.01" required><div id="movePreview" class="muted"></div>`:''}
-      ${type==='ADJUST'?`${adjustPair}<label>Correct quantity at this location / bin ref</label><input id="newQty" type="number" inputmode="decimal" min="0" step="0.01" required><label>Reason</label><select id="reason" required><option value="Stock count correction">Stock count correction</option><option value="Damaged">Damaged</option><option value="Lost">Lost</option><option value="Found">Found</option><option value="Data correction">Data correction</option><option value="Other">Other</option></select>`:''}
-      ${type!=='ADJUST'?`<label>Reason / reference (optional)</label><input id="reason" placeholder="Delivery, job, damaged, etc.">`:''}
-      <label>Notes (optional)</label><textarea id="notes" rows="2"></textarea>
-      <div id="stockActionMessage" class="notice compact" hidden></div>
-      <div class="actions"><button class="btn" id="confirmStockActionBtn" type="submit">Confirm ${title.toLowerCase()}</button></div></form>`;
-  }
-
-  function openStockAction(item,type) {
-    if((type==='USE'||type==='MOVE')&&!itemPositions(item.id).length){setNotice('There is no positive stock to remove or move.','error');closeModal();render();return;}
-    if(!locationNames().length){setNotice('Add a location before recording stock.','error');closeModal();render();return;}
-    showModal(stockActionForm(item,type));
-    const pos=itemPositions(item.id);
-    const positiveIds=new Set(pos.map(b=>b.location_id));
-    const sourceRows=activeLocations().filter(l=>positiveIds.has(l.id));
-    if(type==='USE'||type==='MOVE') bindBinRefSuggestions('fromLocationName','fromBinRef','fromBinList',sourceRows,item.id,true);
-    if(type==='ADD'||type==='MOVE') {
-      bindBinRefSuggestions('toLocationName','toBinRef','toBinList',activeLocations(),null,false,itemDefaultPosition(item));
-      applyItemDefaultDestination(item,'toLocationName','toBinRef');
-    }
-    if(type==='ADJUST') bindBinRefSuggestions('fromLocationName','fromBinRef','fromBinList',activeLocations(),item.id,false);
-    if(type==='USE'||type==='MOVE'){
-      const loc=document.getElementById('fromLocationName'), bin=document.getElementById('fromBinRef'), amount=document.getElementById('actionQty');
-      const all=document.getElementById('moveAllCheck'), preview=document.getElementById('movePreview'), availableEl=document.getElementById('sourceAvailability');
-      const update=()=>{
-        const available=sourceAvailable(item.id,loc.value,bin.value);
-        if(availableEl) availableEl.innerHTML=`<strong>Available here: ${qty(available)}</strong>`;
-        if(amount){ amount.max=available>0?String(available):''; if(all?.checked) amount.value=available||''; }
-        if(preview){ const moving=num(amount?.value); preview.textContent=available>0&&moving>0?`${qty(available)} available → move ${qty(moving)} → ${qty(Math.max(0,available-moving))} remaining`:''; }
-      };
-      loc.addEventListener('change',()=>setTimeout(update,0)); bin.addEventListener('input',update); amount?.addEventListener('input',update);
-      if(all) all.onchange=()=>{amount.disabled=all.checked;update();};
-      setTimeout(update,0);
-    }
-    const form=document.getElementById('stockActionForm');
-    const submitBtn=document.getElementById('confirmStockActionBtn');
-    const formMessage=document.getElementById('stockActionMessage');
-    const showFormMessage=(message,type='error')=>{
-      if(!formMessage)return;
-      formMessage.hidden=false;
-      formMessage.className=`notice compact ${type==='error'?'error':'success'}`;
-      formMessage.textContent=message;
-    };
-    const actionTitle={ADD:'add stock',USE:'use / remove stock',MOVE:'move stock',ADJUST:'adjust stock'}[type]||'stock action';
-    const setBusy=busy=>{
-      if(!submitBtn)return;
-      submitBtn.disabled=busy;
-      submitBtn.textContent=busy?'Saving…':`Confirm ${actionTitle}`;
-    };
-    form.onsubmit=async e=>{
-      e.preventDefault();
-      if(formMessage){formMessage.hidden=true;formMessage.textContent='';}
-      setBusy(true);
-      let op=null;
-      try{
-        let fromName=null,fromRef='',toName=null,toRef='';
-        if(type==='USE'||type==='MOVE'){
-          fromName=document.getElementById('fromLocationName').value;
-          fromRef=document.getElementById('fromBinRef').value;
-          const p=sourcePosition(item.id,fromName,fromRef);
-          if(!p){showFormMessage('No stock was found at that Location / Bin Ref. Check the bin reference and try again.');return;}
-          const available=sourceAvailable(item.id,fromName,fromRef);
-          const qEl=document.getElementById('actionQty');
-          if(type==='MOVE'&&document.getElementById('moveAllCheck')?.checked) qEl.value=String(available);
-          const requested=num(qEl?.value);
-          if(requested<=0){showFormMessage('Enter a quantity greater than zero.');return;}
-          if(requested>available){showFormMessage(`Only ${qty(available)} is available at that source.`);return;}
-        }
-        if(type==='ADD'||type==='MOVE'){
-          toName=document.getElementById('toLocationName').value;
-          toRef=document.getElementById('toBinRef').value;
-        }
-        if(type==='ADJUST'){
-          fromName=document.getElementById('fromLocationName').value;
-          fromRef=document.getElementById('fromBinRef').value;
-        }
-        if(type==='MOVE'&&fromName===toName&&normalizeBin(fromRef).toLowerCase()===normalizeBin(toRef).toLowerCase()){
-          showFormMessage('Choose a different destination Location / Bin Ref.');return;
-        }
-
-        const quantity=num(document.getElementById('actionQty')?.value);
-        const newQuantity=document.getElementById('newQty')?num(document.getElementById('newQty').value):null;
-        if(type==='ADD'&&quantity<=0){showFormMessage('Enter a quantity greater than zero.');return;}
-        if(type==='ADJUST'&&(newQuantity===null||newQuantity<0)){showFormMessage('Enter the correct stock quantity.');return;}
-
-        const reason=document.getElementById('reason')?.value||null;
-        const notes=document.getElementById('notes')?.value||null;
-        op={id:makeClientId(),user_id:S.profile.id,item_id:item.id,type,quantity,from_location_name:fromName,from_bin_ref:normalizeBin(fromRef),to_location_name:toName,to_bin_ref:normalizeBin(toRef),new_quantity:newQuantity,reason,notes,created_at:new Date().toISOString()};
-
-        if(S.offline||!navigator.onLine){
-          queueStockOperation(op);
-          closeModal();
-          setNotice(`${item.name}: ${type.toLowerCase()} saved offline and will sync automatically.`);
-          render();
-          return;
-        }
-
-        try{
-          await sendClientStockOperation(op);
-          await loadData();
-          closeModal();
-          setNotice(`${item.name}: ${type.toLowerCase()} recorded.`);
-          render();
-        }catch(err){
-          if(isNetworkError(err)){
-            queueStockOperation(op);
-            closeModal();
-            setNotice(`${item.name}: connection lost — action saved offline for automatic sync.`);
-            render();
-            return;
-          }
-          showFormMessage(parseError(err));
-        }
-      }catch(err){
-        showFormMessage(parseError(err));
-      }finally{
-        if(document.body.contains(form))setBusy(false);
-      }
-    };
-  }
-
-  function openAddLocation() {
-    showModal(`<header><h2>Add location</h2><button class="close" data-close>×</button></header><form id="locForm"><p class="muted">Add the main place where stock is kept. New locations start with manual Bin Ref entry. An Admin can create a controlled bin list afterwards in Bin Setup.</p><label>Location name</label><input id="locName" placeholder="Workshop Store" required><label>Notes (optional)</label><textarea id="locNotes"></textarea><div class="actions"><button class="btn" type="submit">Save location</button></div></form>`);
-    document.getElementById('locForm').onsubmit=async e=>{
-      e.preventDefault();
-      const name=document.getElementById('locName').value.trim();
-      if(!name)return;
-      if(locationNames().some(x=>x.toLowerCase()===name.toLowerCase())){setNotice('That location already exists.','error');return;}
-      const inactiveRoot=S.locations.find(l=>!l.active&&!effectiveBinCode(l)&&l.location_name.toLowerCase()===name.toLowerCase());
-      let error;
-      if(inactiveRoot) ({error}=await sb.from('stock_locations').update({active:true,notes:document.getElementById('locNotes').value.trim()||inactiveRoot.notes||null}).eq('id',inactiveRoot.id));
-      else ({error}=await sb.from('stock_locations').insert({location_name:name,area_name:'',bin_code:'',notes:document.getElementById('locNotes').value.trim()||null}));
-      if(error){setNotice(parseError(error),'error');return;}
-      await loadData({transactions:false});closeModal();setNotice('Location added.');render();
-    };
-  }
-
-  function openRenameLocation(oldName) {
-    showModal(`<header><h2>Rename location</h2><button class="close" data-close>×</button></header><form id="renameLocationForm"><p class="muted">All stock positions at this location will use the new name. Quantities and transaction links are preserved.</p><label>Location name</label><input id="renameLocationName" value="${esc(oldName)}" required><div class="actions"><button class="btn" type="submit">Save new name</button></div></form>`);
-    document.getElementById('renameLocationForm').onsubmit=async e=>{
-      e.preventDefault();
-      const name=document.getElementById('renameLocationName').value.trim();
-      if(!name)return;
-      if(name.toLowerCase()!==oldName.toLowerCase()&&locationNames().some(x=>x.toLowerCase()===name.toLowerCase())){setNotice('Another location already uses that name.','error');return;}
-      const {error}=await sb.from('stock_locations').update({location_name:name}).eq('location_name',oldName);
-      if(error){setNotice(parseError(error),'error');return;}
-      await loadData();closeModal();setNotice('Location renamed.');render();
-    };
-  }
-
-  function openDeleteLocation(name) {
-    const ids=new Set(S.locations.filter(l=>l.active&&l.location_name===name).map(l=>l.id));
-    const stock=S.balances.filter(b=>ids.has(b.location_id)).reduce((a,b)=>a+num(b.quantity),0);
-    if(stock>0){setNotice(`Cannot delete ${name}: ${qty(stock)} units are still held there. Move or use the stock first.`,'error');render();return;}
-    showModal(`<header><h2>Delete location</h2><button class="close" data-close>×</button></header><p>Delete <strong>${esc(name)}</strong> from the active location list?</p><p class="muted">Old transaction history is kept. This only removes the location from future stock selection.</p><div class="actions"><button class="btn danger" id="confirmDeleteLocation">Delete location</button><button class="btn ghost" data-close>Cancel</button></div>`);
-    document.getElementById('confirmDeleteLocation').onclick=async()=>{
-      const {error}=await sb.from('stock_locations').update({active:false}).eq('location_name',name);
-      if(error){setNotice(parseError(error),'error');return;}
-      await loadData({transactions:false});closeModal();setNotice('Location deleted from the active list. History was preserved.');render();
-    };
-  }
-
-
-  function openSupplierEditor(item) {
-    if(!canManage())return;
-    const existing=suppliersForItem(item.id);
-    const preferred=existing.find(s=>s.preferred)?.supplier_slot || existing[0]?.supplier_slot || 1;
-    const section=slot=>{
-      const s=existing.find(x=>num(x.supplier_slot)===slot);
-      return `<div class="supplier-editor card">
-        <div class="supplier-editor-title"><h3>Supplier ${slot}</h3><label class="preferred-radio"><input type="radio" name="preferredSupplier" value="${slot}" ${preferred===slot?'checked':''}> Preferred</label></div>
-        <div class="form-grid">
-          <div><label>Supplier name</label><input id="supplierName${slot}" list="supplierNamesList" value="${esc(s?.supplier_name||'')}" placeholder="Start typing or add a new supplier"></div>
-          <div><label>Supplier part/reference</label><input id="supplierRef${slot}" value="${esc(s?.supplier_ref||'')}"></div>
-          <div><label>Price (£, optional)</label><input id="supplierPrice${slot}" type="number" min="0" step="0.01" value="${esc(s?.unit_price??'')}"></div>
-          <div><label>Pack size</label><input id="supplierPack${slot}" type="number" inputmode="decimal" min="0.01" step="0.01" value="${esc(s?.pack_size??1)}"></div>
-          <div><label>Lead time (days)</label><input id="supplierLead${slot}" type="number" min="0" step="1" value="${esc(s?.lead_time_days??'')}"></div>
-          <div><label>Notes</label><input id="supplierNotes${slot}" value="${esc(s?.notes||'')}"></div>
-        </div>
-      </div>`;
-    };
-    showModal(`<header><div><h2>Suppliers 1–3</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header>
-      <form id="supplierForm"><p class="muted">Save up to three suppliers for this item. Start typing to reuse a supplier already saved elsewhere; new names automatically become suggestions next time.</p>
-      <datalist id="supplierNamesList">${globalSupplierNames().map(n=>`<option value="${esc(n)}"></option>`).join('')}</datalist>
-      ${section(1)}${section(2)}${section(3)}
-      <div class="actions"><button class="btn" type="submit">Save suppliers</button></div></form>`);
-    document.getElementById('supplierForm').onsubmit=async e=>{
-      e.preventDefault();
-      const pref=num(document.querySelector('input[name="preferredSupplier"]:checked')?.value||1);
-      try{
-        for(let slot=1;slot<=3;slot++){
-          const name=document.getElementById(`supplierName${slot}`).value.trim();
-          const old=existing.find(x=>num(x.supplier_slot)===slot);
-          if(!name){
-            if(old){const {error}=await sb.from('item_suppliers').delete().eq('id',old.id);if(error)throw error;}
-            continue;
-          }
-          const row={
-            item_id:item.id,
-            supplier_slot:slot,
-            supplier_name:name,
-            supplier_ref:document.getElementById(`supplierRef${slot}`).value.trim()||null,
-            unit_price:document.getElementById(`supplierPrice${slot}`).value===''?null:num(document.getElementById(`supplierPrice${slot}`).value),
-            pack_size:num(document.getElementById(`supplierPack${slot}`).value)||1,
-            lead_time_days:document.getElementById(`supplierLead${slot}`).value===''?null:Math.round(num(document.getElementById(`supplierLead${slot}`).value)),
-            notes:document.getElementById(`supplierNotes${slot}`).value.trim()||null,
-            preferred:slot===pref,
-            updated_at:new Date().toISOString()
-          };
-          const {error}=await sb.from('item_suppliers').upsert(row,{onConflict:'item_id,supplier_slot'});
-          if(error)throw error;
-        }
-        await loadData({transactions:false});closeModal();setNotice('Suppliers updated.');render();
-      }catch(err){setNotice(parseError(err),'error');}
-    };
-  }
-
-  function itemFormHtml(i=null) {
-    const categories=categoryNames();
-    const currentCategory=String(i?.category||'');
-    if(currentCategory && !categories.includes(currentCategory)) categories.push(currentCategory);
-    categories.sort((a,b)=>a.localeCompare(b));
-    return `<header><h2>${i?'Edit item':'Add new item'}</h2><button class="close" data-close>×</button></header><form id="itemForm"><div class="form-grid">
-      <div><label>Item name</label><input id="newName" value="${esc(i?.name||'')}" required></div>
-      <div><label>Item code</label><input id="newCode" value="${esc(i?.item_code||'')}" required></div>
-      <div><label>QR value</label><input id="newQr" value="${esc(i?.qr_value||'')}" placeholder="Defaults to item code"><button class="btn ghost" id="generateQr" type="button" style="margin-top:.35rem">Generate code</button></div>
-      <div><label>Category</label><select id="newCategory"><option value="">Uncategorised</option>${categories.map(c=>`<option value="${esc(c)}" ${currentCategory===c?'selected':''}>${esc(c)}</option>`).join('')}</select></div>
-      <div class="full" id="categorySuggestionBox"></div>
-      <div><label>Reorder level</label><input id="newReorder" type="number" inputmode="decimal" step="0.01" min="0" value="${esc(i?.reorder_level??0)}"></div>
-      <div><label>Unit cost (£, optional)</label><input id="newCost" type="number" step="0.01" min="0" value="${esc(i?.unit_cost??'')}"></div>
-      <div><label>Default stock location</label><select id="defaultLocationName"><option value="">Not set</option>${locationNames().map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div>
-      <div><label>Default Bin Ref</label><input id="defaultBinRef" list="defaultBinList" placeholder="e.g. B12"><datalist id="defaultBinList"></datalist><div class="muted">Used automatically for Add Stock, Move destination and Receive Delivery. Controlled locations use the preset bin dropdown; you can still change it each time.</div></div>
-      <div class="full"><label>Item photo (optional)</label><input id="newPhoto" type="file" accept="image/*" capture="environment"><div id="photoEditStatus" class="muted photo-edit-status">Take/select a photo, then crop/rotate it before saving. The saved copy is automatically resized and compressed to reduce storage and mobile data.</div></div>
-      ${i?'':`<div><label>Opening stock (optional)</label><input id="openingQty" type="number" inputmode="decimal" min="0" step="0.01" value="0"></div><div><label>Opening location</label><select id="openingLocationName"><option value="">None</option>${locationNames().map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div><div><label>Opening Bin Ref (optional)</label><input id="openingBinRef" list="openingBinList" placeholder="e.g. B12"><datalist id="openingBinList"></datalist></div>`}
-      </div><div class="actions"><button class="btn" type="submit">${i?'Save changes':'Create item'}</button></div></form>`;
-  }
-
-
-  function openAddItem() { showModal(itemFormHtml()); bindItemForm(null); }
-  function openEditItem(i) { showModal(itemFormHtml(i)); bindItemForm(i); }
-
-  function bindItemForm(existing) {
-    const name=document.getElementById('newName'),code=document.getElementById('newCode'),qr=document.getElementById('newQr'),category=document.getElementById('newCategory');
-    const defaultLocation=document.getElementById('defaultLocationName'),defaultBin=document.getElementById('defaultBinRef');
-    let editedPhoto=null;
-    const photoInput=document.getElementById('newPhoto'),photoStatus=document.getElementById('photoEditStatus');
-    if(photoInput) photoInput.onchange=async()=>{
-      const file=photoInput.files?.[0];editedPhoto=null;if(!file)return;
-      if(photoStatus)photoStatus.textContent='Opening photo editor…';
-      try{
-        const edited=await editItemPhoto(file);
-        if(edited){editedPhoto=edited;if(photoStatus)photoStatus.textContent=`Photo ready · ${Math.round(edited.size/1024)} KB · resized/compressed before upload.`;}
-        else {photoInput.value='';if(photoStatus)photoStatus.textContent='Photo cancelled — no new photo will be uploaded.';}
-      }catch(err){photoInput.value='';if(photoStatus)photoStatus.textContent='Photo could not be edited. Choose or take another photo.';}
-    };
-    const gen=document.getElementById('generateQr'); if(gen) gen.onclick=()=>{const v=`ITM-${Date.now().toString(36).toUpperCase().slice(-7)}`;qr.value=v;if(!code.value.trim())code.value=v;};
-    bindBinRefSuggestions('defaultLocationName','defaultBinRef','defaultBinList',activeLocations(),null,false,existing?itemDefaultPosition(existing):null);
-    if(existing){
-      const p=itemDefaultPosition(existing);
-      if(p){
-        defaultLocation.value=p.location_name;
-        defaultLocation.dispatchEvent(new Event('change',{bubbles:true}));
-        setTimeout(()=>{defaultBin.value=effectiveBinCode(p)||'';defaultBin.dispatchEvent(new Event('input',{bubbles:true}));defaultBin.dispatchEvent(new Event('change',{bubbles:true}));},0);
-      }
-    }
-    if(!existing) {
-      let codeTouched=false,qrTouched=false;
-      code.oninput=()=>{codeTouched=true;if(!qrTouched)qr.value=code.value};qr.oninput=()=>qrTouched=true;name.oninput=()=>{if(!codeTouched){code.value=name.value;if(!qrTouched)qr.value=name.value;}};
-      const openingLocation=document.getElementById('openingLocationName');
-      if(openingLocation) bindBinRefSuggestions('openingLocationName','openingBinRef','openingBinList',activeLocations());
-    }
-    const refreshCategorySuggestion=()=>{
-      const box=document.getElementById('categorySuggestionBox');if(!box)return;
-      const suggestion=suggestCategoryFromText(`${name.value||''} ${code.value||''}`,category.value||'');
-      if(!String(name.value||'').trim()) { box.innerHTML=''; return; }
-      if(!suggestion){
-        box.innerHTML='<div class="category-suggestion neutral"><strong>No strong category suggestion yet.</strong><span>The item can still be saved normally.</span></div>';
-        return;
-      }
-      if(suggestion.currentMatches){
-        box.innerHTML=`<div class="category-suggestion matched"><strong>✓ Category suggestion matches: ${esc(suggestion.category)}</strong><span>${esc(suggestion.confidence)} confidence · ${suggestion.percent}%</span></div>`;
-        return;
-      }
-      box.innerHTML=`<div class="category-suggestion"><div><strong>Suggested category: ${esc(suggestion.category)}</strong><span>${esc(suggestion.confidence)} confidence · ${suggestion.percent}%${suggestion.evidence.length?` · ${esc(suggestion.evidence[0])}`:''}</span></div><button class="btn small" id="useCategorySuggestion" type="button">Use suggestion</button></div>`;
-      const use=document.getElementById('useCategorySuggestion');if(use)use.onclick=()=>{category.value=suggestion.category;refreshCategorySuggestion();};
-    };
-    name.addEventListener('input',refreshCategorySuggestion);
-    code.addEventListener('input',refreshCategorySuggestion);
-    category.addEventListener('change',refreshCategorySuggestion);
-    setTimeout(refreshCategorySuggestion,0);
-    document.getElementById('itemForm').onsubmit=async e=>{
-      e.preventDefault();
-      let defaultLocationId=null;
-      try{
-        const defaultName=defaultLocation?.value||'';
-        const defaultRef=defaultBin?.value||'';
-        if(defaultName) defaultLocationId=await ensurePosition(defaultName,defaultRef);
-      }catch(err){
-        setNotice(`Could not save the default stock location: ${parseError(err)}`,'error');
-        return;
-      }
-      const row={name:name.value.trim(),item_code:code.value.trim(),qr_value:(qr.value.trim()||code.value.trim()),category:category.value||null,reorder_level:num(document.getElementById('newReorder').value),unit_cost:document.getElementById('newCost').value===''?null:num(document.getElementById('newCost').value),default_location_id:defaultLocationId};
-      let itemId=existing?.id;
-      if(existing){const {error}=await sb.from('items').update(row).eq('id',existing.id);if(error){setNotice(parseError(error),'error');closeModal();render();return;}}
-      else {row.created_by=S.profile.id;const {data,error}=await sb.from('items').insert(row).select('id').single();if(error){setNotice(parseError(error),'error');closeModal();render();return;}itemId=data.id;}
-      const photo=editedPhoto;
-      if(photo){try{await uploadItemPhoto(itemId,photo);}catch(err){setNotice(`Item saved, but photo upload failed: ${parseError(err)}`,'error');}}
-      if(!existing){
-        const opening=num(document.getElementById('openingQty').value),locationName=document.getElementById('openingLocationName').value,binRef=document.getElementById('openingBinRef').value;
-        if(opening>0&&!locationName){setNotice('Item created, but opening stock was not added because no location was selected.','error');}
-        else if(opening>0){try{const loc=await ensurePosition(locationName,binRef);const {error}=await sb.rpc('apply_stock_transaction',{p_item_id:itemId,p_type:'ADD',p_quantity:opening,p_from_location_id:null,p_to_location_id:loc,p_new_quantity:null,p_reason:'Opening stock',p_reference:null,p_notes:null});if(error)throw error;}catch(err){setNotice(`Item created, but opening stock failed: ${parseError(err)}`,'error');}}
-      }
-      await loadData();closeModal();if(!S.notice||S.notice.type!=='error')setNotice(existing?'Item updated.':'New item created.');render();
-    };
-  }
-
-
-  async function applyCategorySuggestion(itemId,category) {
-    if(!canManage())throw new Error('Manager or Admin access required');
-    const {error}=await sb.from('items').update({category}).eq('id',itemId);
-    if(error)throw error;
-  }
-
-  function openCategoryReview() {
-    if(!canManage())return;
-    const rows=categoryReviewRows();
-    const activeItems=S.items.filter(i=>i.active);
-    const legacyItems=activeItems.filter(i=>categoryIsPlaceholder(i.category));
-    const uncategorised=rows.filter(r=>r.kind==='uncategorised');
-    const mismatches=rows.filter(r=>r.kind==='mismatch');
-    const highUncat=uncategorised.filter(r=>r.suggestion.confidence==='High');
-    const body=rows.map(r=>`<div class="category-review-row">
-      <div class="category-review-main">
-        <div class="item-title">${esc(r.item.name)}</div>
-        <div class="muted">${esc(r.item.item_code||'')}</div>
-        <div class="category-review-path"><span class="category-current">${r.item.category?esc(r.item.category):'Uncategorised'}</span><span aria-hidden="true">→</span><strong>${esc(r.suggestion.category)}</strong><span class="badge ${r.suggestion.confidence==='High'?'good':'warn'}">${esc(r.suggestion.confidence)} ${r.suggestion.percent}%</span></div>
-        <div class="muted category-evidence">${r.kind==='mismatch'?'Possible category mismatch · ':'Suggested from item name · '}${esc(r.suggestion.evidence.join(' · ')||'inventory learning')}</div>
-      </div>
-      <div class="category-review-actions"><button class="btn small" data-approve-category="${r.item.id}" data-category="${esc(r.suggestion.category)}">${r.kind==='mismatch'?'Approve change':'Approve'}</button><button class="btn ghost small" data-edit-category-item="${r.item.id}">Edit</button></div>
-    </div>`).join('');
-    showModal(`<header><div><h2>Category Review</h2><div class="muted">Automatic suggestions for stock already in Inventory.</div></div><button class="close" data-close>×</button></header>
-      <div class="notice compact"><strong>Live auto-sync:</strong> ${activeItems.length} active items scanned · ${legacyItems.length} legacy/uncategorised. Legacy category <strong>Imported</strong> is ignored as learning data and can never be suggested. Existing genuine categories are never overwritten automatically.</div>
-      <div class="grid cards category-review-stats"><div class="card"><div class="muted">Needs review</div><div class="stat">${rows.length}</div></div><div class="card"><div class="muted">Uncategorised</div><div class="stat">${uncategorised.length}</div></div><div class="card"><div class="muted">Possible mismatch</div><div class="stat">${mismatches.length}</div></div></div>
-      <div class="actions category-review-tools">${highUncat.length?`<button class="btn good" id="approveHighCategories">Approve ${highUncat.length} high-confidence uncategorised</button>`:''}<button class="btn ghost" id="refreshCategoryReview">Refresh scan</button></div>
-      <div class="category-review-list">${body||'<div class="notice success"><strong>All clear.</strong> No category suggestions currently need approval.</div>'}</div>`);
-
-    document.querySelectorAll('[data-approve-category]').forEach(b=>b.onclick=async()=>{
-      b.disabled=true;b.textContent='Saving…';
-      try{await applyCategorySuggestion(b.dataset.approveCategory,b.dataset.category);await loadData({transactions:false});setNotice('Category approved.');openCategoryReview();}
-      catch(err){setNotice(parseError(err),'error');closeModal();render();}
-    });
-    document.querySelectorAll('[data-edit-category-item]').forEach(b=>b.onclick=()=>{
-      const item=byId(S.items,b.dataset.editCategoryItem);if(item)openEditItem(item);
-    });
-    const refresh=document.getElementById('refreshCategoryReview');if(refresh)refresh.onclick=async()=>{
-      refresh.disabled=true;refresh.textContent='Refreshing…';
-      try{await loadData({transactions:false});openCategoryReview();}catch(err){setNotice(parseError(err),'error');closeModal();render();}
-    };
-    const approveAll=document.getElementById('approveHighCategories');if(approveAll)approveAll.onclick=async()=>{
-      if(!confirm(`Approve ${highUncat.length} high-confidence category suggestions? Existing categorised items will not be changed.`))return;
-      approveAll.disabled=true;approveAll.textContent='Approving…';
-      try{
-        for(const r of highUncat)await applyCategorySuggestion(r.item.id,r.suggestion.category);
-        await loadData({transactions:false});setNotice(`${highUncat.length} category suggestion${highUncat.length===1?'':'s'} approved.`);openCategoryReview();
-      }catch(err){setNotice(parseError(err),'error');closeModal();render();}
-    };
-  }
-
-  function openCategoryManager() {
-    if(!canAdmin())return;
-    const active=S.categories.filter(c=>c.active);
-    showModal(`<header><h2>Categories</h2><button class="close" data-close>×</button></header><p class="muted">Categories appear in the item form and as a filter on manual search.</p><div class="item-list">${active.map(c=>`<div class="item-row"><div><strong>${esc(c.name)}</strong></div><button class="btn danger" data-hide-category="${c.id}">Hide</button></div>`).join('')||'<div class="notice">No categories configured.</div>'}</div><form id="addCategoryForm" style="margin-top:1rem"><label>Add category</label><div class="toolbar"><input id="newCategoryName" placeholder="e.g. PPE" required><button class="btn" type="submit">Add</button></div></form>`);
-    document.querySelectorAll('[data-hide-category]').forEach(b=>b.onclick=async()=>{
-      const {error}=await sb.from('inventory_categories').update({active:false}).eq('id',b.dataset.hideCategory);
-      if(error){setNotice(parseError(error),'error');render();return;}
-      await loadData({transactions:false});openCategoryManager();
-    });
-    document.getElementById('addCategoryForm').onsubmit=async e=>{
-      e.preventDefault();const name=document.getElementById('newCategoryName').value.trim();if(!name)return;
-      const existing=S.categories.find(c=>c.name.toLowerCase()===name.toLowerCase());
-      let error;
-      if(existing)({error}=await sb.from('inventory_categories').update({active:true}).eq('id',existing.id));
-      else ({error}=await sb.from('inventory_categories').insert({name,sort_order:100}));
-      if(error){setNotice(parseError(error),'error');render();return;}
-      await loadData({transactions:false});openCategoryManager();
-    };
-  }
-
-  async function canvasJpegFile(canvas,name,targetBytes=360000) {
-    let quality=0.82,blob=null;
-    for(let n=0;n<5;n++){
-      blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));
-      if(!blob||blob.size<=targetBytes||quality<=0.58)break;
-      quality-=0.07;
-    }
-    if(!blob)throw new Error('Could not process photo');
-    return new File([blob],`${String(name||'item-photo').replace(/\.[^.]+$/,'')}.jpg`,{type:'image/jpeg',lastModified:Date.now()});
-  }
-
-  async function editItemPhoto(file) {
-    if(!file?.type?.startsWith('image/'))throw new Error('Choose an image file');
-    const bitmap=await createImageBitmap(file);
-    return await new Promise(resolve=>{
-      const back=document.createElement('div');back.className='photo-editor-backdrop';
-      back.innerHTML=`<div class="photo-editor"><header><div><h2>Crop item photo</h2><p class="muted">Drag to position · use zoom to crop · rotate if needed.</p></div><button class="close" id="photoCancelTop" type="button">×</button></header><div class="photo-editor-stage"><canvas id="photoEditCanvas"></canvas><div class="photo-crop-guide"></div></div><div class="photo-editor-controls"><label>Crop shape<select id="photoRatio"><option value="original">Original shape</option><option value="1">Square</option><option value="1.333333">Landscape 4:3</option><option value="0.75">Portrait 3:4</option></select></label><label>Zoom <strong id="photoZoomValue">1.0×</strong><input id="photoZoom" type="range" min="1" max="3" step="0.05" value="1"></label></div><div class="actions"><button class="btn ghost" id="photoRotate" type="button">Rotate 90°</button><button class="btn ghost" id="photoReset" type="button">Reset</button><button class="btn secondary" id="photoRetake" type="button">Cancel / retake</button><button class="btn" id="photoUse" type="button">Use cropped photo</button></div><p class="muted photo-size-note">Saved photo will be limited to 1280 px on the longest edge and compressed for low data/storage use.</p></div>`;
-      document.body.appendChild(back);
-      const canvas=back.querySelector('#photoEditCanvas'),ctx=canvas.getContext('2d');
-      const ratioSel=back.querySelector('#photoRatio'),zoomEl=back.querySelector('#photoZoom'),zoomValue=back.querySelector('#photoZoomValue');
-      let rotation=0,zoom=1,offX=0,offY=0,drag=false,lastX=0,lastY=0;
-      const sourceRatio=bitmap.width/bitmap.height;
-      function rotatedSize(){return rotation%180===0?[bitmap.width,bitmap.height]:[bitmap.height,bitmap.width]}
-      function cropRatio(){return ratioSel.value==='original'?(rotation%180===0?sourceRatio:1/sourceRatio):Number(ratioSel.value)}
-      function setCanvasSize(){const r=cropRatio(),maxW=Math.min(720,Math.max(320,window.innerWidth-44)),maxH=Math.min(520,Math.max(280,window.innerHeight*0.52));let w=maxW,h=w/r;if(h>maxH){h=maxH;w=h*r}canvas.width=Math.max(240,Math.round(w));canvas.height=Math.max(240,Math.round(h));draw()}
-      function clampOffsets(){const [rw,rh]=rotatedSize(),base=Math.max(canvas.width/rw,canvas.height/rh),sc=base*zoom;const dw=rw*sc,dh=rh*sc;offX=clamp(offX,-Math.max(0,(dw-canvas.width)/2),Math.max(0,(dw-canvas.width)/2));offY=clamp(offY,-Math.max(0,(dh-canvas.height)/2),Math.max(0,(dh-canvas.height)/2))}
-      function draw(){clampOffsets();const [rw,rh]=rotatedSize(),base=Math.max(canvas.width/rw,canvas.height/rh),sc=base*zoom;ctx.clearRect(0,0,canvas.width,canvas.height);ctx.save();ctx.translate(canvas.width/2+offX,canvas.height/2+offY);ctx.rotate(rotation*Math.PI/180);ctx.drawImage(bitmap,-bitmap.width*sc/2,-bitmap.height*sc/2,bitmap.width*sc,bitmap.height*sc);ctx.restore()}
-      function finish(value){bitmap.close?.();back.remove();resolve(value)}
-      canvas.addEventListener('pointerdown',e=>{drag=true;lastX=e.clientX;lastY=e.clientY;canvas.setPointerCapture?.(e.pointerId)});
-      canvas.addEventListener('pointermove',e=>{if(!drag)return;offX+=e.clientX-lastX;offY+=e.clientY-lastY;lastX=e.clientX;lastY=e.clientY;draw()});
-      canvas.addEventListener('pointerup',()=>drag=false);canvas.addEventListener('pointercancel',()=>drag=false);
-      zoomEl.oninput=()=>{zoom=Number(zoomEl.value);zoomValue.textContent=`${zoom.toFixed(1)}×`;draw()};
-      ratioSel.onchange=()=>{offX=offY=0;setCanvasSize()};
-      back.querySelector('#photoRotate').onclick=()=>{rotation=(rotation+90)%360;offX=offY=0;setCanvasSize()};
-      back.querySelector('#photoReset').onclick=()=>{rotation=0;zoom=1;offX=offY=0;zoomEl.value='1';zoomValue.textContent='1.0×';ratioSel.value='original';setCanvasSize()};
-      back.querySelector('#photoCancelTop').onclick=()=>finish(null);back.querySelector('#photoRetake').onclick=()=>finish(null);
-      back.querySelector('#photoUse').onclick=async()=>{
-        const ratio=canvas.width/canvas.height,max=1280;let ow,oh;if(ratio>=1){ow=max;oh=Math.round(max/ratio)}else{oh=max;ow=Math.round(max*ratio)}
-        const out=document.createElement('canvas');out.width=ow;out.height=oh;const ox=out.getContext('2d');
-        const [rw,rh]=rotatedSize(),base=Math.max(canvas.width/rw,canvas.height/rh),displayScale=base*zoom,outputScale=ow/canvas.width;
-        ox.save();ox.translate(ow/2+offX*outputScale,oh/2+offY*outputScale);ox.rotate(rotation*Math.PI/180);const sc=displayScale*outputScale;ox.drawImage(bitmap,-bitmap.width*sc/2,-bitmap.height*sc/2,bitmap.width*sc,bitmap.height*sc);ox.restore();
-        try{const f=await canvasJpegFile(out,file.name,360000);finish(f)}catch(_){finish(null)}
-      };
-      setCanvasSize();
-    });
-  }
-
-  async function compressImage(file) {
-    if(!file?.type?.startsWith('image/'))return file;
-    try{
-      const img=await createImageBitmap(file),max=1280,scale=Math.min(1,max/Math.max(img.width,img.height));
-      if(scale===1&&file.type==='image/jpeg'&&file.size<=360000){img.close?.();return file}
-      const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.width*scale));canvas.height=Math.max(1,Math.round(img.height*scale));
-      canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);img.close?.();
-      return await canvasJpegFile(canvas,file.name,360000);
-    }catch(_){return file}
-  }
-
-  async function uploadItemPhoto(itemId,file) {
-    const upload=await compressImage(file);
-    const path=`${itemId}/${Date.now()}-${slug(upload.name)}`;
-    const {error}=await sb.storage.from('item-photos').upload(path,upload,{upsert:false,contentType:upload.type}); if(error)throw error;
-    const {error:e2}=await sb.from('items').update({primary_photo_path:path,updated_at:new Date().toISOString()}).eq('id',itemId); if(e2)throw e2;
-  }
-
-
-
-
-
-
-
-  async function signedUrl(bucket,path,seconds=900){if(!path||S.offline||!navigator.onLine)return null;const {data,error}=await sb.storage.from(bucket).createSignedUrl(path,seconds);return error?null:data?.signedUrl||null;}
-
-  function printQr(item) {
-    showModal(`<header><h2>QR label</h2><button class="close" data-close>×</button></header><div class="print-target" style="text-align:center"><h3>${esc(item.name)}</h3><div id="qrBox" class="qrprint"></div><div>${esc(item.qr_value)}</div><div class="no-print actions"><button class="btn" id="doPrint">Print</button></div></div>`);
-    const box=document.getElementById('qrBox');if(window.QRCode)new QRCode(box,{text:item.qr_value,width:220,height:220,correctLevel:QRCode.CorrectLevel.M});document.getElementById('doPrint').onclick=()=>window.print();
-  }
-
-  function showModal(html) {
-    const old=document.getElementById('modalBackdrop');
-    const replacing=!!old;
-    if(old) old.remove();
-    const div=document.createElement('div');div.id='modalBackdrop';div.className='modal-backdrop';div.innerHTML=`<div class="modal">${html}</div>`;document.body.appendChild(div);div.onclick=e=>{if(e.target===div||e.target.closest('[data-close]'))closeModal();};
-    if(!replacing) pushModalHistory();
-  }
-  function closeModal(fromPopstate=false){
-    const modal=document.getElementById('modalBackdrop');
-    if(!modal) return;
-    if(S.safetyGate){const gate=S.safetyGate;S.safetyGate=null;recordSafetyBridgeEvent(gate.itemId,'USE_CANCELLED',gate.snapshot).catch(()=>{});}
-    modal.remove();
-    if(!fromPopstate && history.state?.inventoryTracker && history.state.modal){
-      suppressNextPopstate=true;
-      history.back();
-    }
-  }
-
-  window.addEventListener('popstate',e=>{
-    if(suppressNextPopstate){
-      suppressNextPopstate=false;
-      return;
-    }
-    if(!S.session || S.passwordMode) return;
-
-    // If a modal is open, Back closes it first and reveals the page beneath.
-    if(document.getElementById('modalBackdrop')){
-      closeModal(true);
-    }
-
-    const state=e.state;
-    if(state?.inventoryTracker){
-      // The protected root prevents an installed Android PWA from closing on
-      // the first Back press. At root, stay on Dashboard and re-arm the guard.
-      if(state.guard){
-        S.page='dashboard';
-        S.selectedItemId=null;
-        render();
-        history.pushState(navState({modal:false,guard:false,page:'dashboard'}),'',location.href);
-        return;
-      }
-      S.page=state.page||'dashboard';
-      S.selectedItemId=null;
-      render();
-      return;
-    }
-    // Unexpected external/no-state history: keep the installed app open and
-    // return to Dashboard rather than allowing Android to close it.
-    S.page='dashboard';
-    S.selectedItemId=null;
-    render();
-    history.pushState(navState({modal:false,guard:false,page:'dashboard'}),'',location.href);
-  });
-
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
-  }
-
-  window.addEventListener('offline',()=>{
-    if(!S.session)return;
-    S.offline=true;stopRealtime();saveOfflineSnapshot();setNotice('Connection lost. Offline stock mode is active.');render();
-  });
-  window.addEventListener('online',()=>{
-    if(!S.session)return;
-    S.offline=false;setNotice('Connection restored. Checking pending offline stock actions…');render();setTimeout(syncOfflineQueue,200);
-  });
-
-  bootstrap();
-})();
+  const aud=await sb.rpc('sync_training_audience_assignments_v230',{p_document_id:null,p_user_id:null});
+  if(aud.error)console.warn('sync_training_audience_assignments_v230',aud.error);else changes+=Number(aud.data||0);
+  return changes;
+}
+async function normaliseDefaults(){let changes=0;for(const v of state.versions.filter(v=>v.status==='CURRENT')){const d=state.documents.find(x=>x.id===v.document_id),patch={};if(!v.issue_date)patch.issue_date=v.created_at?new Date(v.created_at).toISOString().slice(0,10):todayISO();if(d?.doc_type!=='SDS'&&!v.review_date)patch.review_date=plusYear(v.issue_date||patch.issue_date||todayISO());if(Object.keys(patch).length){const r=await sb.from('document_versions').update(patch).eq('id',v.id);if(!r.error){Object.assign(v,patch);changes++}}}for(const t of activeTraining()){const patch={};if(!t.review_date)patch.review_date=plusYear(t.created_at?new Date(t.created_at).toISOString().slice(0,10):todayISO());if(t.session_type==='TOOLBOX_TALK'){if(!t.source_kind)patch.source_kind='TOOLBOX_TALK';if(!t.reference){const m=String(t.name||'').match(/\bTBT-\d{3}\b/i);if(m)patch.reference=m[0].toUpperCase()}}if(Object.keys(patch).length){const r=await sb.from('training_sessions').update(patch).eq('id',t.id);if(!r.error){Object.assign(t,patch);changes++}}}return changes}
+async function deleteRowsByIds(table,ids){let removed=0;for(let i=0;i<ids.length;i+=100){const chunk=ids.slice(i,i+100);if(!chunk.length)continue;const r=await sb.from(table).delete().in('id',chunk);if(r.error)throw r.error;removed+=chunk.length}return removed}
+async function clearLinkSyncFlags(){let changes=0;for(const d of state.documents.filter(x=>x.review_required&&String(x.review_reason||'').startsWith('[LINK_SYNC]'))){const r=await sb.from('documents').update({review_required:false,review_reason:null}).eq('id',d.id);if(!r.error){d.review_required=false;d.review_reason=null;changes++}}for(const t of activeTraining().filter(x=>x.review_required&&String(x.review_reason||'').startsWith('[LINK_SYNC]'))){const r=await sb.from('training_sessions').update({review_required:false,review_reason:null}).eq('id',t.id);if(!r.error){t.review_required=false;t.review_reason=null;changes++}}return changes}
+async function rebuildLinkTables(progress=()=>{}){let changes=0;progress('Clearing existing document-to-document links…');changes+=await deleteRowsByIds('document_links',state.documentLinks.map(x=>x.id).filter(Boolean));state.documentLinks=[];progress('Clearing existing Training-to-document links…');changes+=await deleteRowsByIds('training_document_links',state.trainingDocumentLinks.map(x=>x.id).filter(Boolean));state.trainingDocumentLinks=[];changes+=await clearLinkSyncFlags();return changes}
+async function flagMissingDocumentRefs(d,refs){if(!refs.length||d.review_required)return 0;const reason=`[LINK_SYNC] Referenced controlled document${refs.length===1?'':'s'} not found: ${refs.join(', ')}. Check the reference or upload the missing document.`;const r=await sb.from('documents').update({review_required:true,review_reason:reason}).eq('id',d.id);if(r.error)return 0;d.review_required=true;d.review_reason=reason;return 1}
+async function flagMissingTrainingRefs(t,refs){if(!refs.length||t.review_required)return 0;const reason=`[LINK_SYNC] Referenced controlled document${refs.length===1?'':'s'} not found: ${refs.join(', ')}. Check the reference or upload the missing document.`;const r=await sb.from('training_sessions').update({review_required:true,review_reason:reason}).eq('id',t.id);if(r.error)return 0;t.review_required=true;t.review_reason=reason;return 1}
+async function scanDocumentRefs(d,v){if(!v?.storage_path)return {changes:0,missing:0};let changes=0,missing=0;try{const {data,error}=await sb.storage.from('safety-files').download(v.storage_path);if(error||!data)return {changes:0,missing:0};const text=await pdfTextFromBlob(data);for(const match of declaredDocumentMatches(text,d)){const o=match.doc;if(o&&!pairExists(d.id,o.id)){const rel=inferLinkType(d,o),r=await sb.from('document_links').insert({source_document_id:rel.source.id,target_document_id:rel.target.id,link_type:rel.type,created_by:state.user.id}).select().single();if(!r.error){state.documentLinks.push(r.data);changes++}}}for(const ref of declaredRefsForLinking(text,d)){const t=referencedTrainingByRef(ref);if(t&&canonicalRef(t.reference||trainingReference(t)).startsWith('TBT-'))changes+=await ensureTrainingDocLink(t.id,d.id,'RELATED')}const unresolved=missingDeclaredRefs(text,d);missing+=unresolved.length;changes+=await flagMissingDocumentRefs(d,unresolved);await sb.from('document_versions').update({links_scanned_at:new Date().toISOString()}).eq('id',v.id)}catch(e){console.warn('scanDocumentRefs',e)}return {changes,missing}}
+async function scanTrainingRefs(t,f){if(!f?.storage_path)return {changes:0,missing:0};let changes=0,missing=0;try{const {data,error}=await sb.storage.from('safety-files').download(f.storage_path);if(error||!data)return {changes:0,missing:0};const text=await pdfTextFromBlob(data);for(const match of declaredDocumentMatches(text,null)){const d=match.doc;if(d)changes+=await ensureTrainingDocLink(t.id,d.id,'RELATED')}const unresolved=missingDeclaredRefs(text,null);missing+=unresolved.length;changes+=await flagMissingTrainingRefs(t,unresolved);await sb.from('training_files').update({links_scanned_at:new Date().toISOString()}).eq('id',f.id)}catch(e){console.warn('scanTrainingRefs',e)}return {changes,missing}}
+function linkScanVersions(docId){
+  // If an approved/current version exists, it remains the operative source of
+  // Training relationships while any replacement is still pending. For a
+  // brand-new pending-only document, scan the pending file immediately so its
+  // relationships are visible before approval.
+  const approved=approvedCurrentVersion(docId);
+  if(approved?.storage_path)return [approved];
+  return pendingApprovalVersions(docId).filter(v=>v?.storage_path);
+}
+async function scanFiles(mode='recent',progress=()=>{}){let changes=0,scanned=0,missing=0;const cutoff=Date.now()-20*60*1000;for(const d of state.documents.filter(d=>d.status!=='ARCHIVED')){for(const v of linkScanVersions(d.id)){const recent=new Date(v.created_at||0).getTime()>=cutoff;if(mode!=='full'&&(!recent||v.links_scanned_at))continue;progress(`Reading links stated in ${d.reference||d.title}${versionApprovalStatus(v)==='PENDING'?' (pending version)':''}`);const r=await scanDocumentRefs(d,v);changes+=r.changes;missing+=r.missing;scanned++}}const latest=new Map();for(const f of state.trainingFiles){const x=latest.get(f.training_session_id);if(!x||new Date(f.created_at||0)>new Date(x.created_at||0))latest.set(f.training_session_id,f)}for(const t of activeTraining()){const f=latest.get(t.id);if(!f?.storage_path)continue;const recent=new Date(f.created_at||0).getTime()>=cutoff;if(mode!=='full'&&(!recent||f.links_scanned_at))continue;progress(`Reading links stated in training file ${t.name}`);const r=await scanTrainingRefs(t,f);changes+=r.changes;missing+=r.missing;scanned++}return {changes,scanned,missing}}
+function latestReviewTime(docId){const ids=new Set(state.versions.filter(v=>v.document_id===docId).map(v=>v.id));return state.documentReviews.filter(r=>ids.has(r.document_version_id)).sort((a,b)=>new Date(b.reviewed_at||0)-new Date(a.reviewed_at||0))[0]?.reviewed_at||null}
+async function propagateReviewFlags(){let changes=0;for(const l of state.documentLinks.filter(l=>['SDS_TO_COSHH','COSHH_TO_SSW','RA_TO_SSW'].includes(l.link_type))){const source=state.documents.find(d=>d.id===l.source_document_id),target=state.documents.find(d=>d.id===l.target_document_id),sv=approvedCurrentVersion(source?.id),tv=approvedCurrentVersion(target?.id);if(!source||!target||!sv||!tv)continue;const base=Math.max(new Date(tv.created_at||0).getTime(),new Date(latestReviewTime(target.id)||0).getTime());if(new Date(sv.created_at||0).getTime()>base&&!target.review_required){const reason=`${source.reference||source.title} has a newer controlled version. Review ${target.reference||target.title} and linked training.`;const r=await sb.from('documents').update({review_required:true,review_reason:reason}).eq('id',target.id);if(!r.error){target.review_required=true;target.review_reason=reason;changes++}}}for(const t of activeTraining().filter(t=>!t.auto_managed)){const newer=linkedTrainingDocs(t.id).filter(x=>{const v=approvedCurrentVersion(x.doc.id);return v&&new Date(v.created_at||0)>new Date(t.created_at||0)});if(newer.length&&!t.review_required){const reason=`Linked controlled document${newer.length===1?' has':'s have'} changed since this training was created: ${newer.slice(0,3).map(x=>x.doc.reference||x.doc.title).join(', ')}.`;const r=await sb.from('training_sessions').update({review_required:true,review_reason:reason}).eq('id',t.id);if(!r.error){t.review_required=true;t.review_reason=reason;changes++}}}return changes}
+async function runSafetySync({scan='recent',progress=()=>{},rebuildLinks=false}={}){if(state.syncBusy)return {changes:0,scanned:0,missing:0};state.syncBusy=true;let changes=0;try{progress('Applying issue/review date defaults…');changes+=await normaliseDefaults();if(scan==='full'||rebuildLinks){progress('Repairing Risk Assessment titles from each first page…');const raAligned=await repairRaTitles({silent:true,refreshAfter:false,progress});changes+=raAligned.changed;progress('Aligning SDS/MSDS names from manufacturer Section 1.1…');const aligned=await repairSdsTitles({silent:true,refreshAfter:false,progress});changes+=aligned.changed}progress('Synchronising approved RA/COSHH/SSW Training records…');changes+=await syncSourceTrainings();return {changes,scanned:0,missing:0}}finally{state.syncBusy=false}}
+async function forceSyncFromUI(){if(!isAdmin())return;const b=$('forceSyncBtn'),s=$('forceSyncStatus');b.disabled=true;s.hidden=false;s.textContent='Starting Force Sync & Review…';try{await loadAll();const r=await runSafetySync({scan:'full',progress:m=>s.textContent=m});await loadAll();s.textContent=`Force Sync & Review complete. Controlled titles/defaults were checked and approved RA/COSHH/SSW Training records were synchronised. ${r.changes} database update${r.changes===1?'':'s'}.`;renderDocuments();renderTraining();renderAdmin();toast('Force Sync & Review complete.')}catch(e){console.error(e);s.textContent=`Force Sync failed: ${e.message||e}`;toast('Force Sync failed.')}finally{b.disabled=false}}
+
+function uniqueById(rows){const seen=new Set();return rows.filter(x=>x&&x.id&&!seen.has(x.id)&&seen.add(x.id))}
+function documentVersionsForEvidence(doc,scope){const rows=state.versions.filter(v=>v.document_id===doc.id);if(scope==='FULL')return [...rows].sort((a,b)=>{if(a.status==='CURRENT'&&b.status!=='CURRENT')return -1;if(b.status==='CURRENT'&&a.status!=='CURRENT')return 1;return new Date(b.created_at||0)-new Date(a.created_at||0)});const v=approvedCurrentVersion(doc.id);return v?[v]:[]}
+function evidencePersonOptions(){return [...state.people].sort((a,b)=>personName(a.id).localeCompare(personName(b.id))).map(p=>`<option value="${p.id}">${esc(personName(p.id))}${p.active===false?' (inactive)':''}</option>`).join('')}
+function evidenceDocumentPickerRows(preselected=[]){const sel=new Set(preselected);return state.documents.filter(d=>d.status!=='ARCHIVED').sort((a,b)=>String(a.reference||documentDisplayTitle(a)).localeCompare(String(b.reference||documentDisplayTitle(b)),undefined,{numeric:true})).map(d=>{const v=approvedCurrentVersion(d.id)||pendingApprovalVersion(d.id)||latestVersion(d.id),status=v?versionApprovalLabel(v,d):'No version';return `<label class="check-row evidence-choice" data-evidence-search="${esc(`${d.reference||''} ${documentDisplayTitle(d)} ${docTypeLabel(d.doc_type)} ${status}`.toLowerCase())}"><input type="checkbox" class="evidence-doc-choice" value="${d.id}" ${sel.has(d.id)?'checked':''}><span><strong>${esc(d.reference||docTypeLabel(d.doc_type))}</strong> · ${esc(documentDisplayTitle(d))}<br><span class="muted">${esc(docTypeLabel(d.doc_type))} · ${esc(status)}</span></span></label>`}).join('')}
+function evidenceTrainingPickerRows(preselected=[]){const sel=new Set(preselected);return state.training.filter(t=>t.status!=='ARCHIVED'&&!t.source_document_id).sort((a,b)=>String(trainingReference(a)||a.name).localeCompare(String(trainingReference(b)||b.name),undefined,{numeric:true})).map(t=>`<label class="check-row evidence-choice" data-evidence-search="${esc(`${trainingReference(t)||''} ${t.name} ${kindLabel(trainingKind(t))}`.toLowerCase())}"><input type="checkbox" class="evidence-training-choice" value="${t.id}" ${sel.has(t.id)?'checked':''}><span><strong>${esc(trainingReference(t)||kindLabel(trainingKind(t)))}</strong> · ${esc(t.name)}<br><span class="muted">Standalone ${esc(kindLabel(trainingKind(t)))}</span></span></label>`).join('')}
+function wireEvidenceSearch(){const q=$('evidenceItemSearch');if(!q)return;q.addEventListener('input',()=>{const s=clean(q.value).toLowerCase();document.querySelectorAll('.evidence-choice').forEach(x=>x.hidden=!!s&&!String(x.dataset.evidenceSearch||'').includes(s))})}
+function showEvidencePackPicker(preselectedDocs=[],preselectedTraining=[]){if(!isManager())return;openModal('Person evidence pack',`<div class="hint-box">Select the person, then choose the documents and training records needed for this report. Links are not required. Safety Tracker will collect the matching training/sign-off/access evidence and append the selected controlled PDFs.</div><div class="form-grid"><label class="full">Person<select id="evidencePerson"><option value="">Select person…</option>${evidencePersonOptions()}</select></label><label>History<select id="evidenceScope"><option value="CURRENT">Current approved version only</option><option value="FULL">Full version history</option></select></label><label>From date (optional)<input id="evidenceStart" type="date"></label><label>To date (optional)<input id="evidenceEnd" type="date"></label><label class="full">Search documents / items<input id="evidenceItemSearch" placeholder="Search reference, title or type"></label></div><div class="section-card"><h4>Controlled documents</h4><div class="checkbox-list evidence-picker-list">${evidenceDocumentPickerRows(preselectedDocs)}</div></div><div class="section-card"><h4>Standalone training / Toolbox Talks</h4><div class="checkbox-list evidence-picker-list">${evidenceTrainingPickerRows(preselectedTraining)||'<span class="muted">No standalone training items.</span>'}</div></div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Create evidence pack','primary','data-generate-evidence-selected')}</div>`);wireEvidenceSearch()}
+function showDocumentEvidencePack(docId){showEvidencePackPicker([docId],[])}
+function showTrainingEvidencePack(trainingId){const t=state.training.find(x=>x.id===trainingId);if(!t||!isManager())return;if(t.source_document_id)showEvidencePackPicker([t.source_document_id],[]);else showEvidencePackPicker([],[trainingId])}
+function evidenceSessionsForDocuments(docs,scope){const ids=new Set(docs.map(d=>d.id));return state.training.filter(t=>ids.has(t.source_document_id)&&t.auto_managed===true&&(scope==='FULL'||t.source_document_version_id===approvedCurrentVersion(t.source_document_id)?.id))}
+function evidenceRowsForPerson(sessions,personId){const sessionIds=new Set(sessions.map(t=>t.id));const assignments=state.trainingAssignments.filter(a=>a.user_id===personId&&sessionIds.has(a.training_session_id));const assignmentIds=new Set(assignments.map(a=>a.id));const signoffs=state.trainingSignoffs.filter(s=>s.user_id===personId&&(assignmentIds.has(s.training_assignment_id)||sessionIds.has(s.training_session_id)));const exceptions=state.trainingExceptions.filter(x=>x.user_id===personId&&(assignmentIds.has(x.training_assignment_id)||sessionIds.has(x.training_session_id)));const confirmations=state.trainingConfirmations.filter(c=>c.user_id===personId&&assignmentIds.has(c.assignment_id));return {assignments,signoffs,exceptions,confirmations}}
+function evidenceDateInRange(value,start,end){if(!value)return true;const t=new Date(value).getTime();if(start&&t<new Date(start+'T00:00:00').getTime())return false;if(end&&t>new Date(end+'T23:59:59.999').getTime())return false;return true}
+function addEvidenceTable(doc,title,head,body){let y=doc.lastAutoTable?.finalY||28;if(y>255){doc.addPage();y=18}doc.setFontSize(11);doc.text(title,14,y+7);doc.autoTable({head:[head],body:body.length?body:[['None recorded',...Array(Math.max(0,head.length-1)).fill('')]],startY:y+10,styles:{fontSize:7,cellPadding:1.6},headStyles:{fontSize:7},margin:{left:14,right:14}})}
+function makeEvidenceSummaryPdf(ctx,failed){const {jsPDF}=window.jspdf;const out=new jsPDF({orientation:'portrait',unit:'mm',format:'a4'});out.setFontSize(17);out.text('Safety Tracker - Person Evidence Pack',14,16);out.setFontSize(9);out.text(`Generated ${new Date().toLocaleString('en-GB')} · Safety Tracker v${APP_VERSION}`,14,23);out.setFontSize(10);out.text(`Person: ${personName(ctx.personId)}`,14,31);out.text(`Selected items: ${ctx.documents.length+ctx.toolboxTalks.length}`,14,37);out.text(`History: ${ctx.scope==='FULL'?'Full history':'Current approved versions only'}`,14,43);out.text(`Evidence period: ${ctx.startDate?fmtDate(ctx.startDate):'Any date'} to ${ctx.endDate?fmtDate(ctx.endDate):'Any date'}`,14,49);out.setFontSize(8);out.text('This pack records evidence held in Safety Tracker. An OPENED event proves access to a file, not comprehension or competence on its own.',14,56,{maxWidth:180});
+  const docRows=[];for(const x of ctx.documents){for(const v of documentVersionsForEvidence(x.doc,ctx.scope))docRows.push([x.role,x.doc.reference||docTypeLabel(x.doc.doc_type),documentDisplayTitle(x.doc),v.version_label||'',`${v.status||''} / ${versionApprovalStatus(v)}`,fmtDate(v.issue_date),fmtDate(v.review_date)])}for(const x of ctx.toolboxTalks){const f=latestTrainingFile(x.training.id);docRows.push([x.role,trainingReference(x.training)||'Training',x.training.name,'—',x.training.status||'',f?fmtDate(f.created_at):'—',fmtDate(x.training.review_date)])}out.autoTable({head:[['Selection','Reference','Item','Version','Status','Issue/file date','Review']],body:docRows.length?docRows:[['Selected','','No file details available','','','','']],startY:63,styles:{fontSize:6.6,cellPadding:1.4},headStyles:{fontSize:6.6},margin:{left:14,right:14}});
+  const assignmentRows=ctx.evidence.assignments.map(a=>{const t=state.training.find(x=>x.id===a.training_session_id),st=t?assignmentStatus(a,t):null;return [trainingReference(t)||'',t?.name||'',t?deliveryText(effectiveTrainingMethod(t,a)):'',st?.label||'',fmtDate(a.due_date),renewalText(a.renewal_value,a.renewal_unit,t?.auto_managed&&sourceDocTypes.has(trainingKind(t)))]});addEvidenceTable(out,'Training assignments',['Ref','Training','Delivery','Status','Due','Refresher'],assignmentRows);
+  const eventRows=[];for(const s of ctx.evidence.signoffs){const t=state.training.find(x=>x.id===s.training_session_id);eventRows.push([fmtDateTime(s.signed_at),'Training sign-off',trainingReference(t)||'',s.training_name_snapshot||t?.name||'',s.signature_name||''])}for(const x of ctx.evidence.exceptions){const t=state.training.find(y=>y.id===x.training_session_id);eventRows.push([fmtDateTime(x.completed_at),'ADMIN EXCEPTION',trainingReference(t)||'',t?.name||'',`${x.signature_name||''}${x.reason?' - '+x.reason:''}`])}for(const c of ctx.evidence.confirmations){const a=state.trainingAssignments.find(x=>x.id===c.assignment_id),t=state.training.find(x=>x.id===a?.training_session_id);eventRows.push([fmtDateTime(c.created_at||c.delivery_date),'Instructor confirmation',trainingReference(t)||'',t?.name||'',`${c.attendance_status||''}${c.reason?' - '+c.reason:''}`])}eventRows.sort((a,b)=>String(a[0]).localeCompare(String(b[0])));addEvidenceTable(out,'Completion / instructor evidence',['Date/time','Evidence','Ref','Training','Signature / details'],eventRows);
+  const actRows=ctx.activities.map(a=>[fmtDateTime(a.occurred_at),activityActionLabel(a.action),a.document_reference||'',a.document_title||a.file_name||'',a.version_label||'',a.source_context||'']);addEvidenceTable(out,'Document access / review history',['Date/time','Action','Ref','Document/file','Version','Context'],actRows);
+  const approvalRows=(ctx.versionApprovals||[]).map(x=>{const v=x.version,d=x.doc;return [fmtDateTime(v.approval_at),d?.reference||'',v.version_label||'',versionApprovalStatus(v),approvalContextLabel(v.approval_context),v.approval_note||'',v.approval_signature_name||'',personName(v.approval_by)||'']});addEvidenceTable(out,'Version approval / acceptance history',['Date/time','Ref','Version','Decision','Context','Notes','Signed name','Reviewer'],approvalRows);
+  const crRows=(ctx.controlledReviews||[]).map(r=>{const v=state.versions.find(x=>x.id===r.document_version_id),d=state.documents.find(x=>x.id===v?.document_id);return [fmtDateTime(r.reviewed_at||r.created_at),d?.reference||'',v?.version_label||'',r.outcome||'',r.review_note||'',fmtDate(r.next_review_date),r.signature_name||'',personName(r.reviewed_by||r.user_id)||'']});addEvidenceTable(out,'Controlled document review history',['Date/time','Ref','Version','Outcome','Reason / notes','Next review','Signed name','Reviewer'],crRows);
+  if(failed.length)addEvidenceTable(out,'Files not appended',['File','Reason'],failed.map(x=>[x.label,x.reason]));
+  const signed=[...ctx.evidence.signoffs.map(x=>({...x,_date:x.signed_at,_kind:'Training sign-off'})),...ctx.evidence.exceptions.map(x=>({...x,_date:x.completed_at,_kind:'Admin exception'})),...(ctx.controlledReviews||[]).map(x=>({...x,_date:x.reviewed_at||x.created_at,_kind:'Controlled document review'})),...(ctx.versionApprovals||[]).map(x=>({...x.version,_date:x.version.approval_at,_kind:x.doc?.doc_type==='SDS'?'Version acceptance':'Version approval',_doc:x.doc}))].filter(x=>x.signature_data||x.approval_signature_data);for(const ev of signed){const t=state.training.find(x=>x.id===ev.training_session_id),rv=state.versions.find(x=>x.id===ev.document_version_id),rd=state.documents.find(x=>x.id===rv?.document_id);out.addPage();out.setFontSize(14);out.text('Digital signature evidence',14,18);out.setFontSize(10);const approvalEv=ev._kind==='Version approval'||ev._kind==='Version acceptance',approvalDoc=ev._doc||state.documents.find(x=>x.id===ev.document_id);const evLabel=approvalEv?`${ev._kind}: ${approvalDoc?.reference||''} ${approvalDoc?documentDisplayTitle(approvalDoc):''} v${ev.version_label||''}`:ev._kind==='Controlled document review'?`${ev._kind}: ${rd?.reference||''} ${rd?documentDisplayTitle(rd):''} v${rv?.version_label||''}`:`${ev._kind}: ${trainingReference(t)||''} ${t?.name||ev.training_name_snapshot||''}`;out.text(evLabel,14,28,{maxWidth:180});const signedPerson=approvalEv?(personName(ev.approval_by)||ev.approval_signature_name||'Reviewer'):ev._kind==='Controlled document review'?(personName(ev.reviewed_by||ev.user_id)||ev.signature_name||'Reviewer'):personName(ctx.personId);out.text(`Person: ${signedPerson} · Signed: ${fmtDateTime(ev._date)} · Name: ${approvalEv?(ev.approval_signature_name||''):(ev.signature_name||'')}`,14,38,{maxWidth:180});try{out.addImage(approvalEv?ev.approval_signature_data:ev.signature_data,'PNG',14,48,100,30)}catch(e){out.text('Signature image could not be rendered in this report.',14,55)}}return out.output('arraybuffer')}
+async function buildEvidenceContextSelected(documentIds,trainingIds,personId,scope,startDate,endDate){let documents=documentIds.map(id=>state.documents.find(x=>x.id===id)).filter(Boolean).map(doc=>({doc,role:'Selected'}));let toolboxTalks=trainingIds.map(id=>state.training.find(x=>x.id===id)).filter(Boolean).map(training=>({training,role:'Selected'}));documents=documents.filter((x,i,a)=>a.findIndex(y=>y.doc.id===x.doc.id)===i);toolboxTalks=toolboxTalks.filter((x,i,a)=>a.findIndex(y=>y.training.id===x.training.id)===i);let sessions=[...evidenceSessionsForDocuments(documents.map(x=>x.doc),scope),...toolboxTalks.map(x=>x.training)];sessions=uniqueById(sessions);const evidence=evidenceRowsForPerson(sessions,personId);evidence.signoffs=evidence.signoffs.filter(x=>evidenceDateInRange(x.signed_at,startDate,endDate));evidence.exceptions=evidence.exceptions.filter(x=>evidenceDateInRange(x.completed_at,startDate,endDate));evidence.confirmations=evidence.confirmations.filter(x=>evidenceDateInRange(x.created_at||x.delivery_date,startDate,endDate));const docIds=new Set(documents.map(x=>x.doc.id)),sessionIds=new Set(sessions.map(x=>x.id)),fileIds=new Set(toolboxTalks.flatMap(x=>{const rows=state.trainingFiles.filter(f=>f.training_session_id===x.training.id);const use=scope==='FULL'?rows:(latestTrainingFile(x.training.id)?[latestTrainingFile(x.training.id)]:[]);return use.map(f=>f.id)}));const versionIds=new Set(documents.flatMap(x=>documentVersionsForEvidence(x.doc,scope).map(v=>v.id)));const activities=state.documentActivity.filter(a=>a.user_id===personId&&(docIds.has(a.document_id)||versionIds.has(a.document_version_id)||sessionIds.has(a.training_session_id)||fileIds.has(a.training_file_id))&&evidenceDateInRange(a.occurred_at,startDate,endDate)).sort((a,b)=>new Date(a.occurred_at||0)-new Date(b.occurred_at||0));const controlledReviews=state.documentReviews.filter(r=>versionIds.has(r.document_version_id)&&evidenceDateInRange(r.reviewed_at||r.created_at,startDate,endDate)).sort((a,b)=>new Date(a.reviewed_at||a.created_at||0)-new Date(b.reviewed_at||b.created_at||0));const versionApprovals=[];for(const x of documents){for(const v of documentVersionsForEvidence(x.doc,scope))if((v.approval_at||versionApprovalStatus(v)==='REJECTED')&&evidenceDateInRange(v.approval_at||v.created_at,startDate,endDate))versionApprovals.push({doc:x.doc,version:v});}versionApprovals.sort((a,b)=>new Date(a.version.approval_at||a.version.created_at||0)-new Date(b.version.approval_at||b.version.created_at||0));return {personId,scope,startDate,endDate,primaryLabel:'incident-evidence-pack',documents,toolboxTalks,sessions,evidence,activities,controlledReviews,versionApprovals}}
+async function evidenceAttachments(ctx){const rows=[];for(const x of ctx.documents){for(const v of documentVersionsForEvidence(x.doc,ctx.scope))if(v.storage_path)rows.push({label:`${x.role}: ${x.doc.reference||docTypeLabel(x.doc.doc_type)} - ${documentDisplayTitle(x.doc)} · v${v.version_label||''}`,storage_path:v.storage_path,file_name:v.file_name||`${x.doc.reference||'document'}.pdf`})}for(const x of ctx.toolboxTalks){let files=state.trainingFiles.filter(f=>f.training_session_id===x.training.id).sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));if(ctx.scope!=='FULL')files=files.slice(0,1);for(const f of files)if(f.storage_path)rows.push({label:`${x.role}: ${trainingReference(x.training)||'Training'} - ${x.training.name}`,storage_path:f.storage_path,file_name:f.file_name||'training.pdf'})}const seen=new Set();return rows.filter(x=>!seen.has(x.storage_path)&&seen.add(x.storage_path))}
+async function generateSelectedEvidencePack(){if(!isManager())return;const personId=$('evidencePerson')?.value,scope=$('evidenceScope')?.value||'CURRENT',startDate=$('evidenceStart')?.value||'',endDate=$('evidenceEnd')?.value||'',documentIds=[...document.querySelectorAll('.evidence-doc-choice:checked')].map(x=>x.value),trainingIds=[...document.querySelectorAll('.evidence-training-choice:checked')].map(x=>x.value);if(!personId)return toast('Select the person for this evidence pack.');if(!documentIds.length&&!trainingIds.length)return toast('Select at least one relevant document or training item.');if(startDate&&endDate&&startDate>endDate)return toast('The From date must be before the To date.');if(!window.PDFLib?.PDFDocument||!window.jspdf?.jsPDF)return toast('PDF libraries did not load. Refresh the page and try again.');const actionButtons=[...document.querySelectorAll('[data-generate-evidence-selected]')];actionButtons.forEach(b=>b.disabled=true);toast('Building evidence pack…');try{const ctx=await buildEvidenceContextSelected(documentIds,trainingIds,personId,scope,startDate,endDate),attachments=await evidenceAttachments(ctx),loaded=[],failed=[];for(const a of attachments){try{const r=await sb.storage.from('safety-files').download(a.storage_path);if(r.error||!r.data)throw new Error(r.error?.message||'Download failed');loaded.push({...a,bytes:await r.data.arrayBuffer()})}catch(e){failed.push({label:a.label,reason:e.message||'Could not load PDF'})}}const summaryBytes=makeEvidenceSummaryPdf(ctx,failed),{PDFDocument,StandardFonts,rgb}=window.PDFLib,merged=await PDFDocument.create(),summary=await PDFDocument.load(summaryBytes);const sumPages=await merged.copyPages(summary,summary.getPageIndices());sumPages.forEach(p=>merged.addPage(p));const font=await merged.embedFont(StandardFonts.Helvetica),bold=await merged.embedFont(StandardFonts.HelveticaBold);for(const a of loaded){const divider=merged.addPage([595.28,841.89]);divider.drawText('Supporting controlled document',{x:48,y:770,size:18,font:bold,color:rgb(0.08,0.16,0.24)});const lines=[];let rest=a.label;while(rest.length>80){let cut=rest.lastIndexOf(' ',80);if(cut<30)cut=80;lines.push(rest.slice(0,cut));rest=rest.slice(cut).trim()}lines.push(rest);lines.forEach((line,i)=>divider.drawText(line,{x:48,y:730-i*18,size:11,font}));divider.drawText(`File: ${a.file_name}`,{x:48,y:650,size:9,font});const src=await PDFDocument.load(a.bytes,{ignoreEncryption:true}),pages=await merged.copyPages(src,src.getPageIndices());pages.forEach(p=>merged.addPage(p))}const bytes=await merged.save(),blob=new Blob([bytes],{type:'application/pdf'}),base=safeFileName(`${personName(personId)}-evidence-pack`)||'evidence-pack';downloadBlob(blob,`${base}-${scope==='FULL'?'full-history':'current'}-${todayISO()}.pdf`);closeModal();toast(`Evidence pack created: ${loaded.length} PDF${loaded.length===1?'':'s'} appended${failed.length?`, ${failed.length} could not be appended`:''}.`)}catch(e){console.error(e);toast(e.message||'Could not create evidence pack.')}finally{actionButtons.forEach(b=>b.disabled=false)}}
+async function generateEvidencePack(primaryType,primaryId){return generateSelectedEvidencePack()}
+
+// --- v2.2.2 Annual Safety Awareness -------------------------------------------------
+function awarenessItem(id){return state.awarenessItems.find(x=>x.id===id)||null}
+function awarenessAssignmentsForItem(id){return state.awarenessAssignments.filter(a=>a.awareness_item_id===id&&a.active!==false)}
+function awarenessAssignmentForUser(id,userId=state.user?.id){return state.awarenessAssignments.find(a=>a.awareness_item_id===id&&a.user_id===userId&&a.active!==false)||null}
+function awarenessEvents(id,userId=state.user?.id){return state.awarenessActivity.filter(a=>a.awareness_item_id===id&&a.user_id===userId).sort((a,b)=>new Date(b.occurred_at||0)-new Date(a.occurred_at||0))}
+function latestAwarenessAck(id,userId=state.user?.id){const item=awarenessItem(id);return awarenessEvents(id,userId).find(a=>a.action==='ACKNOWLEDGED'&&String(a.item_version_label||'')===String(item?.version_label||''))||null}
+function awarenessStatus(item,userId=state.user?.id){const asn=awarenessAssignmentForUser(item.id,userId);if(!asn)return {code:'UNASSIGNED',label:'Not assigned',traffic:'neutral',due:null};const ack=latestAwarenessAck(item.id,userId);if(!ack)return {code:'DUE',label:'Review required',traffic:'amber',due:null};const d=new Date(ack.occurred_at);d.setMonth(d.getMonth()+Number(item.review_months||12));const due=d.toISOString();if(new Date(due)<new Date())return {code:'OVERDUE',label:'Annual review overdue',traffic:'red',due};const soon=new Date();soon.setDate(soon.getDate()+30);if(new Date(due)<=soon)return {code:'DUE',label:'Due soon',traffic:'amber',due};return {code:'CURRENT',label:'Up to date',traffic:'green',due}}
+function awarenessAggregate(item){const assigns=awarenessAssignmentsForItem(item.id),stats=assigns.map(a=>awarenessStatus(item,a.user_id));if(stats.some(x=>x.code==='OVERDUE'))return {traffic:'red',label:'Overdue',assigned:assigns.length,current:stats.filter(x=>x.code==='CURRENT').length};if(stats.some(x=>x.code==='DUE'))return {traffic:'amber',label:'Action required',assigned:assigns.length,current:stats.filter(x=>x.code==='CURRENT').length};return {traffic:assigns.length?'green':'neutral',label:assigns.length?'Up to date':'Not assigned',assigned:assigns.length,current:stats.filter(x=>x.code==='CURRENT').length}}
+function guidanceHtml(text){const lines=String(text||'').split(/\n+/).map(x=>x.trim()).filter(Boolean);let html='',inList=false;for(const line of lines){if(/^[-•]/.test(line)){if(!inList){html+='<ul class="awareness-guidance-list">';inList=true}html+=`<li>${esc(line.replace(/^[-•]\s*/,''))}</li>`}else{if(inList){html+='</ul>';inList=false}html+=`<p>${esc(line)}</p>`}}if(inList)html+='</ul>';return html||'<p>Guidance text not available.</p>'}
+function renderMyAwareness(){const statsEl=$('myAwarenessStats'),list=$('myAwarenessList');if(!statsEl||!list)return;if(state.loadErrors.safety_awareness_items){statsEl.innerHTML='';list.innerHTML='<div class="empty">Safety Awareness needs the v2.2.2+ SQL migration.</div>';return}const items=state.awarenessItems.filter(i=>i.active!==false&&awarenessAssignmentForUser(i.id));const statuses=items.map(i=>({item:i,status:awarenessStatus(i)}));const overdue=statuses.filter(x=>x.status.code==='OVERDUE').length,due=statuses.filter(x=>x.status.code==='DUE').length,current=statuses.filter(x=>x.status.code==='CURRENT').length;statsEl.innerHTML=[['Assigned',items.length,overdue?'red':due?'amber':'green'],['Up to date',current,'green'],['Due',due,due?'amber':'green'],['Overdue',overdue,overdue?'red':'green']].map(([l,n,t])=>`<div class="stat traffic-${t}"><span class="traffic-dot"></span><strong>${n}</strong><span>${l}</span></div>`).join('');const action=statuses.filter(x=>x.status.code!=='CURRENT').sort((a,b)=>(a.status.code==='OVERDUE'?-1:1));list.innerHTML=action.length?action.map(({item,status})=>`<div class="item-card awareness-card traffic-${status.traffic}"><div class="row-between"><div><h4>${esc(item.code?item.code+' - '+item.title:item.title)}</h4><div class="meta"><span class="badge ${status.code==='OVERDUE'?'overdue':'due'}">${esc(status.label)}</span>${status.due?`<span>Due ${fmtDate(status.due)}</span>`:''}</div></div></div><div class="row">${btn('Open guidance','primary',`data-open-awareness="${item.id}"`)}</div></div>`).join(''):'<div class="success-note">Your annual Safety Awareness reviews are up to date.</div>'}
+function renderAwareness(){const list=$('awarenessList'),stats=$('awarenessStats');if(!list||!stats)return;if(state.loadErrors.safety_awareness_items){stats.innerHTML='';list.innerHTML='<div class="empty">Run the Safety Awareness SQL migration to enable Safety Awareness.</div>';return}const q=clean($('awarenessSearch')?.value).toLowerCase(),filter=$('awarenessStatusFilter')?.value||'';let items=state.awarenessItems.filter(i=>i.active!==false&&(!q||`${i.code||''} ${i.title||''} ${i.description||''}`.toLowerCase().includes(q)));if(!isManager())items=items.filter(i=>awarenessAssignmentForUser(i.id));items=items.filter(i=>{if(!filter)return true;const st=isManager()?awarenessAggregate(i):awarenessStatus(i);if(filter==='CURRENT')return st.traffic==='green';if(filter==='OVERDUE')return st.traffic==='red';if(filter==='DUE')return st.traffic==='amber';return true});const assigned=isManager()?state.awarenessAssignments.filter(a=>a.active!==false).length:items.length;const overdue=isManager()?state.awarenessItems.filter(i=>i.active!==false&&awarenessAggregate(i).traffic==='red').length:items.filter(i=>awarenessStatus(i).code==='OVERDUE').length;const due=isManager()?state.awarenessItems.filter(i=>i.active!==false&&awarenessAggregate(i).traffic==='amber').length:items.filter(i=>awarenessStatus(i).code==='DUE').length;stats.innerHTML=[['Topics',state.awarenessItems.filter(i=>i.active!==false).length,'green'],['Assignments',assigned,'green'],['Action required',due,due?'amber':'green'],['Overdue',overdue,overdue?'red':'green']].map(([l,n,t])=>`<div class="stat traffic-${t}"><span class="traffic-dot"></span><strong>${n}</strong><span>${l}</span></div>`).join('');list.innerHTML=items.length?items.sort((a,b)=>(a.sort_order||0)-(b.sort_order||0)||a.title.localeCompare(b.title)).map(item=>{const own=awarenessStatus(item),agg=awarenessAggregate(item),display=isManager()?agg:own,assignedCount=isManager()?agg.assigned:1,currentCount=isManager()?agg.current:(own.code==='CURRENT'?1:0);return `<div class="item-card awareness-card traffic-${display.traffic}"><div class="row-between"><div><h3>${esc(item.code?item.code+' - '+item.title:item.title)}</h3><div class="meta"><span class="badge">Annual awareness</span><span>Version ${esc(item.version_label||'1.0')}</span><span>Review every ${Number(item.review_months||12)} months</span><span class="badge ${display.traffic==='red'?'overdue':display.traffic==='amber'?'due':display.traffic==='green'?'complete':''}">${esc(display.label)}</span></div></div>${isManager()?`<span class="badge">${currentCount}/${assignedCount} up to date</span>`:''}</div><p class="muted">${esc(item.description||'')}</p><div class="row">${btn('Open guidance','primary',`data-open-awareness="${item.id}"`)}${item.hse_url?`<a class="button-link secondary" href="${esc(item.hse_url)}" target="_blank" rel="noopener">Official HSE guidance</a>`:''}${isManager()?btn('Assign people','secondary',`data-assign-awareness="${item.id}"`):''}</div></div>`}).join(''):'<div class="empty">No Safety Awareness topics match this filter.</div>'}
+async function logAwareness(itemId,action){const item=awarenessItem(itemId);if(!item||!state.user)return null;const asn=awarenessAssignmentForUser(itemId,state.user.id);const payload={awareness_item_id:itemId,assignment_id:asn?.id||null,user_id:state.user.id,item_version_label:item.version_label||'1.0',action,occurred_at:new Date().toISOString()};const r=await sb.from('safety_awareness_activity').insert(payload).select().single();if(!r.error&&r.data)state.awarenessActivity.push(r.data);return r.error?null:r.data}
+async function openAwareness(itemId){const item=awarenessItem(itemId);if(!item)return toast('Awareness topic not found.');await logAwareness(itemId,'OPENED');const assigned=!!awarenessAssignmentForUser(itemId),st=awarenessStatus(item);openModal(item.title,`<div class="awareness-sheet"><div class="awareness-kicker">Safety Awareness · ${esc(item.code||'Guidance')} · v${esc(item.version_label||'1.0')}</div><div class="hint-box"><strong>Purpose:</strong> refresher guidance and supporting evidence only. It does not replace formal training, task-specific risk assessment, COSHH assessment, SSW, supervision or competence requirements.</div><div class="awareness-guidance">${guidanceHtml(item.guidance_text)}</div>${item.hse_url?`<p><a class="button-link secondary" href="${esc(item.hse_url)}" target="_blank" rel="noopener">Open official HSE guidance</a></p>`:''}${assigned?`<div class="review-confirm-box"><label class="check-row"><input id="awarenessConfirm" type="checkbox"> I have read and understood this safety awareness guidance. I understand it supports, but does not replace, the relevant Risk Assessment, COSHH Assessment, Safe System of Work or formal training. If I am unsure how to carry out a task safely, I will stop and ask my manager.</label><div class="muted">This is an annual employee awareness acknowledgement, not formal training.</div></div>`:'<div class="request-note">This topic is not currently assigned to you. You can still read the guidance.</div>'}</div><div class="actions">${btn('Close','ghost','data-close-modal')}${assigned&&st.code!=='CURRENT'?btn('Confirm annual review','primary',`data-ack-awareness="${item.id}"`):assigned?'<span class="badge complete">Already up to date</span>':''}</div>`)}
+async function acknowledgeAwareness(itemId){const item=awarenessItem(itemId),asn=awarenessAssignmentForUser(itemId);if(!item||!asn)return toast('This awareness topic is not assigned to you.');if(!$('awarenessConfirm')?.checked)return toast('Tick the confirmation before completing the annual review.');const opened=awarenessEvents(itemId).some(a=>a.action==='OPENED'&&String(a.item_version_label||'')===String(item.version_label||''));if(!opened)return toast('Open the guidance before acknowledging it.');const r=await logAwareness(itemId,'ACKNOWLEDGED');if(!r)return toast('Could not record the awareness review.');closeModal();await refresh('Safety Awareness review recorded. Next review is due in 12 months.')}
+function showAwarenessAssignments(itemId){if(!isManager())return;const item=awarenessItem(itemId);if(!item)return;const active=new Set(awarenessAssignmentsForItem(itemId).map(a=>a.user_id));openModal(`Assign awareness · ${item.title}`,`<p class="muted">Choose who should review this guidance annually. This remains separate from Training.</p><div class="checkbox-list">${activePeople().map(p=>`<label class="check-row"><input class="awareness-person" type="checkbox" value="${p.id}" ${active.has(p.id)?'checked':''}> ${esc(p.display_name||p.email)}</label>`).join('')}</div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Save assignments','primary',`data-save-awareness-assignments="${itemId}"`)}</div>`)}
+async function saveAwarenessAssignments(itemId){if(!isManager())return;const wanted=new Set([...document.querySelectorAll('.awareness-person:checked')].map(x=>x.value)),existing=state.awarenessAssignments.filter(a=>a.awareness_item_id===itemId);for(const a of existing){const should=wanted.has(a.user_id);if((a.active!==false)!==should)await sb.from('safety_awareness_assignments').update({active:should,updated_at:new Date().toISOString()}).eq('id',a.id);wanted.delete(a.user_id)}for(const uid of wanted){await sb.from('safety_awareness_assignments').insert({awareness_item_id:itemId,user_id:uid,active:true,assigned_by:state.user.id})}closeModal();await refresh('Safety Awareness assignments updated.')}
+
+
+// --- v2.2.3 configurable monthly PPE checks -----------------------------------------
+function currentMonthValue(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`}
+function ppeMonthDate(value){return /^\d{4}-\d{2}$/.test(value||'')?`${value}-01`:null}
+function ppeDueDate(value){const m=/^(\d{4})-(\d{2})$/.exec(value||'');if(!m)return null;return new Date(Number(m[1]),Number(m[2])-1,28,23,59,59,999)}
+function ppeItem(id){return state.ppeItems.find(x=>x.id===id)||null}
+function activePpeItems(){return state.ppeItems.filter(x=>x.active!==false).sort((a,b)=>(a.sort_order||0)-(b.sort_order||0)||String(a.name).localeCompare(String(b.name)))}
+function ppeAssignmentsForItem(id){return state.ppeAssignments.filter(a=>a.ppe_item_id===id&&a.active!==false)}
+function assignedPpeForUser(userId=state.user?.id){const ids=new Set(state.ppeAssignments.filter(a=>a.user_id===userId&&a.active!==false).map(a=>a.ppe_item_id));return activePpeItems().filter(i=>ids.has(i.id))}
+function ppeCheckForMonth(userId=state.user?.id,value=currentMonthValue()){const d=ppeMonthDate(value);return state.ppeChecks.filter(c=>c.user_id===userId&&String(c.check_month||'').slice(0,10)===d).sort((a,b)=>new Date(b.submitted_at||0)-new Date(a.submitted_at||0))[0]||null}
+function ppeItemsForCheck(checkId){return state.ppeCheckItems.filter(x=>x.check_id===checkId)}
+function ppeCheckStatus(userId=state.user?.id,value=currentMonthValue()){
+  const assigned=assignedPpeForUser(userId),check=ppeCheckForMonth(userId,value),due=ppeDueDate(value);
+  if(!assigned.length)return {code:'UNASSIGNED',label:'No PPE assigned',traffic:'neutral',assigned:0,check:null,due};
+  if(check){const rows=ppeItemsForCheck(check.id),issues=rows.filter(x=>['REPLACEMENT_REQUIRED','MISSING'].includes(x.result));if(issues.length)return {code:'ISSUES',label:`${issues.length} PPE issue${issues.length===1?'':'s'} reported`,traffic:'red',assigned:assigned.length,check,due,issues};return {code:'COMPLETE',label:'Monthly PPE check complete',traffic:'green',assigned:assigned.length,check,due,issues:[]};}
+  const now=new Date(),overdue=due&&now>due;return {code:overdue?'OVERDUE':'DUE',label:overdue?'Monthly PPE check overdue':'Monthly PPE check due',traffic:overdue?'red':'amber',assigned:assigned.length,check:null,due,issues:[]};
+}
+function ppeResultLabel(v){return ({GOOD:'Available & good condition',REPLACEMENT_REQUIRED:'Replacement required',MISSING:'Missing',NOT_APPLICABLE:'Not applicable'})[v]||v||'—'}
+function ppeActionLabel(v){return ({OPEN:'Open',ORDERED:'Ordered',RESOLVED:'Resolved',NOT_REQUIRED:'Not required'})[v]||v||'—'}
+function renderMyPpe(){const stats=$('myPpeStats'),list=$('myPpeList');if(!stats||!list)return;if(state.loadErrors.ppe_items){stats.innerHTML='';list.innerHTML='<div class="empty">Monthly PPE checks need the v2.2.3 SQL migration.</div>';return}const st=ppeCheckStatus(),items=assignedPpeForUser();stats.innerHTML=[['Assigned PPE',items.length,items.length?'green':'neutral'],['This month',st.code==='COMPLETE'?'Complete':st.code==='ISSUES'?'Issues':st.code==='OVERDUE'?'Overdue':'Due',st.traffic]].map(([l,n,t])=>`<div class="stat traffic-${t}"><span class="traffic-dot"></span><strong>${esc(n)}</strong><span>${l}</span></div>`).join('');if(!items.length){list.innerHTML='<div class="empty">No PPE is currently assigned to you.</div>';return}const issueNote=st.code==='ISSUES'?`<div class="danger-note">You reported PPE that is missing or needs replacement. Do not use damaged or unsuitable PPE. The issue is visible to Admin/Manager for action.</div>`:'';list.innerHTML=`<div class="item-card ppe-status-card traffic-${st.traffic}"><div class="row-between"><div><h4>${new Date().toLocaleDateString('en-GB',{month:'long',year:'numeric'})} PPE check</h4><div class="meta"><span class="badge ${st.traffic==='red'?'overdue':st.traffic==='green'?'complete':'due'}">${esc(st.label)}</span><span>Due 28th of each month</span>${st.check?`<span>Signed ${fmtDateTime(st.check.submitted_at)}</span>`:''}</div></div></div>${issueNote}<div class="row">${st.check?btn('View check','secondary',`data-view-ppe-check="${st.check.id}"`):btn('Complete monthly PPE check','primary','data-start-ppe-check')}</div></div>`}
+function ppeManagerMonthSummary(value=currentMonthValue()){const people=activePeople().filter(p=>assignedPpeForUser(p.id).length);const rows=people.map(p=>({p,s:ppeCheckStatus(p.id,value)}));return {people,rows,complete:rows.filter(x=>x.s.code==='COMPLETE').length,issues:rows.filter(x=>x.s.code==='ISSUES').length,overdue:rows.filter(x=>x.s.code==='OVERDUE').length,due:rows.filter(x=>x.s.code==='DUE').length}}
+function renderPpe(){const list=$('ppeList'),stats=$('ppeStats'),manager=$('ppeManagerArea');if(!list||!stats)return;if(state.loadErrors.ppe_items){stats.innerHTML='';list.innerHTML='<div class="empty">Run the v2.2.3 SQL migration to enable Monthly PPE Checks.</div>';if(manager)manager.innerHTML='';return}const q=clean($('ppeSearch')?.value).toLowerCase(),filter=$('ppeStatusFilter')?.value||'',items=assignedPpeForUser(),st=ppeCheckStatus();stats.innerHTML=[['Assigned PPE',items.length,items.length?'green':'neutral'],['Monthly status',st.label,st.traffic],['Due date','28th',st.code==='OVERDUE'?'red':'green']].map(([l,n,t])=>`<div class="stat traffic-${t}"><span class="traffic-dot"></span><strong>${esc(n)}</strong><span>${l}</span></div>`).join('');let shown=items.filter(i=>!q||`${i.name||''} ${i.description||''}`.toLowerCase().includes(q));if(filter==='ISSUES'&&st.code!=='ISSUES')shown=[];if(filter==='DUE'&&!['DUE','OVERDUE'].includes(st.code))shown=[];if(filter==='COMPLETE'&&st.code!=='COMPLETE')shown=[];list.innerHTML=shown.length?`<div class="item-card ppe-status-card traffic-${st.traffic}"><div class="row-between"><div><h3>Your monthly PPE check</h3><div class="meta"><span class="badge ${st.traffic==='red'?'overdue':st.traffic==='green'?'complete':'due'}">${esc(st.label)}</span><span>Due ${fmtDate(st.due)}</span></div></div></div><div class="ppe-chip-list">${shown.map(i=>`<span class="badge">${esc(i.name)}</span>`).join('')}</div><div class="row">${st.check?btn('View submitted check','secondary',`data-view-ppe-check="${st.check.id}"`):btn('Complete monthly check','primary','data-start-ppe-check')}</div></div>`:'<div class="empty">No PPE items match this filter.</div>';if(manager&&isManager())renderPpeManagerArea()}
+function renderPpeManagerArea(){const el=$('ppeManagerArea');if(!el||!isManager())return;const value=currentMonthValue(),sum=ppeManagerMonthSummary(value),openIssues=state.ppeCheckItems.filter(x=>['REPLACEMENT_REQUIRED','MISSING'].includes(x.result)&&!['RESOLVED','NOT_REQUIRED'].includes(x.action_status||'OPEN'));el.innerHTML=`<div class="section-card"><div class="row-between"><div><h3>Team PPE position</h3><p class="muted">Checks are due by the 28th so replacement orders can be prepared for the start of the following month.</p></div>${isAdmin()?btn('Manage PPE catalogue','primary','data-manage-ppe-catalogue'):''}</div><div class="stats-grid">${[['People assigned PPE',sum.people.length,'green'],['Complete',sum.complete,'green'],['Issues',sum.issues,sum.issues?'red':'green'],['Outstanding / overdue',sum.due+sum.overdue,sum.overdue?'red':sum.due?'amber':'green']].map(([l,n,t])=>`<div class="stat traffic-${t}"><span class="traffic-dot"></span><strong>${n}</strong><span>${l}</span></div>`).join('')}</div><div class="card-list">${sum.rows.map(({p,s})=>`<div class="item-card compact ppe-status-card traffic-${s.traffic}"><div class="row-between"><div><strong>${esc(p.display_name||p.email)}</strong><div class="meta"><span>${s.assigned} PPE item${s.assigned===1?'':'s'}</span><span class="badge ${s.traffic==='red'?'overdue':s.traffic==='green'?'complete':'due'}">${esc(s.label)}</span></div></div>${s.check?btn('View check','secondary',`data-view-ppe-check="${s.check.id}"`):''}</div></div>`).join('')}</div></div><div class="section-card"><div class="row-between"><div><h3>PPE ordering / action list</h3><p class="muted">Missing or replacement-required PPE stays here until Admin/Manager records it as ordered, resolved or not required.</p></div></div><div class="card-list">${openIssues.length?openIssues.map(r=>{const c=state.ppeChecks.find(x=>x.id===r.check_id),person=state.people.find(x=>x.id===c?.user_id);return `<div class="item-card compact traffic-red"><div class="row-between"><div><strong>${esc(person?.display_name||person?.email||'Employee')} · ${esc(r.ppe_name_snapshot||ppeItem(r.ppe_item_id)?.name||'PPE')}</strong><div class="meta"><span>${esc(ppeResultLabel(r.result))}</span><span>${esc(r.comment||'No comment')}</span><span>${esc(ppeActionLabel(r.action_status||'OPEN'))}</span></div></div>${btn('Update action','primary',`data-update-ppe-action="${r.id}"`)}</div></div>`}).join(''):'<div class="success-note">No open PPE replacement/order actions.</div>'}</div></div>`}
+function showPpeCheck(){const items=assignedPpeForUser();if(!items.length)return toast('No PPE is assigned to you.');const existing=ppeCheckForMonth();if(existing)return viewPpeCheck(existing.id);openModal('Monthly PPE check',`<div class="hint-box"><strong>Due by the 28th each month.</strong> Check the PPE assigned to you so missing/damaged items can be ordered for the start of the following month. This does not replace the normal check before each use.</div><div class="ppe-check-grid">${items.map(i=>`<div class="ppe-check-row" data-ppe-row="${i.id}"><div><strong>${esc(i.name)}</strong><div class="muted">${esc(i.inspection_guidance||i.description||'Check that this item is available, suitable and in good condition.')}</div></div><label>Condition<select class="ppe-result"><option value="GOOD">Available & good condition</option><option value="REPLACEMENT_REQUIRED">Replacement required</option><option value="MISSING">Missing</option><option value="NOT_APPLICABLE">Not applicable</option></select></label><label>Comment<input class="ppe-comment" placeholder="Required if missing/replacement needed"></label></div>`).join('')}</div><div class="review-confirm-box"><p>I have checked the PPE assigned to me and recorded its availability and condition accurately. I will not use damaged or unsuitable PPE and will report any replacement required.</p>${signatureBlock('ppe')}<label class="check-row"><input id="ppeAck" type="checkbox"> I confirm this monthly PPE check and digital signature.</label></div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Submit PPE check','primary','data-submit-ppe-check')}</div>`);setupSignaturePad('ppeSignaturePad','ppeClearSignature')}
+async function submitPpeCheck(){const rows=[...document.querySelectorAll('[data-ppe-row]')].map(r=>({ppe_item_id:r.dataset.ppeRow,result:r.querySelector('.ppe-result')?.value||'GOOD',comment:clean(r.querySelector('.ppe-comment')?.value)}));for(const r of rows)if(['REPLACEMENT_REQUIRED','MISSING'].includes(r.result)&&r.comment.length<3)return toast('Add a short comment for each missing or replacement-required PPE item.');if(!$('ppeAck')?.checked)return toast('Tick the confirmation before submitting.');const canvas=$('ppeSignaturePad');if(!canvas?.dataset.hasInk)return toast('Digital signature is required.');const sigName=state.profile?.display_name||state.user?.email||'User',sig=canvas.toDataURL('image/png'),declaration='I have checked the PPE assigned to me and recorded its availability and condition accurately. I will not use damaged or unsuitable PPE and will report any replacement required.';const r=await sb.rpc('submit_monthly_ppe_check_v223',{p_check_month:ppeMonthDate(currentMonthValue()),p_signature_data:sig,p_signature_name:sigName,p_declaration:declaration,p_results:rows});if(r.error)return toast(r.error.message);closeModal();await refresh(rows.some(x=>['MISSING','REPLACEMENT_REQUIRED'].includes(x.result))?'PPE check submitted. An action has been raised for Admin/Manager.':'PPE check submitted.');}
+function viewPpeCheck(id){const c=state.ppeChecks.find(x=>x.id===id);if(!c)return;const rows=ppeItemsForCheck(id),person=state.people.find(x=>x.id===c.user_id);openModal(`PPE check · ${person?.display_name||person?.email||'Employee'}`,`<div class="meta"><span>Month ${fmtDate(c.check_month)}</span><span>Submitted ${fmtDateTime(c.submitted_at)}</span><span class="badge ${c.status==='ISSUES'?'overdue':'complete'}">${esc(c.status||'COMPLETE')}</span></div><div class="card-list">${rows.map(r=>`<div class="item-card compact ${['MISSING','REPLACEMENT_REQUIRED'].includes(r.result)?'traffic-red':'traffic-green'}"><strong>${esc(r.ppe_name_snapshot||ppeItem(r.ppe_item_id)?.name||'PPE')}</strong><div class="meta"><span>${esc(ppeResultLabel(r.result))}</span>${r.comment?`<span>${esc(r.comment)}</span>`:''}${isManager()&&['MISSING','REPLACEMENT_REQUIRED'].includes(r.result)?`<span>Action: ${esc(ppeActionLabel(r.action_status||'OPEN'))}</span>`:''}</div></div>`).join('')}</div><div class="signature-readback"><strong>Signed by:</strong> ${esc(c.signature_name||'')} · ${fmtDateTime(c.submitted_at)}</div><div class="actions">${isManager()||c.user_id===state.user?.id?btn('Download PDF','secondary',`data-download-ppe-check="${c.id}"`):''}${btn('Close','ghost','data-close-modal')}</div>`)}
+function downloadPpeCheckPdf(id){if(!window.jspdf?.jsPDF)return toast('PDF library did not load.');const c=state.ppeChecks.find(x=>x.id===id);if(!c)return;const rows=ppeItemsForCheck(id),person=state.people.find(x=>x.id===c.user_id),{jsPDF}=window.jspdf,doc=new jsPDF({unit:'mm',format:'a4'});doc.setFontSize(17);doc.text('Monthly PPE Check',14,16);doc.setFontSize(10);doc.text(`Employee: ${person?.display_name||person?.email||'Employee'}`,14,25);doc.text(`Month: ${fmtDate(c.check_month)} · Due: ${fmtDate(c.due_date)} · Submitted: ${fmtDateTime(c.submitted_at)}`,14,32);doc.text(`Status: ${c.status||''}`,14,39);doc.autoTable({head:[['PPE','Result','Comment','Action']],body:rows.map(r=>[r.ppe_name_snapshot||ppeItem(r.ppe_item_id)?.name||'',ppeResultLabel(r.result),r.comment||'',ppeActionLabel(r.action_status||'NOT_REQUIRED')]),startY:45,styles:{fontSize:8},margin:{left:14,right:14}});let y=(doc.lastAutoTable?.finalY||70)+10;doc.setFontSize(9);const declaration=doc.splitTextToSize(c.declaration||'',180);doc.text(declaration,14,y);y+=declaration.length*5+4;doc.text(`Signed name: ${c.signature_name||''}`,14,y);doc.text(`Signed: ${fmtDateTime(c.submitted_at)}`,14,y+6);try{if(c.signature_data)doc.addImage(c.signature_data,'PNG',14,y+10,70,22)}catch(e){}doc.save(`PPE-Check-${safeFileName(person?.display_name||person?.email||'employee')}-${String(c.check_month||'').slice(0,7)}.pdf`)}
+function showPpeCatalogue(){if(!isAdmin())return;openModal('PPE Management',`<div class="row-between"><div><p class="muted">Add, edit, archive and assign PPE without a code update.</p></div>${btn('Add PPE','primary','data-edit-ppe-item="NEW"')}</div><div class="card-list ppe-catalogue-list">${activePpeItems().map(i=>`<div class="item-card compact"><div class="row-between"><div><strong>${esc(i.name)}</strong><div class="muted">${esc(i.description||'')}</div><div class="meta"><span>${ppeAssignmentsForItem(i.id).length} assigned</span></div></div><div class="row">${btn('Assign people','secondary',`data-assign-ppe-item="${i.id}"`)}${btn('Edit','ghost',`data-edit-ppe-item="${i.id}"`)}</div></div></div>`).join('')||'<div class="empty">No PPE items yet.</div>'}</div><div class="actions">${btn('Close','ghost','data-close-modal')}</div>`)}
+function editPpeItem(id){if(!isAdmin())return;const x=id==='NEW'?null:ppeItem(id);openModal(x?'Edit PPE':'Add PPE',`<div class="form-grid"><label>Name<input id="ppeItemName" value="${esc(x?.name||'')}"></label><label>Code<input id="ppeItemCode" value="${esc(x?.code||'')}"></label><label class="full">Description<textarea id="ppeItemDescription">${esc(x?.description||'')}</textarea></label><label class="full">Employee check guidance<textarea id="ppeItemGuidance" placeholder="What should the employee check each month?">${esc(x?.inspection_guidance||'')}</textarea></label><label>Sort order<input id="ppeItemSort" type="number" value="${Number(x?.sort_order||0)}"></label>${x?`<label class="check-row"><input id="ppeItemActive" type="checkbox" ${x.active===false?'':'checked'}> Active</label>`:''}</div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Save PPE','primary',`data-save-ppe-item="${x?.id||''}"`)}</div>`)}
+async function savePpeItem(id){if(!isAdmin())return;const name=clean($('ppeItemName')?.value),code=clean($('ppeItemCode')?.value).toUpperCase(),description=clean($('ppeItemDescription')?.value),inspection_guidance=clean($('ppeItemGuidance')?.value),sort_order=Number($('ppeItemSort')?.value||0),active=id?!!$('ppeItemActive')?.checked:true;if(!name)return toast('Enter a PPE name.');const payload={name,code:code||null,description,inspection_guidance,sort_order,active,updated_at:new Date().toISOString()};const r=id?await sb.from('ppe_items').update(payload).eq('id',id):await sb.from('ppe_items').insert(payload);if(r.error)return toast(r.error.message);closeModal();await refresh('PPE catalogue updated.');showPpeCatalogue()}
+function showPpeAssignments(itemId){if(!isAdmin())return;const item=ppeItem(itemId),active=new Set(ppeAssignmentsForItem(itemId).map(a=>a.user_id));openModal(`Assign PPE · ${item?.name||''}`,`<p class="muted">Only assigned PPE appears on that employee's monthly check.</p><div class="checkbox-list">${activePeople().map(p=>`<label class="check-row"><input class="ppe-person" type="checkbox" value="${p.id}" ${active.has(p.id)?'checked':''}> ${esc(p.display_name||p.email)}</label>`).join('')}</div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Save assignments','primary',`data-save-ppe-assignments="${itemId}"`)}</div>`)}
+async function savePpeAssignments(itemId){if(!isAdmin())return;const wanted=new Set([...document.querySelectorAll('.ppe-person:checked')].map(x=>x.value)),existing=state.ppeAssignments.filter(a=>a.ppe_item_id===itemId);for(const a of existing){const should=wanted.has(a.user_id);if((a.active!==false)!==should)await sb.from('ppe_assignments').update({active:should,updated_at:new Date().toISOString()}).eq('id',a.id);wanted.delete(a.user_id)}for(const uid of wanted)await sb.from('ppe_assignments').insert({ppe_item_id:itemId,user_id:uid,active:true,assigned_by:state.user.id});closeModal();await refresh('PPE assignments updated.');showPpeCatalogue()}
+function showPpeAction(id){if(!isManager())return;const r=state.ppeCheckItems.find(x=>x.id===id),c=state.ppeChecks.find(x=>x.id===r?.check_id),person=state.people.find(x=>x.id===c?.user_id);if(!r)return;openModal('Update PPE action',`<p><strong>${esc(person?.display_name||person?.email||'Employee')} · ${esc(r.ppe_name_snapshot||'PPE')}</strong></p><p>${esc(ppeResultLabel(r.result))}${r.comment?` · ${esc(r.comment)}`:''}</p><div class="form-grid"><label>Action status<select id="ppeActionStatus"><option value="OPEN" ${(r.action_status||'OPEN')==='OPEN'?'selected':''}>Open</option><option value="ORDERED" ${r.action_status==='ORDERED'?'selected':''}>Ordered</option><option value="RESOLVED" ${r.action_status==='RESOLVED'?'selected':''}>Resolved</option><option value="NOT_REQUIRED" ${r.action_status==='NOT_REQUIRED'?'selected':''}>Not required</option></select></label><label class="full">Manager note<textarea id="ppeActionNote">${esc(r.admin_note||'')}</textarea></label></div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Save action','primary',`data-save-ppe-action="${id}"`)}</div>`)}
+async function savePpeAction(id){if(!isManager())return;const status=$('ppeActionStatus')?.value||'OPEN',note=clean($('ppeActionNote')?.value);const r=await sb.rpc('resolve_ppe_check_item_v223',{p_check_item_id:id,p_action_status:status,p_admin_note:note||null});if(r.error)return toast(r.error.message);closeModal();await refresh('PPE action updated.')}
+function ppeReportData(value){const b=monthBounds(value);if(!b)throw new Error('Select a valid month.');const checkMonth=ppeMonthDate(value),checks=state.ppeChecks.filter(c=>String(c.check_month||'').slice(0,10)===checkMonth),checkIds=new Set(checks.map(c=>c.id)),items=state.ppeCheckItems.filter(i=>checkIds.has(i.check_id)),issues=items.filter(i=>['REPLACEMENT_REQUIRED','MISSING'].includes(i.result)),openIssues=issues.filter(i=>!['RESOLVED','NOT_REQUIRED'].includes(i.action_status||'OPEN')),assignedPeople=activePeople().filter(p=>assignedPpeForUser(p.id).length),submittedIds=new Set(checks.map(c=>c.user_id)),outstanding=assignedPeople.filter(p=>!submittedIds.has(p.id));return {b,checkMonth,checks,items,issues,openIssues,assignedPeople,outstanding}}
+function monthlyPpeReportDoc(value){if(!window.jspdf?.jsPDF)throw new Error('PDF library did not load.');const data=ppeReportData(value),{jsPDF}=window.jspdf,doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});doc.setFontSize(18);doc.text('Safety Tracker - Monthly PPE Check Report',14,14);doc.setFontSize(9);doc.text(`${data.b.label} · Due 28th · Generated ${new Date().toLocaleString('en-GB')}`,14,21);doc.autoTable({head:[['Measure','Count']],body:[['Employees assigned PPE',data.assignedPeople.length],['Checks submitted',data.checks.length],['Checks outstanding',data.outstanding.length],['PPE issues reported',data.issues.length],['Open ordering/actions',data.openIssues.length]],startY:28,theme:'grid',styles:{fontSize:8}});let y=(doc.lastAutoTable?.finalY||55)+7;doc.setFontSize(11);doc.text('PPE checks',14,y);doc.autoTable({head:[['Employee','Submitted','Signed name','Status','Issues']],body:data.checks.length?data.checks.map(c=>{const issues=data.issues.filter(i=>i.check_id===c.id);return [personName(c.user_id),fmtDateTime(c.submitted_at),c.signature_name||'',c.status||'',issues.map(i=>`${i.ppe_name_snapshot}: ${ppeResultLabel(i.result)}`).join('; ')||'None']}):[['None','','','','']],startY:y+3,styles:{fontSize:7},margin:{left:14,right:14}});y=(doc.lastAutoTable?.finalY||y)+7;if(y>165){doc.addPage();y=14}doc.setFontSize(11);doc.text('Ordering / action list',14,y);doc.autoTable({head:[['Employee','PPE','Issue','Comment','Action']],body:data.issues.length?data.issues.map(i=>{const c=state.ppeChecks.find(x=>x.id===i.check_id);return [personName(c?.user_id),i.ppe_name_snapshot||ppeItem(i.ppe_item_id)?.name||'',ppeResultLabel(i.result),i.comment||'',ppeActionLabel(i.action_status||'OPEN')]}):[['None','','','','']],startY:y+3,styles:{fontSize:7},margin:{left:14,right:14}});y=(doc.lastAutoTable?.finalY||y)+7;if(data.outstanding.length){if(y>165){doc.addPage();y=14}doc.setFontSize(11);doc.text('Outstanding monthly checks',14,y);doc.autoTable({head:[['Employee','Assigned PPE']],body:data.outstanding.map(p=>[p.display_name||p.email,assignedPpeForUser(p.id).map(i=>i.name).join(', ')]),startY:y+3,styles:{fontSize:7},margin:{left:14,right:14}})}return {doc,data}}
+async function downloadMonthlyPpeReport(value){if(!isManager())return;try{const {doc,data}=monthlyPpeReportDoc(value),fileName=`PPE-Checks-${data.b.value}.pdf`,blob=doc.output('blob');if(!state.loadErrors.generated_reports){const path=`reports/ppe/${data.b.value}/${crypto.randomUUID()}-${safeFileName(fileName)}`,up=await sb.storage.from('safety-files').upload(path,blob,{contentType:'application/pdf',upsert:false});if(up.error)throw up.error;const ins=await sb.from('generated_reports').insert({schedule_id:null,report_type:'MONTHLY_PPE',period_start:data.b.start.toISOString().slice(0,10),period_end:data.b.end.toISOString().slice(0,10),file_name:fileName,storage_path:path,status:'ARCHIVED',summary:{ppe_checks_submitted:data.checks.length,ppe_issues:data.issues.length,ppe_open_actions:data.openIssues.length,ppe_checks_outstanding:data.outstanding.length},generated_by:state.user.id}).select().single();if(ins.error)throw ins.error;state.generatedReports.unshift(ins.data)}downloadBlob(blob,fileName);renderReportArchive();toast('Monthly PPE report downloaded and archived.')}catch(e){toast(e.message||'Could not create PPE report.')}}
+
+
+// --- v2.2.3 monthly reports ----------------------------------------------------------
+function previousMonthValue(){const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-1);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`}
+function monthBounds(value){const m=/^(\d{4})-(\d{2})$/.exec(value||'');if(!m)return null;const y=Number(m[1]),mo=Number(m[2])-1,start=new Date(y,mo,1,0,0,0,0),end=new Date(y,mo+1,0,23,59,59,999);return {value,year:y,month:mo+1,start,end,startISO:start.toISOString(),endISO:end.toISOString(),label:start.toLocaleDateString('en-GB',{month:'long',year:'numeric'})}}
+function inRange(date,b){if(!date||!b)return false;const d=new Date(date);return d>=b.start&&d<=b.end}
+function trainingCompletionEventsForRange(b){const normal=state.trainingSignoffs.filter(s=>inRange(s.signed_at,b)).map(s=>({user_id:s.user_id,training_session_id:s.training_session_id,at:s.signed_at,method:'Training sign-off',signature_name:s.signature_name||'',exception:false}));const ex=state.trainingExceptions.filter(x=>inRange(x.completed_at,b)).map(x=>({user_id:x.user_id,training_session_id:x.training_session_id,at:x.completed_at,method:'Admin exception',signature_name:x.signature_name||'',exception:true}));return [...normal,...ex].sort((a,b)=>new Date(a.at)-new Date(b.at))}
+function awarenessCompletionEventsForRange(b){return state.awarenessActivity.filter(a=>a.action==='ACKNOWLEDGED'&&inRange(a.occurred_at,b)).sort((a,b)=>new Date(a.occurred_at)-new Date(b.occurred_at))}
+function latestCompletionAt(a,asOf){const sig=state.trainingSignoffs.filter(s=>s.training_assignment_id===a.id&&new Date(s.signed_at)<=asOf).map(s=>({at:s.signed_at})),exc=state.trainingExceptions.filter(x=>x.training_assignment_id===a.id&&new Date(x.completed_at)<=asOf).map(x=>({at:x.completed_at}));return [...sig,...exc].sort((x,y)=>new Date(y.at)-new Date(x.at))[0]||null}
+function assignmentOverdueAt(a,t,asOf){if(a.active===false)return false;if(a.assigned_at&&new Date(a.assigned_at)>asOf)return false;const c=latestCompletionAt(a,asOf);if(!c){if(a.due_date)return new Date(a.due_date+'T23:59:59')<asOf;return false}if(a.renewal_value&&a.renewal_unit){const due=addRenewal(c.at,a.renewal_value,a.renewal_unit);return !!due&&new Date(due)<asOf}return false}
+function assignmentStateAt(a,t,asOf){if(a.active===false||(a.assigned_at&&new Date(a.assigned_at)>asOf))return {active:false,code:'NOT_ACTIVE'};const c=latestCompletionAt(a,asOf),method=effectiveTrainingMethod(t,a);let due=null,needs=!c;if(c&&a.renewal_value&&a.renewal_unit){due=addRenewal(c.at,a.renewal_value,a.renewal_unit);needs=!!due&&new Date(due)<=asOf}else if(!c&&a.due_date){due=new Date(a.due_date+'T23:59:59').toISOString()}if(!needs)return {active:true,code:'COMPLETED',method,due};if(due&&new Date(due)<asOf)return {active:true,code:'OVERDUE',method,due};if(method==='INSTRUCTOR_LED')return {active:true,code:'AWAITING_INSTRUCTOR',method,due};return {active:true,code:'OUTSTANDING',method,due}}
+function monthlyReportData(value){const b=monthBounds(value);if(!b)throw new Error('Select a valid month.');const completions=trainingCompletionEventsForRange(b),awareness=awarenessCompletionEventsForRange(b),approvals=state.versions.filter(v=>versionApprovalStatus(v)==='APPROVED'&&inRange(v.approval_at,b)),reviews=state.documentReviews.filter(r=>inRange(r.reviewed_at||r.created_at,b)),exceptions=completions.filter(x=>x.exception),newAssignments=state.trainingAssignments.filter(a=>a.active!==false&&inRange(a.assigned_at,b));const monthEndStates=state.trainingAssignments.map(a=>{const t=state.training.find(x=>x.id===a.training_session_id);return t&&t.status!=='ARCHIVED'?{a,t,s:assignmentStateAt(a,t,b.end)}:null}).filter(x=>x&&x.s.active),overdue=monthEndStates.filter(x=>x.s.code==='OVERDUE'),awaitingInstructor=monthEndStates.filter(x=>x.s.code==='AWAITING_INSTRUCTOR'),outstanding=monthEndStates.filter(x=>['OVERDUE','AWAITING_INSTRUCTOR','OUTSTANDING'].includes(x.s.code));const pending=pendingApprovalEntries(),approvedVersionIds=new Set(approvals.map(v=>v.id)),retrainingTriggered=state.trainingAssignments.filter(a=>{const t=state.training.find(x=>x.id===a.training_session_id);return a.active!==false&&t?.auto_managed&&approvedVersionIds.has(t.source_document_version_id)});const approvedDocs=state.documents.filter(d=>d.status!=='ARCHIVED').map(d=>({d,v:approvedCurrentVersion(d.id)})).filter(x=>x.v),reviewOverdue=approvedDocs.filter(x=>x.v.review_date&&new Date(x.v.review_date+'T23:59:59')<b.end),reviewDueSoon=approvedDocs.filter(x=>x.v.review_date&&new Date(x.v.review_date+'T23:59:59')>=b.end&&new Date(x.v.review_date+'T23:59:59')<=new Date(b.end.getTime()+30*86400000));const newVersions=approvals.filter(v=>state.versions.filter(x=>x.document_id===v.document_id).length>1),ppe=ppeReportData(value);return {b,completions,awareness,approvals,reviews,overdue,pending,exceptions,newAssignments,awaitingInstructor,outstanding,retrainingTriggered,reviewOverdue,reviewDueSoon,newVersions,ppe}}
+function monthlySafetyReportDoc(value){if(!window.jspdf?.jsPDF)throw new Error('PDF library did not load.');const data=monthlyReportData(value),{jsPDF}=window.jspdf,doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});const {b}=data;doc.setFontSize(18);doc.text('Safety Tracker - Monthly Safety Compliance Report',14,14);doc.setFontSize(9);doc.text(`${b.label} · Generated ${new Date().toLocaleString('en-GB')} · Safety Tracker v${APP_VERSION}`,14,21);doc.setFontSize(8);doc.text('This report is an evidence summary. Detailed person/document evidence remains available from Evidence Pack.',14,27);const summary=[['Training completed',data.completions.length],['New training assignments',data.newAssignments.length],['Awareness reviews',data.awareness.length],['PPE checks submitted',data.ppe.checks.length],['PPE issues reported',data.ppe.issues.length],['Open PPE ordering/actions',data.ppe.openIssues.length],['PPE checks outstanding',data.ppe.outstanding.length],['Overdue training at month end',data.overdue.length],['Awaiting instructor at month end',data.awaitingInstructor.length],['Retraining linked to new versions',data.retrainingTriggered.length],['Pending approvals now',data.pending.length],['Documents approved/accepted',data.approvals.length],['Controlled reviews',data.reviews.length],['New/replacement versions approved',data.newVersions.length],['Documents overdue review',data.reviewOverdue.length],['Documents due within 30 days',data.reviewDueSoon.length],['Admin exceptions',data.exceptions.length]];doc.autoTable({head:[['Measure','Count']],body:summary,startY:32,theme:'grid',styles:{fontSize:7.5,cellPadding:1.7},tableWidth:120});let y=(doc.lastAutoTable?.finalY||70)+7;doc.setFontSize(11);doc.text('Training completed during the month',14,y);doc.autoTable({head:[['Employee','Training','Type','Completed','Method']],body:data.completions.length?data.completions.map(c=>{const t=state.training.find(x=>x.id===c.training_session_id);return [personName(c.user_id),trainingReference(t)?`${trainingReference(t)} - ${t?.name||''}`:t?.name||'',kindLabel(trainingKind(t)),fmtDateTime(c.at),c.method]}):[['None','','','','']],startY:y+3,styles:{fontSize:7,cellPadding:1.5},margin:{left:14,right:14}});y=(doc.lastAutoTable?.finalY||y)+7;doc.setFontSize(11);doc.text('Annual Safety Awareness completed during the month',14,y);doc.autoTable({head:[['Employee','Awareness topic','Version','Reviewed']],body:data.awareness.length?data.awareness.map(a=>{const i=awarenessItem(a.awareness_item_id);return [personName(a.user_id),i?`${i.code||''} ${i.title}`.trim():'Awareness item',a.item_version_label||'',fmtDateTime(a.occurred_at)]}):[['None','','','']],startY:y+3,styles:{fontSize:7,cellPadding:1.5},margin:{left:14,right:14}});y=(doc.lastAutoTable?.finalY||y)+7;if(y>165){doc.addPage();y=14}doc.setFontSize(11);doc.text('Monthly PPE checks',14,y);doc.autoTable({head:[['Employee','Submitted','Signed name','Status','Issues']],body:data.ppe.checks.length?data.ppe.checks.map(c=>{const issues=data.ppe.issues.filter(i=>i.check_id===c.id);return [personName(c.user_id),fmtDateTime(c.submitted_at),c.signature_name||'',c.status||'',issues.map(i=>`${i.ppe_name_snapshot}: ${ppeResultLabel(i.result)}`).join('; ')||'None']}):[['None','','','','']],startY:y+3,styles:{fontSize:7,cellPadding:1.5},margin:{left:14,right:14}});y=(doc.lastAutoTable?.finalY||y)+7;if(y>165){doc.addPage();y=14}doc.setFontSize(11);doc.text('PPE ordering / action list',14,y);doc.autoTable({head:[['Employee','PPE','Result','Comment','Action']],body:data.ppe.issues.length?data.ppe.issues.map(i=>{const c=state.ppeChecks.find(x=>x.id===i.check_id);return [personName(c?.user_id),i.ppe_name_snapshot||ppeItem(i.ppe_item_id)?.name||'',ppeResultLabel(i.result),i.comment||'',ppeActionLabel(i.action_status||'OPEN')]}):[['No PPE issues reported','','','','']],startY:y+3,styles:{fontSize:7,cellPadding:1.5},margin:{left:14,right:14}});y=(doc.lastAutoTable?.finalY||y)+7;if(y>165){doc.addPage();y=14}doc.setFontSize(11);doc.text('Outstanding training position at month end',14,y);doc.autoTable({head:[['Employee','Training','Status','Delivery','Due']],body:data.outstanding.length?data.outstanding.map(x=>[personName(x.a.user_id),trainingReference(x.t)?`${trainingReference(x.t)} - ${x.t.name}`:x.t.name,x.s.code.replaceAll('_',' '),deliveryText(x.s.method),fmtDate(x.s.due)]):[['None','','','','']],startY:y+3,styles:{fontSize:7,cellPadding:1.5},margin:{left:14,right:14}});y=(doc.lastAutoTable?.finalY||y)+7;if(y>165){doc.addPage();y=14}doc.setFontSize(11);doc.text('Document control activity during the month',14,y);const docRows=[...data.approvals.map(v=>{const d=state.documents.find(x=>x.id===v.document_id);return ['Approved/accepted',d?.reference||'',documentDisplayTitle(d),`v${v.version_label||''}`,fmtDateTime(v.approval_at),personName(v.approval_by)]}),...data.reviews.map(r=>{const v=state.versions.find(x=>x.id===r.document_version_id),d=state.documents.find(x=>x.id===v?.document_id);return ['Controlled review',d?.reference||'',documentDisplayTitle(d),`v${v?.version_label||''}`,fmtDateTime(r.reviewed_at||r.created_at),personName(r.reviewed_by||r.user_id)]})].sort((a,b)=>a[4].localeCompare(b[4]));doc.autoTable({head:[['Action','Reference','Document','Version','Date','Person']],body:docRows.length?docRows:[['None','','','','','']],startY:y+3,styles:{fontSize:7,cellPadding:1.5},margin:{left:14,right:14}});y=(doc.lastAutoTable?.finalY||y)+7;if(y>165){doc.addPage();y=14}doc.setFontSize(11);doc.text('Document review status',14,y);const reviewRows=[...data.reviewOverdue.map(x=>['Overdue',x.d.reference||'',documentDisplayTitle(x.d),`v${x.v.version_label||''}`,fmtDate(x.v.review_date)]),...data.reviewDueSoon.map(x=>['Due within 30 days',x.d.reference||'',documentDisplayTitle(x.d),`v${x.v.version_label||''}`,fmtDate(x.v.review_date)])];doc.autoTable({head:[['Status','Reference','Document','Version','Review date']],body:reviewRows.length?reviewRows:[['None','','','','']],startY:y+3,styles:{fontSize:7,cellPadding:1.5},margin:{left:14,right:14}});return {doc,data}}
+async function generateMonthlySafetyReport(value,opts={download:true,archive:true,scheduleId:null}){if(!isManager())return;const status=$('monthlyReportStatus');if(status){status.hidden=false;status.textContent='Generating monthly report…'}try{const {doc,data}=monthlySafetyReportDoc(value),fileName=`Safety-Compliance-${data.b.value}.pdf`,blob=doc.output('blob');let report=null;if(opts.archive!==false&&!state.loadErrors.generated_reports){const path=`reports/${data.b.value}/${crypto.randomUUID()}-${safeFileName(fileName)}`,up=await sb.storage.from('safety-files').upload(path,blob,{contentType:'application/pdf',upsert:false});if(up.error)throw up.error;const ins=await sb.from('generated_reports').insert({schedule_id:opts.scheduleId||null,report_type:'MONTHLY_SAFETY',period_start:data.b.start.toISOString().slice(0,10),period_end:data.b.end.toISOString().slice(0,10),file_name:fileName,storage_path:path,status:'ARCHIVED',summary:{training_completed:data.completions.length,awareness_completed:data.awareness.length,ppe_checks_submitted:data.ppe.checks.length,ppe_issues:data.ppe.issues.length,ppe_open_actions:data.ppe.openIssues.length,ppe_checks_outstanding:data.ppe.outstanding.length,training_overdue:data.overdue.length,pending_approvals:data.pending.length,documents_approved:data.approvals.length,controlled_reviews:data.reviews.length,admin_exceptions:data.exceptions.length},generated_by:state.user.id}).select().single();if(ins.error)throw ins.error;report=ins.data;state.generatedReports.unshift(report)}if(opts.download!==false)downloadBlob(blob,fileName);renderReportArchive();if(status)status.textContent=`${data.b.label} report created${report?' and archived':''}. Training completed: ${data.completions.length}; awareness reviews: ${data.awareness.length}; PPE checks: ${data.ppe.checks.length}; PPE issues: ${data.ppe.issues.length}.`;toast('Monthly Safety Compliance Report created.');return report}catch(e){console.error(e);if(status)status.textContent=e.message||'Could not generate report.';toast(e.message||'Could not generate monthly report.')}}
+async function downloadArchivedReport(id){const r=state.generatedReports.find(x=>x.id===id);if(!r?.storage_path)return toast('Stored report not found.');const d=await sb.storage.from('safety-files').download(r.storage_path);if(d.error||!d.data)return toast(d.error?.message||'Could not download report.');downloadBlob(d.data,r.file_name||'safety-report.pdf');try{await sb.from('report_download_activity').insert({report_id:r.id,user_id:state.user.id,file_name_snapshot:r.file_name||'safety-report.pdf'})}catch(e){console.warn('Report download audit',e)}}
+function reportTypeLabel(v){return ({MONTHLY_SAFETY:'Monthly Safety',WEEKLY_SAFETY:'Weekly Safety',MONTHLY_PPE:'Monthly PPE'})[v]||String(v||'Report').replaceAll('_',' ')}
+function renderReportArchive(){const el=$('reportArchiveList');if(!el)return;if(state.loadErrors.generated_reports){el.innerHTML='<div class="empty">Run the reporting SQL migration to enable the report archive.</div>';return}const rows=[...state.generatedReports].sort((a,b)=>new Date(b.generated_at||0)-new Date(a.generated_at||0)).slice(0,36);el.innerHTML=rows.length?rows.map(r=>{const logs=isReportViewer()?[]:state.reportEmailLog.filter(x=>x.report_id===r.id),sent=logs.filter(x=>x.status==='SENT').length,failed=logs.filter(x=>x.status==='FAILED').length;return `<div class="item-card compact"><div class="row-between"><div><strong>${esc(r.file_name||'Safety report')}</strong><div class="meta"><span class="badge">${esc(reportTypeLabel(r.report_type))}</span><span>${fmtDate(r.period_start)} – ${fmtDate(r.period_end)}</span><span>Generated ${fmtDateTime(r.generated_at)}</span><span class="badge ${r.status==='EMAIL_FAILED'?'overdue':'complete'}">${esc(r.status||'ARCHIVED')}</span>${logs.length?`<span>${sent} emailed${failed?` · ${failed} failed`:''}</span>`:''}</div></div><div class="row">${btn('Download','secondary',`data-download-report="${r.id}"`)}${logs.length?btn('Email log','ghost',`data-report-email-log="${r.id}"`):''}</div></div></div>`}).join(''):'<div class="empty">No reports have been generated yet.</div>'}
+function showReportEmailLog(reportId){const report=state.generatedReports.find(r=>r.id===reportId),rows=state.reportEmailLog.filter(x=>x.report_id===reportId).sort((a,b)=>new Date(b.sent_at||0)-new Date(a.sent_at||0));openModal('Report email log',`<p class="muted">${esc(report?.file_name||'Safety report')}</p><div class="card-list">${rows.length?rows.map(x=>`<div class="item-card compact"><div class="row-between"><div><strong>${esc(x.recipient)}</strong><div class="meta"><span>${fmtDateTime(x.sent_at)}</span><span class="badge ${x.status==='FAILED'?'overdue':'complete'}">${esc(x.status)}</span></div>${x.error_message?`<div class="muted">${esc(x.error_message)}</div>`:''}</div></div></div>`).join(''):'<div class="empty">No email attempts recorded.</div>'}</div><div class="actions">${btn('Close','primary','data-close-modal')}</div>`) }
+function showNewReportSchedule(existingId=null){if(!isAdmin())return;const x=existingId?state.reportSchedules.find(r=>r.id===existingId):null;openModal(x?'Edit scheduled report':'New scheduled report',`<div class="form-grid"><label>Name<input id="reportScheduleName" value="${esc(x?.name||'Monthly Safety Compliance Report')}"></label><label>Frequency<select id="reportScheduleFrequency"><option value="MONTHLY" ${x?.frequency!=='WEEKLY'?'selected':''}>Monthly</option><option value="WEEKLY" ${x?.frequency==='WEEKLY'?'selected':''}>Weekly</option></select></label><label>Day of month<input id="reportScheduleDay" type="number" min="1" max="28" value="${Number(x?.day_of_month||1)}"></label><label>Weekly day<select id="reportScheduleWeekday"><option value="1" ${Number(x?.day_of_week||1)===1?'selected':''}>Monday</option><option value="2" ${Number(x?.day_of_week||1)===2?'selected':''}>Tuesday</option><option value="3" ${Number(x?.day_of_week||1)===3?'selected':''}>Wednesday</option><option value="4" ${Number(x?.day_of_week||1)===4?'selected':''}>Thursday</option><option value="5" ${Number(x?.day_of_week||1)===5?'selected':''}>Friday</option><option value="6" ${Number(x?.day_of_week||1)===6?'selected':''}>Saturday</option><option value="7" ${Number(x?.day_of_week||1)===7?'selected':''}>Sunday</option></select></label><label>Recipients<input id="reportScheduleRecipients" placeholder="name@example.com, manager@example.com" value="${esc((x?.recipients||[]).join(', '))}"></label><label class="check-row full"><input id="reportScheduleEnabled" type="checkbox" ${x?.enabled===false?'':'checked'}> Schedule enabled</label><label class="check-row full"><input id="reportScheduleEmail" type="checkbox" ${x?.email_enabled?'checked':''}> Email automatically when the server email runner is configured</label></div><div class="hint-box">Monthly reports cover the previous calendar month. The report is always archived. Email requires the optional Supabase Edge Function included in this build and a configured sender.</div><div class="actions">${btn('Cancel','ghost','data-close-modal')}${btn('Save schedule','primary',`data-save-report-schedule="${x?.id||''}"`)}</div>`)}
+async function saveReportSchedule(id=''){if(!isAdmin())return;const name=clean($('reportScheduleName')?.value),frequency=$('reportScheduleFrequency')?.value||'MONTHLY',day=Math.min(28,Math.max(1,Number($('reportScheduleDay')?.value)||1)),recipients=clean($('reportScheduleRecipients')?.value).split(',').map(x=>x.trim()).filter(Boolean);if(!name)return toast('Schedule name is required.');const payload={name,frequency,day_of_month:day,day_of_week:Number($('reportScheduleWeekday')?.value)||1,recipients,enabled:!!$('reportScheduleEnabled')?.checked,email_enabled:!!$('reportScheduleEmail')?.checked,updated_at:new Date().toISOString()};let r;if(id)r=await sb.from('report_schedules').update(payload).eq('id',id);else r=await sb.from('report_schedules').insert({...payload,created_by:state.user.id});if(r.error)return toast(r.error.message);closeModal();await refresh('Scheduled report saved.')}
+async function toggleReportSchedule(id){if(!isAdmin())return;const x=state.reportSchedules.find(r=>r.id===id);if(!x)return;const r=await sb.from('report_schedules').update({enabled:!x.enabled,updated_at:new Date().toISOString()}).eq('id',id);if(r.error)return toast(r.error.message);await refresh(`Scheduled report ${x.enabled?'disabled':'enabled'}.`)}
+async function runReportSchedule(id){if(!isAdmin())return;const x=state.reportSchedules.find(r=>r.id===id);if(!x)return;if(x.frequency==='WEEKLY')return toast('Weekly schedules run through the automatic server report runner. Use Monthly for an immediate in-app test run.');const month=previousMonthValue(),report=await generateMonthlySafetyReport(month,{download:true,archive:true,scheduleId:null});if(report){await sb.from('report_schedules').update({last_run_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq('id',id);await refresh('Scheduled report test run created and archived.')}}
+function renderReportSchedules(){const el=$('reportScheduleList');if(!el||!isAdmin())return;if(state.loadErrors.report_schedules){el.innerHTML='<div class="empty">Run the reporting SQL migration to enable scheduled reports.</div>';return}const rows=[...state.reportSchedules].sort((a,b)=>String(a.name).localeCompare(String(b.name)));el.innerHTML=rows.length?rows.map(x=>`<div class="item-card schedule-card ${x.enabled?'traffic-green':'traffic-neutral'}"><div class="row-between"><div><h4>${esc(x.name)}</h4><div class="meta"><span class="badge">${esc(x.frequency||'MONTHLY')}</span><span>${x.frequency==='MONTHLY'?`Day ${Number(x.day_of_month||1)}`:`${['','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][Number(x.day_of_week||1)]}`}</span><span>${(x.recipients||[]).length} recipient${(x.recipients||[]).length===1?'':'s'}</span><span>${x.email_enabled?'Email enabled':'Archive only'}</span>${x.last_run_at?`<span>Last run ${fmtDateTime(x.last_run_at)}</span>`:''}</div></div><span class="badge ${x.enabled?'complete':''}">${x.enabled?'Enabled':'Disabled'}</span></div><div class="row">${btn('Edit','secondary',`data-edit-report-schedule="${x.id}"`)}${btn(x.enabled?'Disable':'Enable','ghost',`data-toggle-report-schedule="${x.id}"`)}${btn('Run now','primary',`data-run-report-schedule="${x.id}"`)}</div></div>`).join(''):'<div class="empty">No scheduled reports yet.</div>'}
+
+function renderReports(){document.querySelectorAll('.report-manager-content').forEach(el=>el.hidden=isReportViewer());if(isReportViewer()){const latest=[...state.generatedReports].sort((a,b)=>new Date(b.generated_at||0)-new Date(a.generated_at||0))[0];$('reportStats').innerHTML=[['Reports available',state.generatedReports.length],['Latest',latest?fmtDate(latest.generated_at):'—']].map(([l,n])=>`<div class="stat"><strong>${esc(n)}</strong><span>${l}</span></div>`).join('');renderReportArchive();return}const rows=complianceRows(),ppe=ppeManagerMonthSummary(currentMonthValue());$('reportStats').innerHTML=[['Assignments',rows.length],['Complete',rows.filter(r=>r.code==='COMPLETED').length],['Outstanding',rows.filter(r=>r.code!=='COMPLETED').length],['PPE checks this month',ppe.complete+ppe.issues]].map(([l,n])=>`<div class="stat"><strong>${n}</strong><span>${l}</span></div>`).join('');if($('monthlyReportMonth')&&!$('monthlyReportMonth').value)$('monthlyReportMonth').value=previousMonthValue();renderReportArchive();renderDocumentActivityReport()}
+function downloadBlob(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},500)}
+function pdfTable(title,rows,name){if(!window.jspdf?.jsPDF)return toast('PDF library did not load.');const {jsPDF}=window.jspdf,doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});doc.setFontSize(16);doc.text(title,14,14);doc.setFontSize(8);doc.text(`Generated ${new Date().toLocaleString('en-GB')} · Safety Tracker v${APP_VERSION}`,14,20);const cols=rows.length?Object.keys(rows[0]):['message'];const body=rows.length?rows.map(r=>cols.map(c=>String(r[c]??''))):[['No matching records']];doc.autoTable({head:[cols.map(c=>c.replaceAll('_',' '))],body,startY:25,styles:{fontSize:7,cellPadding:1.5},headStyles:{fontSize:7}});doc.save(name)}
+function downloadReport(type){const rows=complianceRows();if(type==='outstanding')return pdfTable('Outstanding Safety Training Actions',rows.filter(r=>r.code!=='COMPLETED').map(r=>({person:personName(r.user_id),training:r.t.name,type:kindLabel(trainingKind(r.t)),status:r.label,due:fmtDate(r.due),delivery:deliveryText(r.method)})),`safety-outstanding-${todayISO()}.pdf`);if(type==='matrix')return pdfTable('Training Matrix',rows.map(r=>({person:personName(r.user_id),training:r.t.name,type:kindLabel(trainingKind(r.t)),status:r.label,last_signed:fmtDateTime(r.s?.signed_at),next_due:fmtDate(r.due)})),`training-matrix-${todayISO()}.pdf`);if(type==='signoffs'){const normal=state.trainingSignoffs.map(s=>({person:personName(s.user_id),training:s.training_name_snapshot||state.training.find(t=>t.id===s.training_session_id)?.name||'',evidence:'Training sign-off',signed_at:fmtDateTime(s.signed_at),signature_name:s.signature_name||'',reason:''})),exceptions=state.trainingExceptions.map(x=>({person:personName(x.user_id),training:state.training.find(t=>t.id===x.training_session_id)?.name||'',evidence:'ADMIN EXCEPTION',signed_at:fmtDateTime(x.completed_at),signature_name:x.signature_name||'',reason:x.reason||''}));return pdfTable('Training Completion Evidence',[...normal,...exceptions],`training-signoffs-${todayISO()}.pdf`)};if(type==='reviews'){const d=state.versions.filter(v=>v.status==='CURRENT'&&isVersionApproved(v)).map(v=>{const x=state.documents.find(d=>d.id===v.document_id);return {kind:'Document',reference:x?.reference||'',item:x?.title||'',review_date:fmtDate(v.review_date),status:v.review_date&&v.review_date<todayISO()?'Overdue':''}}),t=activeTraining().map(x=>({kind:'Training',reference:trainingReference(x),item:x.name,review_date:fmtDate(x.review_date),status:x.review_date&&x.review_date<todayISO()?'Overdue':''}));return pdfTable('Document and Training Review Dates',[...d,...t],`review-dates-${todayISO()}.pdf`)}}
+function backupPayload(){return {exported_at:new Date().toISOString(),safety_tracker_version:APP_VERSION,build_id:BUILD_ID,profiles:state.people,documents:state.documents,document_versions:state.versions,document_links:state.documentLinks,document_reviews:state.documentReviews,training_sessions:state.training,training_assignments:state.trainingAssignments,training_signoffs:state.trainingSignoffs,training_exceptions:state.trainingExceptions,training_delivery_confirmations:state.trainingConfirmations,training_files:state.trainingFiles,training_document_links:state.trainingDocumentLinks,document_activity:state.documentActivity,safety_awareness_items:state.awarenessItems,safety_awareness_assignments:state.awarenessAssignments,safety_awareness_activity:state.awarenessActivity,ppe_items:state.ppeItems,ppe_assignments:state.ppeAssignments,ppe_monthly_checks:state.ppeChecks,ppe_monthly_check_items:state.ppeCheckItems,ppe_alert_queue:state.ppeAlertQueue,report_schedules:state.reportSchedules,generated_reports:state.generatedReports,report_email_log:state.reportEmailLog,departments:state.departments,user_departments:state.userDepartments,document_training_audiences:state.documentAudiences,historical_document_assignments:state.historicalDocAssignments,historical_document_signoffs:state.historicalDocSignoffs,historical_document_delivery_confirmations:state.historicalDocConfirmations}}
+function downloadBackup(){downloadBlob(new Blob([JSON.stringify(backupPayload(),null,2)],{type:'application/json'}),`safety-tracker-v2-backup-${todayISO()}.json`)}
+async function listStorageRecursive(prefix=''){const out=[];let offset=0;while(true){const r=await sb.storage.from('safety-files').list(prefix,{limit:100,offset,sortBy:{column:'name',order:'asc'}});if(r.error)throw r.error;if(!r.data?.length)break;for(const item of r.data){const path=prefix?`${prefix}/${item.name}`:item.name;if(item.id)out.push(path);else out.push(...await listStorageRecursive(path))}if(r.data.length<100)break;offset+=100}return out}
+async function downloadFullBackup(){if(!window.JSZip)return toast('ZIP library did not load.');try{toast('Building full backup…');const zip=new JSZip();zip.file('database/safety-tracker.json',JSON.stringify(backupPayload(),null,2));const files=await listStorageRecursive('');for(const path of files){const r=await sb.storage.from('safety-files').download(path);if(!r.error&&r.data)zip.file(`files/${path}`,r.data)}downloadBlob(await zip.generateAsync({type:'blob'}),`safety-tracker-v2-full-backup-${todayISO()}.zip`);toast(`Full backup created (${files.length} files).`)}catch(e){toast(e.message||'Full backup failed.')}}
+
+async function renderAdmin(){if(!$('buildDiagnostics'))return;renderReportSchedules();renderDepartments();let versionInfo=null;try{versionInfo=await fetch(`version.json?t=${Date.now()}`,{cache:'no-store'}).then(r=>r.json())}catch{}let regs=[];try{regs='serviceWorker' in navigator?await navigator.serviceWorker.getRegistrations():[]}catch{}const arch=state.settings.find(s=>s.setting_key==='architecture_version')?.setting_value||'not found',front=state.settings.find(s=>s.setting_key==='front_end_version')?.setting_value||'not found';$('buildDiagnostics').innerHTML=`<div class="card-list"><div class="item-card compact"><div class="row-between"><span>Loaded JavaScript build</span><strong class="diagnostic-ok">v${APP_VERSION}</strong></div></div><div class="item-card compact"><div class="row-between"><span>version.json</span><strong class="${versionInfo?.version===APP_VERSION?'diagnostic-ok':'diagnostic-warn'}">${esc(versionInfo?.version||'unavailable')}</strong></div></div><div class="item-card compact"><div class="row-between"><span>Service workers registered on this origin</span><strong class="${regs.length?'diagnostic-warn':'diagnostic-ok'}">${regs.length}</strong></div><div class="muted">v2 itself never registers a service worker.</div></div><div class="item-card compact"><div>Database architecture setting: <span class="codeish">${esc(arch)}</span></div><div>Previous front-end setting: <span class="codeish">${esc(front)}</span></div></div><div class="item-card compact"><div>Current URL: <span class="codeish">${esc(location.href)}</span></div><div>Build ID: <span class="codeish">${BUILD_ID}</span></div></div>${Object.keys(state.loadErrors).length?`<div class="danger-note"><strong>Schema/load warnings</strong><br>${Object.entries(state.loadErrors).map(([k,v])=>`${esc(k)}: ${esc(v)}`).join('<br>')}</div>`:'<div class="success-note">Core tables loaded with no reported schema errors.</div>'}</div>`}
+function renderHelp(){$('helpContent').innerHTML=`<div class="help-card"><h3>Documents</h3><p>Documents is the central controlled library. New RA, COSHH RA, SSW and other controlled versions are clearly shown as Pending approval, Approved/current, Superseded or Archived. SDS/MSDS uses Accepted/current wording. Document-to-document links are no longer required or maintained.</p></div><div class="help-card"><h3>Training</h3><p>Approved/current RA, COSHH RA and SSW records are made available in Training automatically. Pending controlled versions do not go live for Training. RA and COSHH default to self-training; SSW and Toolbox Talks default to instructor-led. Approved documents can target Everyone, one or more Departments and/or specific people. Those audiences automatically create and maintain the required Training assignments, including for future users. Managers/Admins can also change the Training audience later from the approved document card without creating a new document version.</p></div><div class="help-card"><h3>Pending approval & traffic lights</h3><p>New or revised controlled documents are not authorised for use or Training until a Manager/Admin opens the exact PDF and digitally approves it. Green means approved/current, amber means action such as pending approval or review due soon, red means overdue/not approved, and grey means archived or historical.</p></div><div class="help-card"><h3>New document versions</h3><p>If a controlled reference is uploaded again, unchanged content is skipped. Changed content is stored as Pending approval while the previously approved version remains current. Once the replacement is approved it becomes CURRENT and the old version becomes SUPERSEDED.</p></div><div class="help-card"><h3>Force Sync & Review</h3><p>Force Sync checks issue/review defaults, repairs Risk Assessment titles, aligns SDS/MSDS product names and synchronises approved controlled RA/COSHH/SSW records with Training. It no longer builds or maintains document links.</p></div><div class="help-card"><h3>Person evidence pack</h3><p>Managers/Admins open Reports → Person Evidence Pack, choose a person and select the documents/training records needed. An optional date range can limit the evidence period. Safety Tracker then collects matching assignments, sign-offs/signatures, instructor confirmations, admin exceptions, file-access history, approval/acceptance history and controlled reviews, and appends the selected PDFs. No document links are required.</p></div><div class="help-card"><h3>Document access</h3><p>Opening or downloading a file creates a timestamped audit event. Training acknowledgement/sign-off is recorded in Training. SDS/MSDS, policies, procedures and other reference documents can still be marked read/reviewed where applicable.</p></div><div class="help-card"><h3>Archiving and deleting documents</h3><p>Archiving retains compliance history. Admin can permanently delete only a document that has never been approved/accepted and has no protected training, review or sign-off evidence. Admin Storage Cleanup lists only orphaned files that no database record still references.</p></div><div class="help-card"><h3>Departments</h3><p>Admins create, rename and archive Departments in Admin. Each user can be assigned to a Department from People. Moving a user recalculates department-based training requirements while preserving previous evidence.</p></div><div class="help-card"><h3>Version check</h3><p>The header must show <strong>v2.3.3 CLEAN</strong>. Admin → Build diagnostics also checks version.json and service-worker registrations.</p></div>`}
+
+async function globalClick(e){const el=e.target.closest('button');if(!el)return;if(el.dataset.viewAwareness!==undefined){showView('awareness');return}if(el.dataset.viewPpe!==undefined){showView('ppe');return}if(el.dataset.startPpeCheck!==undefined)return showPpeCheck();if(el.dataset.submitPpeCheck!==undefined)return submitPpeCheck();if(el.dataset.viewPpeCheck)return viewPpeCheck(el.dataset.viewPpeCheck);if(el.dataset.downloadPpeCheck)return downloadPpeCheckPdf(el.dataset.downloadPpeCheck);if(el.dataset.managePpeCatalogue!==undefined)return showPpeCatalogue();if(el.dataset.editPpeItem)return editPpeItem(el.dataset.editPpeItem);if(el.dataset.savePpeItem!==undefined)return savePpeItem(el.dataset.savePpeItem);if(el.dataset.assignPpeItem)return showPpeAssignments(el.dataset.assignPpeItem);if(el.dataset.savePpeAssignments)return savePpeAssignments(el.dataset.savePpeAssignments);if(el.dataset.updatePpeAction)return showPpeAction(el.dataset.updatePpeAction);if(el.dataset.savePpeAction)return savePpeAction(el.dataset.savePpeAction);if(el.dataset.openAwareness)return openAwareness(el.dataset.openAwareness);if(el.dataset.ackAwareness)return acknowledgeAwareness(el.dataset.ackAwareness);if(el.dataset.assignAwareness)return showAwarenessAssignments(el.dataset.assignAwareness);if(el.dataset.saveAwarenessAssignments)return saveAwarenessAssignments(el.dataset.saveAwarenessAssignments);if(el.dataset.downloadReport)return downloadArchivedReport(el.dataset.downloadReport);if(el.dataset.reportEmailLog)return showReportEmailLog(el.dataset.reportEmailLog);if(el.dataset.editReportSchedule)return showNewReportSchedule(el.dataset.editReportSchedule);if(el.dataset.saveReportSchedule!==undefined)return saveReportSchedule(el.dataset.saveReportSchedule);if(el.dataset.toggleReportSchedule)return toggleReportSchedule(el.dataset.toggleReportSchedule);if(el.dataset.runReportSchedule)return runReportSchedule(el.dataset.runReportSchedule);if(el.dataset.docIndex){state.documentIndex=el.dataset.docIndex;if($('documentTypeFilter'))$('documentTypeFilter').value=state.documentIndex==='REGISTER'?'':state.documentIndex;renderDocuments();return}if(el.dataset.downloadRegister!==undefined)return documentRegisterPdf();if(el.dataset.closeModal!==undefined)return closeModal();if(el.dataset.createDocument!==undefined)return createDocumentRecord();if(el.dataset.openRequiredTraining)return openRequiredTrainingMaterial(el.dataset.openRequiredTraining);if(el.dataset.openDoc)return openDocument(el.dataset.openDoc);if(el.dataset.downloadDoc)return downloadDocument(el.dataset.downloadDoc);if(el.dataset.markDocReviewed)return showMarkDocumentReviewed(el.dataset.markDocReviewed);if(el.dataset.confirmDocReviewed)return confirmDocumentReviewed(el.dataset.confirmDocReviewed);if(el.dataset.docActivity)return showDocumentActivity(el.dataset.docActivity);if(el.dataset.evidenceDoc)return showDocumentEvidencePack(el.dataset.evidenceDoc);if(el.dataset.generateEvidenceDoc)return generateEvidencePack('DOCUMENT',el.dataset.generateEvidenceDoc);if(el.dataset.evidenceTraining)return showTrainingEvidencePack(el.dataset.evidenceTraining);if(el.dataset.generateEvidenceTraining)return generateEvidencePack('TRAINING',el.dataset.generateEvidenceTraining);if(el.dataset.generateEvidenceSelected!==undefined)return generateSelectedEvidencePack();if(el.dataset.docDetails)return showDocDetails(el.dataset.docDetails);if(el.dataset.newVersion)return showNewVersion(el.dataset.newVersion);if(el.dataset.publishVersion)return publishVersionFromModal(el.dataset.publishVersion);if(el.dataset.toggleDoc)return showToggleDocument(el.dataset.toggleDoc);if(el.dataset.confirmToggleDoc)return toggleDocument(el.dataset.confirmToggleDoc);if(el.dataset.approveVersion)return showVersionApproval(el.dataset.approveVersion);if(el.dataset.saveVersionApproval)return saveVersionApproval(el.dataset.saveVersionApproval);if(el.dataset.editDocAudience)return showDocumentAudience(el.dataset.editDocAudience);if(el.dataset.saveDocAudience)return saveDocumentAudience(el.dataset.saveDocAudience);if(el.dataset.reviewDoc)return showDocumentReview(el.dataset.reviewDoc);if(el.dataset.saveDocReview)return saveDocumentReview(el.dataset.saveDocReview);if(el.dataset.deleteUnusedDoc)return showDeleteUnusedDocument(el.dataset.deleteUnusedDoc);if(el.dataset.confirmDeleteUnusedDoc)return deleteUnusedDocument(el.dataset.confirmDeleteUnusedDoc);if(el.dataset.deleteStorageOrphan)return deleteStorageOrphan(el.dataset.deleteStorageOrphan);if(el.dataset.deleteAllStorageOrphans!==undefined)return confirmDeleteAllStorageOrphans();if(el.dataset.confirmDeleteAllStorageOrphans!==undefined)return deleteAllStorageOrphans();if(el.dataset.saveTraining!==undefined)return saveTraining();if(el.dataset.viewTraining)return showTrainingDetails(el.dataset.viewTraining);if(el.dataset.openTrainingFile)return openTrainingFile(el.dataset.openTrainingFile);if(el.dataset.downloadTrainingFile)return downloadTrainingFile(el.dataset.downloadTrainingFile);if(el.dataset.trainingFileActivity)return showTrainingFileActivity(el.dataset.trainingFileActivity);if(el.dataset.assignTraining)return showAssignTraining(el.dataset.assignTraining);if(el.dataset.saveTrainingAssignments)return saveTrainingAssignments(el.dataset.saveTrainingAssignments);if(el.dataset.editTraining)return showEditTraining(el.dataset.editTraining);if(el.dataset.saveTrainingEdit)return saveTrainingEdit(el.dataset.saveTrainingEdit);if(el.dataset.archiveTraining)return showArchiveTraining(el.dataset.archiveTraining);if(el.dataset.confirmArchiveTraining)return archiveTraining(el.dataset.confirmArchiveTraining);if(el.dataset.signTraining)return signTraining(el.dataset.signTraining);if(el.dataset.confirmTrainingSign)return confirmTrainingSign(el.dataset.confirmTrainingSign);if(el.dataset.trainingException)return showTrainingException(el.dataset.trainingException);if(el.dataset.confirmTrainingException)return confirmTrainingException(el.dataset.confirmTrainingException);if(el.dataset.requestInstructor)return requestInstructor(el.dataset.requestInstructor);if(el.dataset.confirmInstructorRequest)return confirmInstructorRequest(el.dataset.confirmInstructorRequest);if(el.dataset.saveGroupAttendance)return saveGroupAttendance(el.dataset.saveGroupAttendance);if(el.dataset.singleAttendance)return showSingleAttendance(el.dataset.singleAttendance);if(el.dataset.saveSingleAttendance)return saveSingleAttendance(el.dataset.saveSingleAttendance);if(el.dataset.newDepartment!==undefined)return showDepartmentEditor();if(el.dataset.editDepartment)return showDepartmentEditor(el.dataset.editDepartment);if(el.dataset.saveDepartment!==undefined)return saveDepartment(el.dataset.saveDepartment);if(el.dataset.toggleDepartment)return toggleDepartment(el.dataset.toggleDepartment);if(el.dataset.sendInvite!==undefined)return sendInvite();if(el.dataset.setRole)return showSetRole(el.dataset.setRole);if(el.dataset.saveRole)return saveRole(el.dataset.saveRole);if(el.dataset.resendUser)return showResendUser(el.dataset.resendUser);if(el.dataset.confirmResendUser)return resendUserAccess(el.dataset.confirmResendUser);if(el.dataset.toggleUser)return toggleUser(el.dataset.toggleUser);if(el.id==='saveNewPassword'){const r=await sb.auth.updateUser({password:$('newPassword').value});if(r.error)return toast(r.error.message);closeModal();toast('Password updated.')}}
+
+window.SafetyTrackerV2={APP_VERSION,BUILD_ID,state,sb,loadAll,loadReportViewerData,refresh,isReportViewer,canViewReports,runSafetySync,hashPdf,sha256Text,pdfTextFromBlob,currentVersion,approvedCurrentVersion,pendingApprovalVersion,versionApprovalStatus,isVersionApproved,ensureTrainingDocLink,createSourceTraining,syncSourceTrainings,safeFileName,productWords,similarity,refsInText,canonicalRef,declaredDocumentMatches,nextVersionLabel,publishFileAsNewVersion,existingDocMatch,extractSdsProductName,extractCoshhProductCandidates,productNameMatchScore,documentDisplayTitle,repairSdsTitles,extractRiskAssessmentTitle,repairRaTitles,renderDocumentRegister,documentRegisterPdf,logDocumentActivity,requiredTrainingMaterial,requiredTrainingMaterials,requiredTrainingMaterialOpened,openRequiredTrainingMaterial,showTrainingException,showDocumentEvidencePack,showTrainingEvidencePack,generateEvidencePack,generateSelectedEvidencePack,renderAwareness,awarenessStatus,renderPpe,ppeCheckStatus,monthlyPpeReportDoc,generateMonthlySafetyReport,monthlyReportData,classifySafetyPdfText,looksLikeCoshhAssessment,looksLikeSafetyDataSheet,toast};
+init();
