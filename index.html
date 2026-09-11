@@ -2,219 +2,23 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#17324d" />
-  <meta name="robots" content="noindex,nofollow" />
-  <title>Safety Tracker v2</title>
-  <script>
-    // Clean-v2 cache escape: unregister legacy Safety Tracker service workers and remove old caches.
-    // v2 itself does not register a service worker.
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.getRegistrations().then(regs => Promise.all(regs.filter(r => location.href.startsWith(r.scope) || /safety[-_ ]?tracker/i.test(r.scope)).map(r => r.unregister()))).catch(()=>{});
-    }
-    if ('caches' in window) { caches.keys().then(keys => Promise.all(keys.filter(k => /safety-tracker/i.test(k)).map(k => caches.delete(k)))).catch(()=>{}); }
-  </script>
-  <link rel="stylesheet" href="styles.css?v=2.3.3" />
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
-  <script src="config.js"></script>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>Inventory Tracker</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="styles.css?v=843" />
 </head>
 <body>
-  <div id="toast" class="toast" hidden></div>
+  <div id="app"><div class="splash">Loading Inventory Tracker…</div></div>
 
-  <main id="authView" class="auth-shell">
-    <section class="auth-card">
-      <div class="brand-mark">ST</div>
-      <h1>Safety Tracker</h1>
-      <p class="muted">Controlled documents, training and sign-off tracking.</p>
-      <div class="build-badge">Clean build v2.3.2 · no service worker</div>
-      <form id="loginForm" class="stack">
-        <label>Email<input id="loginEmail" type="email" autocomplete="email" required></label>
-        <label>Password<input id="loginPassword" type="password" autocomplete="current-password" required></label>
-        <button class="primary" type="submit">Sign in</button>
-      </form>
-      <button id="forgotPasswordBtn" class="link-button" type="button">Forgot password?</button>
-      <div id="passwordSetupArea" class="stack" hidden>
-        <h2>Set your password</h2>
-        <p class="muted">Invited users must choose their own password before entering Safety Tracker.</p>
-        <label>New password<input id="invitePassword" type="password" minlength="8" autocomplete="new-password"></label>
-        <label>Confirm password<input id="invitePasswordConfirm" type="password" minlength="8" autocomplete="new-password"></label>
-        <button id="completePasswordSetupBtn" class="primary" type="button">Set password and continue</button>
-      </div>
-      <div id="authMessage" class="message" hidden></div>
-    </section>
-  </main>
-
-  <div id="appView" hidden>
-    <header class="topbar">
-      <div class="brand-line"><strong>Safety Tracker</strong><span class="version">v2.3.3</span><span class="clean-pill">CLEAN</span></div>
-      <div class="user-chip"><span id="currentUserName">User</span><span id="currentUserRole" class="pill"></span><button id="signOutBtn" class="ghost small top-ghost">Sign out</button></div>
-    </header>
-
-    <nav id="mainNav" class="nav-tabs">
-      <button data-view="mySafety" class="active">My Safety</button>
-      <button data-view="documents">Documents</button>
-      <button data-view="training">Training</button>
-      <button data-view="awareness">Safety Awareness</button>
-      <button data-view="ppe">PPE Checks</button>
-      <button data-view="people" class="manager-only" hidden>People</button>
-      <button data-view="compliance" class="manager-only" hidden>Compliance</button>
-      <button data-view="instructor" class="manager-only" hidden>Instructor</button>
-      <button data-view="reports" class="report-access" hidden>Reports</button>
-      <button data-view="admin" class="admin-only" hidden>Admin</button>
-      <button data-view="help">Help</button>
-    </nav>
-
-    <main class="page-shell">
-      <section id="mySafetyView" class="view active-view">
-        <div class="page-heading"><div><h2>My Safety</h2><p class="muted">Your assigned safety training and acknowledgements.</p></div></div>
-        <div id="mySafetyStats" class="stats-grid"></div>
-        <div id="mySafetyList" class="card-list"></div>
-        <div class="section-card awareness-my-section"><div class="row-between"><div><h3>Annual Safety Awareness</h3><p class="muted">Short employee-focused guidance reviews that support formal training. These are not a replacement for training, instruction or competence.</p></div><button class="secondary" type="button" data-view-awareness>Open Safety Awareness</button></div><div id="myAwarenessStats" class="stats-grid"></div><div id="myAwarenessList" class="card-list"></div></div>
-        <div class="section-card ppe-my-section"><div class="row-between"><div><h3>Monthly PPE Check</h3><p class="muted">Check the PPE assigned to you by the 28th of each month so missing or damaged items can be ordered for the following month.</p></div><button class="secondary" type="button" data-view-ppe>Open PPE Checks</button></div><div id="myPpeStats" class="stats-grid"></div><div id="myPpeList" class="card-list"></div></div>
-      </section>
-
-      <section id="documentsView" class="view">
-        <div class="page-heading"><div><h2>Documents</h2><p class="muted">Controlled source library only. Training and sign-off are managed in Training.</p></div><button id="newDocumentBtn" class="primary manager-only" hidden>New document</button></div>
-        <div class="filters document-top-filters"><input id="documentSearch" placeholder="Search reference or title"><select id="documentTypeFilter"><option value="">All types</option></select><select id="documentStatusFilter"><option value="ACTIVE">Active + pending</option><option value="APPROVED">Approved/current</option><option value="PENDING">Pending approval</option><option value="REVIEW_REQUIRED">Review required / due soon</option><option value="OVERDUE">Review overdue</option><option value="ARCHIVED">Archived</option><option value="UNUSED">Unused / safe to delete</option><option value="">All statuses</option></select></div>
-        <div id="documentApprovalOverview" class="manager-only" hidden>
-          <div class="section-card approval-overview-card">
-            <div class="row-between"><div><h3>Document control</h3><p class="muted">Traffic-light status for approved/current documents, pending approvals and reviews.</p></div><div class="traffic-legend"><span class="legend green">Approved/current</span><span class="legend amber">Action required</span><span class="legend red">Overdue / not approved</span></div></div>
-            <div id="documentApprovalStats" class="stats-grid document-control-stats"></div>
-            <div id="pendingApprovalPanel"></div>
-          </div>
-        </div>
-        <div id="documentIndexGrid" class="document-index-grid"></div>
-        <div id="documentIndexContext" class="section-card document-index-context" hidden>
-          <div class="row-between"><div><h3 id="documentIndexTitle">Document index</h3><p id="documentIndexDescription" class="muted"></p></div><button id="documentIndexBackBtn" class="secondary" type="button">All indexes</button></div>
-        </div>
-        <div id="documentsList" class="card-list"></div>
-      </section>
-
-      <section id="trainingView" class="view">
-        <div class="page-heading"><div><h2>Training</h2><p class="muted">All RA, COSHH, SSW, Toolbox Talk, induction, refresher and ad-hoc training.</p></div><button id="newTrainingBtn" class="primary manager-only" hidden>New training</button></div>
-        <div class="filters"><input id="trainingSearch" placeholder="Search training, reference or linked document"><select id="trainingTypeFilter"><option value="">All types</option></select><select id="trainingStatusFilter"><option value="ACTIVE">Active</option><option value="ARCHIVED">Archived</option><option value="UNUSED">Unused / safe to delete</option><option value="">All statuses</option></select></div>
-        <div id="trainingList" class="card-list"></div>
-      </section>
-
-      <section id="awarenessView" class="view">
-        <div class="page-heading"><div><h2>Safety Awareness</h2><p class="muted">Annual practical guidance and refresher reading. This supports, but does not replace, formal training or task-specific controls.</p></div></div>
-        <div id="awarenessStats" class="stats-grid"></div>
-        <div class="filters"><input id="awarenessSearch" placeholder="Search awareness topic"><select id="awarenessStatusFilter"><option value="">All statuses</option><option value="DUE">Review required / due soon</option><option value="OVERDUE">Overdue</option><option value="CURRENT">Up to date</option></select></div>
-        <div id="awarenessList" class="card-list"></div>
-      </section>
-
-      <section id="ppeView" class="view">
-        <div class="page-heading"><div><h2>Monthly PPE Checks</h2><p class="muted">Employee PPE availability and condition checks. Due by the 28th each month; this does not replace normal pre-use checks.</p></div></div>
-        <div id="ppeStats" class="stats-grid"></div>
-        <div class="filters"><input id="ppeSearch" placeholder="Search assigned PPE"><select id="ppeStatusFilter"><option value="">All statuses</option><option value="DUE">Due / overdue</option><option value="ISSUES">Issues reported</option><option value="COMPLETE">Complete</option></select></div>
-        <div id="ppeList" class="card-list"></div>
-        <div id="ppeManagerArea" class="manager-only" hidden></div>
-      </section>
-
-      <section id="peopleView" class="view">
-        <div class="page-heading"><div><h2>People</h2><p class="muted">Manage Safety Tracker users and roles.</p></div><button id="inviteUserBtn" class="primary admin-only" hidden>Invite user</button></div>
-        <div id="peopleList" class="card-list"></div>
-      </section>
-
-      <section id="complianceView" class="view">
-        <div class="page-heading"><div><h2>Compliance</h2><p class="muted">Training completion, attendance and renewal status.</p></div></div>
-        <div class="filters"><select id="compliancePersonFilter"><option value="">All people</option></select><select id="complianceTypeFilter"><option value="">All training types</option></select><select id="complianceStatusFilter"><option value="">All statuses</option><option value="OVERDUE">Overdue</option><option value="OUTSTANDING">Outstanding</option><option value="AWAITING_INSTRUCTOR">Awaiting instructor</option><option value="READY_TO_SIGN">Ready to sign</option><option value="COMPLETED">Completed</option></select></div>
-        <div id="complianceStats" class="stats-grid"></div><div id="complianceList" class="card-list"></div>
-      </section>
-
-      <section id="instructorView" class="view">
-        <div class="page-heading"><div><h2>Instructor</h2><p class="muted">Record attendance for instructor-led SSW, Toolbox Talk and other sessions.</p></div></div>
-        <div class="section-card"><div class="form-grid"><label>Training<select id="groupTrainingSelect"><option value="">Select training</option></select></label><label>&nbsp;<button id="openGroupAttendanceBtn" class="primary" type="button">Open group attendance</button></label></div></div>
-        <div id="instructorList" class="card-list"></div>
-      </section>
-
-      <section id="reportsView" class="view">
-        <div class="page-heading"><div><h2>Reports</h2><p class="muted">Compliance reports, person evidence packs and archived safety/PPE reports.</p></div></div>
-        <div id="reportStats" class="stats-grid"></div>
-        <div class="section-card report-manager-content evidence-report-section">
-          <div class="row-between"><div><h3>Person Evidence Pack</h3><p class="muted">Select a person, then choose the controlled documents and training records you need. Evidence packs are created here in Reports rather than from individual documents.</p></div><button id="evidencePackBtn" class="primary" type="button">Build evidence pack</button></div>
-        </div>
-        <div class="button-grid report-manager-content">
-          <button id="outstandingPdfBtn" class="secondary">Outstanding actions PDF</button>
-          <button id="trainingMatrixPdfBtn" class="secondary">Training matrix PDF</button>
-          <button id="trainingSignoffsPdfBtn" class="secondary">Training sign-offs PDF</button>
-          <button id="reviewDatesPdfBtn" class="secondary">Review dates PDF</button>
-          <button id="backupBtn" class="secondary">JSON backup</button>
-          <button id="fullBackupBtn" class="primary">Full backup ZIP</button>
-        </div>
-        <div class="section-card monthly-report-section report-manager-content">
-          <div class="row-between"><div><h3>Monthly Safety Compliance Report</h3><p class="muted">Generate and archive a monthly PDF showing training completed, annual awareness reviews, PPE checks/issues, overdue actions, approvals and controlled reviews.</p></div></div>
-          <div class="form-grid"><label>Month<input id="monthlyReportMonth" type="month"></label><label>&nbsp;<button id="generateMonthlyReportBtn" class="primary" type="button">Generate monthly report</button></label><label>&nbsp;<button id="generatePpeReportBtn" class="secondary" type="button">Download PPE report</button></label></div>
-          <div id="monthlyReportStatus" class="message" hidden></div>
-        </div>
-        <div class="section-card">
-          <div class="row-between"><div><h3>Report archive</h3><p class="muted">Previously generated monthly reports retained in Safety Tracker.</p></div></div>
-          <div id="reportArchiveList" class="card-list"></div>
-        </div>
-        <div class="section-card activity-audit-section report-manager-content">
-          <div class="row-between"><div><h3>Document activity audit</h3><p class="muted">Who opened, downloaded or reviewed files, including activity outside assigned training.</p></div><button id="documentActivityPdfBtn" class="secondary" type="button">Activity audit PDF</button></div>
-          <div class="filters"><input id="activitySearch" placeholder="Search user, reference or document"><select id="activityPersonFilter"><option value="">All people</option></select><select id="activityActionFilter"><option value="">All actions</option><option value="OPENED">Opened</option><option value="DOWNLOADED">Downloaded</option><option value="REVIEWED">Reviewed</option><option value="CONTROLLED_REVIEW">Controlled review</option><option value="TRAINING_COMPLETED">Training completed</option></select></div>
-          <div id="activityStats" class="stats-grid"></div>
-          <div id="activityList" class="card-list"></div>
-        </div>
-      </section>
-
-      <section id="adminView" class="view">
-        <div class="page-heading"><div><h2>Admin</h2><p class="muted">Bulk import, Force Sync & Review, and build diagnostics.</p></div></div>
-        <div class="section-card">
-          <div class="row-between"><div><h3>Departments</h3><p class="muted">Create and manage your own departments. Users can then be assigned to a department in People, and approved documents can target departments automatically.</p></div><button class="primary" type="button" data-new-department>New department</button></div>
-          <div id="departmentList" class="card-list" style="margin-top:12px"></div>
-        </div>
-        <div class="section-card">
-          <div class="row-between"><div><h3>Force Sync & Review</h3><p class="muted">Repairs RA/COSHH/SSW training records, links and review flags without creating document assignments.</p></div><button id="forceSyncBtn" class="primary">Force Sync & Review</button></div>
-          <div id="forceSyncStatus" class="message" hidden></div>
-        </div>
-        <div class="section-card">
-          <div class="row-between"><div><h3>Repair SDS/MSDS titles</h3><p class="muted">Reads manufacturer Section 1.1 and aligns every SDS/MSDS title to the actual product identifier/name. Force Sync now does this automatically too.</p></div><button id="repairSdsTitlesBtn" class="secondary">Repair SDS titles</button></div>
-          <div id="sdsRepairStatus" class="message" hidden></div>
-        </div>
-        <div class="section-card">
-          <div class="row-between"><div><h3>Repair Risk Assessment titles</h3><p class="muted">Reads the first page of each RA and restores the actual assessment title. This fixes records where a control-measure heading or paragraph was imported as the title. Force Sync now does this automatically too.</p></div><button id="repairRaTitlesBtn" class="secondary">Repair RA titles</button></div>
-          <div id="raRepairStatus" class="message" hidden></div>
-        </div>
-        <div class="section-card">
-          <div class="row-between"><div><h3>Storage Cleanup</h3><p class="muted">Finds orphaned document, training and report files that no live database record references. It never lists approved/current evidence files.</p></div><button id="storageCleanupBtn" class="secondary" type="button">Scan storage</button></div>
-          <div id="storageCleanupStatus" class="message" hidden></div>
-          <div id="storageCleanupList" class="card-list" style="margin-top:1rem"></div>
-        </div>
-        <div class="section-card">
-          <h3>Bulk Import</h3>
-          <p class="muted">Analyse PDFs locally, including combined RA/COSHH/SSW/TBT packs. Safety Tracker splits each controlled reference into its own record, shows the detected page ranges, then publishes only new or changed content.</p>
-          <div class="hint-box"><strong>Rules:</strong> RA/COSHH/SSW → controlled Documents plus Training. SDS/MSDS → reference-only Documents. Toolbox Talks → instructor-led Training.</div>
-          <div class="bulk-drop"><label>Section PDF files<input id="bulkImportFiles" type="file" accept="application/pdf,.pdf" multiple></label><p class="muted">Maximum 45 MB per PDF.</p></div>
-          <div class="row"><button id="bulkAnalyzeBtn" class="secondary">Analyse PDFs</button><button id="bulkImportBtn" class="primary" disabled>Import selected</button><button id="bulkClearBtn" class="ghost">Clear</button></div>
-          <div id="bulkImportStatus" class="message" hidden></div>
-          <div id="bulkImportSummary" class="stats-grid bulk-summary"></div>
-          <div id="bulkImportPreview" class="card-list"></div>
-        </div>
-        <div class="section-card">
-          <div class="row-between"><div><h3>Scheduled Reports</h3><p class="muted">Create monthly or weekly compliance schedules. Reports are archived automatically by the server runner and can be emailed when an email provider is configured.</p></div><button id="newReportScheduleBtn" class="primary" type="button">New schedule</button></div>
-          <div class="hint-box">Monthly schedules default to the previous calendar month. Automatic email uses the optional Supabase Edge Function included in this build; manual report generation works without email setup.</div>
-          <div id="reportScheduleList" class="card-list" style="margin-top:12px"></div>
-        </div>
-        <div class="section-card"><h3>Build diagnostics</h3><div id="buildDiagnostics"></div></div>
-      </section>
-
-      <section id="helpView" class="view">
-        <div class="page-heading"><div><h2>Help</h2><p class="muted">How the clean v2 Safety Tracker works.</p></div></div>
-        <div id="helpContent" class="help-grid"></div>
-      </section>
-    </main>
-  </div>
-
-  <dialog id="modal" class="modal"><form method="dialog" onsubmit="return false"><div class="modal-head"><h3 id="modalTitle"></h3><button id="modalCloseBtn" class="icon-button" type="button" aria-label="Close">×</button></div><div id="modalBody"></div></form></dialog>
-
-  <script src="app.js?v=2.3.3"></script>
-  <script src="bulk-import.js?v=2.3.3"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js?v=843"></script>
 </body>
 </html>
