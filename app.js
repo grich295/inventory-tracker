@@ -49,6 +49,7 @@
     page: 'dashboard',
     search: '',
     categoryFilter: '',
+    categoryModel: null,
     selectedItemId: null,
     showArchived: false,
     legacyItemFilter: '',
@@ -229,7 +230,7 @@
       const p=JSON.parse(localStorage.getItem(offlineSnapshotKey)||'null');
       if(!p||p.user_id!==S.session?.user?.id)return false;
       S.profile=p.profile||null;S.profiles=p.profiles||[];S.items=p.items||[];S.locations=p.locations||[];S.balances=p.balances||[];S.transactions=p.transactions||[];
-      S.categories=p.categories||[];S.itemSuppliers=p.itemSuppliers||[];S.purchaseOrders=p.purchaseOrders||[];S.userPrefs=p.userPrefs||[];
+      S.categories=p.categories||[];S.itemSuppliers=p.itemSuppliers||[];S.purchaseOrders=p.purchaseOrders||[];S.userPrefs=p.userPrefs||[];S.categoryModel=null;
       S.stocktakeSettings=p.stocktakeSettings||null;S.stocktakeTasks=p.stocktakeTasks||[];S.stocktakeItems=p.stocktakeItems||[];S.offlineSnapshotAt=p.saved_at||null;
       return !!S.profile;
     }catch(_){return false;}
@@ -354,6 +355,7 @@
     ]);
     S.profiles=profiles; S.items=items; S.locations=locations; S.balances=balances;
     S.itemSuppliers=itemSuppliers; S.purchaseOrders=purchaseOrders; S.categories=categories; S.userPrefs=userPrefs;
+    S.categoryModel=null;
     S.stocktakeSettings=stocktakeSettingsRows[0]||null; S.stocktakeTasks=stocktakeTasks; S.stocktakeItems=stocktakeItems;
     S.profile=byId(S.profiles,S.session?.user?.id)||S.profile;
     if(transactions) S.transactions=await fetchAll('transactions','*','occurred_at',false);
@@ -504,7 +506,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['binsetup','Bin Setup'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.2</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.3</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -703,6 +705,16 @@
         </div>
 
         <div class="card help-card">
+          <h3>Category suggestions</h3>
+          <ul>
+            <li>Open <strong>Items → Category Review</strong> to see automatic suggestions for existing stock.</li>
+            <li>Suggestions use item names plus categories you have already approved.</li>
+            <li>Nothing is re-categorised automatically; approve a suggestion or edit the item yourself.</li>
+            <li>New item forms show a live suggested category while you type.</li>
+          </ul>
+        </div>
+
+        <div class="card help-card">
           <h3>Backups</h3>
           <ul>
             <li>Open <strong>Backup → Back up now</strong>.</li>
@@ -793,7 +805,9 @@
   function itemRowHtml(i) {
     const total=itemTotal(i.id); const low=num(i.reorder_level)>0 && total<=num(i.reorder_level); const onOrder=itemOnOrder(i.id);
     const pos=itemPositions(i.id).slice(0,3).map(b=>`${esc(locationLabel(byId(S.locations,b.location_id)))} (${qty(b.quantity)})`).join(' · ');
-    return `<div class="item-row inventory-item-row ${i.active?'':'archived-row'}" data-item="${i.id}">${i.primary_photo_path?`<img class="item-thumb" data-photo-path="${esc(i.primary_photo_path)}" alt="">`:`<div class="item-thumb placeholder">📦</div>`}<div class="item-main"><div class="item-title">${esc(i.name)}${i.active?'':' <span class="badge muted">Archived</span>'}</div><div class="muted">${esc(i.item_code)}${i.category?' · '+esc(i.category):''}</div><div class="muted">${pos || 'No stock location set'}</div>${low&&i.active?'<span class="badge low">Low stock</span> ':''}${onOrder>0?`<span class="badge order">On order ${qty(onOrder)}</span>`:''}</div><div class="qty">${qty(total)}</div></div>`;
+    const catReview=canManage()?categoryReviewSuggestion(i):null;
+    const catBadge=catReview?`<span class="badge warn category-suggest-badge">Suggested: ${esc(catReview.suggestion.category)}</span> `:'';
+    return `<div class="item-row inventory-item-row ${i.active?'':'archived-row'}" data-item="${i.id}">${i.primary_photo_path?`<img class="item-thumb" data-photo-path="${esc(i.primary_photo_path)}" alt="">`:`<div class="item-thumb placeholder">📦</div>`}<div class="item-main"><div class="item-title">${esc(i.name)}${i.active?'':' <span class="badge muted">Archived</span>'}</div><div class="muted">${esc(i.item_code)}${i.category?' · '+esc(i.category):' · Uncategorised'}</div><div class="muted">${pos || 'No stock location set'}</div>${catBadge}${low&&i.active?'<span class="badge low">Low stock</span> ':''}${onOrder>0?`<span class="badge order">On order ${qty(onOrder)}</span>`:''}</div><div class="qty">${qty(total)}</div></div>`;
   }
 
 
@@ -801,6 +815,144 @@
     const configured=S.categories.filter(c=>c.active).map(c=>c.name);
     const existing=S.items.map(i=>String(i.category||'').trim()).filter(Boolean);
     return [...new Set([...configured,...existing])].sort((a,b)=>a.localeCompare(b));
+  }
+
+
+  // v8.3 Category Suggestions
+  // Suggestions are calculated from the current inventory, so existing items are
+  // automatically included every time data syncs. Nothing is changed until a
+  // manager/admin approves the suggested category.
+  const CATEGORY_STOP_WORDS=new Set([
+    'the','and','for','with','from','into','pack','pk','each','white','black','red','blue','green','grey','gray','small','large','medium','standard','trade','professional','pro','new','spare','replacement','part','parts','item','items','mm','cm','ml','kg','gram','grams','litre','litres','meter','metre','meters','metres','pcs','pc','piece','pieces','set','box','roll','single','double','triple'
+  ]);
+  const CATEGORY_SEED_GROUPS=[
+    {aliases:['bulbs','bulb','lighting','lamps','lamp'],terms:[['gu10',10],['g9',9],['e27',9],['e14',9],['b22',9],['ba22',9],['sbc',9],['pygmy',9],['led bulb',10],['led lamp',9],['light bulb',10],['fluorescent tube',9],['lamp',5],['bulb',7]]},
+    {aliases:['plumbing','pipework'],terms:[['copper pipe',9],['press fit',9],['m-profile',9],['compression fitting',9],['flexible hose',8],['flexi hose',8],['cistern',8],['flush valve',9],['fill valve',9],['isolation valve',9],['ball valve',8],['tap connector',8],['waste pipe',8],['pipe',5],['elbow',6],['coupling',6],['tee',5],['valve',5]]},
+    {aliases:['electrical','electrics'],terms:[['socket',8],['switch',7],['fuse',8],['mcb',9],['rcbo',9],['rcd',9],['isolator',8],['contactor',8],['relay',7],['transformer',8],['cable',7],['flex cable',8],['plug',6],['junction box',8],['connector block',7],['terminal block',7]]},
+    {aliases:['batteries','battery'],terms:[['battery',10],['batteries',10],['aa battery',10],['aaa battery',10],['cr2032',10],['lead acid',9]]},
+    {aliases:['paint','paints','decorating','decoration'],terms:[['dulux',10],['hammerite',10],['paint',9],['emulsion',9],['satinwood',9],['eggshell',9],['matt',6],['primer',7],['undercoat',7],['varnish',7]]},
+    {aliases:['sealants','sealant','adhesives','adhesive','glues','glue'],terms:[['sealant',10],['silicone',9],['caulk',9],['adhesive',9],['wood glue',10],['gorilla glue',10],['mapesil',10],['peel stop',8]]},
+    {aliases:['fixings','fixing','fasteners','fastener'],terms:[['screw',8],['screws',8],['bolt',8],['bolts',8],['rawlplug',10],['wall plug',9],['anchor bolt',9],['washer',5],['nuts and bolts',9],['fixing',7]]},
+    {aliases:['tools','tooling','hand tools','power tools'],terms:[['drill',7],['screwdriver',8],['spanner',8],['wrench',8],['pliers',8],['pipe cutter',8],['cutter',5],['saw',7],['chisel',7],['socket set',11],['tool',5]]},
+    {aliases:['ppe','personal protective equipment','safety wear','safety equipment'],terms:[['safety glasses',10],['goggles',10],['ear defenders',10],['hard hat',10],['safety footwear',10],['safety boots',10],['protective gloves',9],['work gloves',8]]},
+    {aliases:['cleaning','cleaners','cleaning products','janitorial'],terms:[['cleaner',7],['cleaning',8],['detergent',8],['descaler',9],['bleach',9],['polish',6],['wipes',6],['mop',7],['cloth',5]]},
+    {aliases:['chemicals','chemical','lubricants','lubricant'],terms:[['wd-40',10],['wd40',10],['lubricant',9],['grease',8],['penetrating oil',9],['aerosol',6],['chemical',7],['diesel',6],['gas oil',6]]},
+    {aliases:['hvac','heating','ventilation','air conditioning'],terms:[['fan coil',10],['fcu',9],['ahu',10],['air handling',10],['actuator',7],['fan belt',9],['air filter',8],['hvac',10]]},
+    {aliases:['fire','fire alarm','fire safety'],terms:[['smoke detector',10],['optical smoke',10],['heat detector',10],['apollo discovery',10],['fire alarm',10],['call point',9],['sounder',7]]}
+  ];
+
+  const categoryNorm=v=>String(v||'').toLowerCase().replace(/&/g,' and ').replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();
+  const categoryTokenise=v=>categoryNorm(v).split(' ').filter(t=>t.length>1&&!CATEGORY_STOP_WORDS.has(t)&&!/^\d+(?:\.\d+)?$/.test(t));
+  const categoryBigrams=tokens=>tokens.slice(0,-1).map((t,i)=>`${t} ${tokens[i+1]}`);
+  const phraseIn=(text,phrase)=>` ${text} `.includes(` ${categoryNorm(phrase)} `);
+  const sameCategory=(a,b)=>categoryNorm(a)===categoryNorm(b);
+
+  function resolveSeedCategory(aliases,categories) {
+    const list=categories.map(name=>({name,norm:categoryNorm(name)}));
+    for(const alias of aliases){
+      const a=categoryNorm(alias);
+      const exact=list.find(x=>x.norm===a); if(exact)return exact.name;
+    }
+    for(const alias of aliases){
+      const a=categoryNorm(alias);
+      if(a.length<3)continue;
+      const partial=list.find(x=>` ${x.norm} `.includes(` ${a} `)||` ${a} `.includes(` ${x.norm} `));
+      if(partial)return partial.name;
+    }
+    return '';
+  }
+
+  function getCategoryModel() {
+    if(S.categoryModel)return S.categoryModel;
+    const categories=categoryNames();
+    const tokenStats=new Map(),bigramStats=new Map();
+    const add=(map,key,category)=>{
+      if(!key)return;
+      if(!map.has(key))map.set(key,new Map());
+      const row=map.get(key);row.set(category,(row.get(category)||0)+1);
+    };
+    S.items.filter(i=>i.active&&String(i.category||'').trim()).forEach(i=>{
+      const category=String(i.category||'').trim();
+      const tokens=[...new Set(categoryTokenise(`${i.name||''} ${i.item_code||''}`))];
+      const bigrams=[...new Set(categoryBigrams(categoryTokenise(i.name||'')))];
+      tokens.forEach(t=>add(tokenStats,t,category));
+      bigrams.forEach(t=>add(bigramStats,t,category));
+    });
+    S.categoryModel={categories,tokenStats,bigramStats};
+    return S.categoryModel;
+  }
+
+  function addCategoryScore(scores,category,points,evidence) {
+    if(!category||!Number.isFinite(points)||points<=0)return;
+    if(!scores.has(category))scores.set(category,{score:0,evidence:[]});
+    const row=scores.get(category);row.score+=points;
+    if(evidence&&!row.evidence.includes(evidence)&&row.evidence.length<3)row.evidence.push(evidence);
+  }
+
+  function suggestCategoryFromText(text,currentCategory='') {
+    const clean=categoryNorm(text);
+    if(clean.length<2)return null;
+    const model=getCategoryModel(),scores=new Map();
+    const tokens=[...new Set(categoryTokenise(clean))];
+    const bigrams=[...new Set(categoryBigrams(categoryTokenise(clean)))];
+
+    // Direct category-name mentions are useful where item names are explicit.
+    model.categories.forEach(category=>{
+      const cn=categoryNorm(category);
+      if(cn.length>=4&&phraseIn(clean,cn))addCategoryScore(scores,category,6,`name includes “${category}”`);
+    });
+
+    // Curated maintenance vocabulary gives useful suggestions even before the
+    // inventory has enough examples to learn from.
+    CATEGORY_SEED_GROUPS.forEach(group=>{
+      const category=resolveSeedCategory(group.aliases,model.categories);
+      if(!category)return;
+      group.terms.forEach(([term,weight])=>{
+        if(phraseIn(clean,term))addCategoryScore(scores,category,weight,`matched “${term}”`);
+      });
+    });
+
+    // Learn from categories already approved in this inventory. A token/bigram
+    // only becomes strong when it mostly points to one category.
+    const learned=(map,key,base,label)=>{
+      const stat=map.get(key);if(!stat)return;
+      const total=[...stat.values()].reduce((a,b)=>a+b,0)||1;
+      stat.forEach((count,category)=>{
+        const purity=count/total;
+        if(purity<0.58)return;
+        const strength=base*purity*Math.min(2.6,0.7+count*0.45);
+        addCategoryScore(scores,category,strength,`${label} “${key}”`);
+      });
+    };
+    tokens.forEach(t=>learned(model.tokenStats,t,1.25,'learned from'));
+    bigrams.forEach(t=>learned(model.bigramStats,t,2.6,'learned phrase'));
+
+    const ranked=[...scores.entries()].map(([category,v])=>({category,...v})).sort((a,b)=>b.score-a.score);
+    if(!ranked.length)return null;
+    const top=ranked[0],second=ranked[1]?.score||0,margin=top.score-second;
+    if(top.score<4.4||margin<0.8)return null;
+    const percent=Math.max(62,Math.min(97,Math.round(55+Math.min(top.score,12)*2.7+Math.min(margin,8)*2.2)));
+    const confidence=(top.score>=7.2&&margin>=2.0)?'High':'Medium';
+    return {category:top.category,score:top.score,confidence,percent,evidence:top.evidence,currentMatches:sameCategory(currentCategory,top.category)};
+  }
+
+  function categorySuggestionForItem(item) {
+    if(!item?.active)return null;
+    return suggestCategoryFromText(`${item.name||''} ${item.item_code||''}`,item.category||'');
+  }
+
+  function categoryReviewSuggestion(item) {
+    const suggestion=categorySuggestionForItem(item);
+    if(!suggestion||suggestion.currentMatches)return null;
+    // Existing categories are only challenged at high confidence. Uncategorised
+    // items can be shown at medium confidence because approval is still manual.
+    if(String(item.category||'').trim()&&suggestion.confidence!=='High')return null;
+    return {item,suggestion,kind:String(item.category||'').trim()?'mismatch':'uncategorised'};
+  }
+
+  function categoryReviewRows() {
+    return S.items.filter(i=>i.active).map(categoryReviewSuggestion).filter(Boolean)
+      .sort((a,b)=>(a.kind===b.kind?b.suggestion.percent-a.suggestion.percent:(a.kind==='uncategorised'?-1:1))||a.item.name.localeCompare(b.item.name));
   }
 
   function filteredItems() {
@@ -815,7 +967,8 @@
 
   function itemsHtml() {
     const filtered=filteredItems();
-    return `<div class="toolbar"><input id="itemSearch" value="${esc(S.search)}" placeholder="Search item, code, location or bin"><select id="categoryFilter"><option value="">All categories</option>${categoryNames().map(c=>`<option value="${esc(c)}" ${S.categoryFilter===c?'selected':''}>${esc(c)}</option>`).join('')}</select>${canManage()?'<button class="btn" id="addItemBtn">Add new item</button>':''}${canAdmin()?`<button class="btn ghost" id="toggleArchivedBtn">${S.showArchived?'Active items':'Archived items'}</button><button class="btn ghost" id="manageCategoriesBtn">Categories</button>`:''}</div>
+    const reviewCount=canManage()?categoryReviewRows().length:0;
+    return `<div class="toolbar"><input id="itemSearch" value="${esc(S.search)}" placeholder="Search item, code, location or bin"><select id="categoryFilter"><option value="">All categories</option>${categoryNames().map(c=>`<option value="${esc(c)}" ${S.categoryFilter===c?'selected':''}>${esc(c)}</option>`).join('')}</select>${canManage()?`<button class="btn" id="addItemBtn">Add new item</button><button class="btn ${reviewCount?'warn':'ghost'}" id="categoryReviewBtn">Category Review${reviewCount?` (${reviewCount})`:' ✓'}</button>`:''}${canAdmin()?`<button class="btn ghost" id="toggleArchivedBtn">${S.showArchived?'Active items':'Archived items'}</button><button class="btn ghost" id="manageCategoriesBtn">Categories</button>`:''}</div>
       <div id="itemCount" class="muted" style="margin-bottom:.6rem">${filtered.length} item${filtered.length===1?'':'s'}</div>
       <div id="itemList" class="item-list">${filtered.map(itemRowHtml).join('') || '<div class="card">No matching items.</div>'}</div>`;
   }
@@ -1484,7 +1637,7 @@
       backup_format:'inventory-tracker-backup-v1',
       created_at:new Date().toISOString(),
       created_by:{id:S.profile?.id||null,name:S.profile?.display_name||null,role:S.profile?.role||null},
-      app_version:'7.3',
+      app_version:'8.3',
       project_url:cfg.supabaseUrl,
       tables:{},
       uploaded_files:{requested:!!includeFiles,downloaded:0,failed:[]}
@@ -2020,6 +2173,7 @@ Keep this file somewhere secure.
     const cat=document.getElementById('categoryFilter'); if(cat) cat.onchange=()=>{S.categoryFilter=cat.value;refreshItemSearchResults();};
     const add=document.getElementById('addItemBtn'); if(add) add.onclick=openAddItem;
     const archived=document.getElementById('toggleArchivedBtn'); if(archived) archived.onclick=()=>{S.showArchived=!S.showArchived;S.search='';render();};
+    const review=document.getElementById('categoryReviewBtn'); if(review) review.onclick=openCategoryReview;
     const manage=document.getElementById('manageCategoriesBtn'); if(manage) manage.onclick=openCategoryManager;
     hydrateItemThumbnails(document);
   }
@@ -2768,6 +2922,7 @@ Keep this file somewhere secure.
       <div><label>Item code</label><input id="newCode" value="${esc(i?.item_code||'')}" required></div>
       <div><label>QR value</label><input id="newQr" value="${esc(i?.qr_value||'')}" placeholder="Defaults to item code"><button class="btn ghost" id="generateQr" type="button" style="margin-top:.35rem">Generate code</button></div>
       <div><label>Category</label><select id="newCategory"><option value="">Uncategorised</option>${categories.map(c=>`<option value="${esc(c)}" ${currentCategory===c?'selected':''}>${esc(c)}</option>`).join('')}</select></div>
+      <div class="full" id="categorySuggestionBox"></div>
       <div><label>Reorder level</label><input id="newReorder" type="number" inputmode="decimal" step="0.01" min="0" value="${esc(i?.reorder_level??0)}"></div>
       <div><label>Unit cost (£, optional)</label><input id="newCost" type="number" step="0.01" min="0" value="${esc(i?.unit_cost??'')}"></div>
       <div><label>Default stock location</label><select id="defaultLocationName"><option value="">Not set</option>${locationNames().map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div>
@@ -2782,7 +2937,7 @@ Keep this file somewhere secure.
   function openEditItem(i) { showModal(itemFormHtml(i)); bindItemForm(i); }
 
   function bindItemForm(existing) {
-    const name=document.getElementById('newName'),code=document.getElementById('newCode'),qr=document.getElementById('newQr');
+    const name=document.getElementById('newName'),code=document.getElementById('newCode'),qr=document.getElementById('newQr'),category=document.getElementById('newCategory');
     const defaultLocation=document.getElementById('defaultLocationName'),defaultBin=document.getElementById('defaultBinRef');
     let editedPhoto=null;
     const photoInput=document.getElementById('newPhoto'),photoStatus=document.getElementById('photoEditStatus');
@@ -2811,6 +2966,25 @@ Keep this file somewhere secure.
       const openingLocation=document.getElementById('openingLocationName');
       if(openingLocation) bindBinRefSuggestions('openingLocationName','openingBinRef','openingBinList',activeLocations());
     }
+    const refreshCategorySuggestion=()=>{
+      const box=document.getElementById('categorySuggestionBox');if(!box)return;
+      const suggestion=suggestCategoryFromText(`${name.value||''} ${code.value||''}`,category.value||'');
+      if(!String(name.value||'').trim()) { box.innerHTML=''; return; }
+      if(!suggestion){
+        box.innerHTML='<div class="category-suggestion neutral"><strong>No strong category suggestion yet.</strong><span>The item can still be saved normally.</span></div>';
+        return;
+      }
+      if(suggestion.currentMatches){
+        box.innerHTML=`<div class="category-suggestion matched"><strong>✓ Category suggestion matches: ${esc(suggestion.category)}</strong><span>${esc(suggestion.confidence)} confidence · ${suggestion.percent}%</span></div>`;
+        return;
+      }
+      box.innerHTML=`<div class="category-suggestion"><div><strong>Suggested category: ${esc(suggestion.category)}</strong><span>${esc(suggestion.confidence)} confidence · ${suggestion.percent}%${suggestion.evidence.length?` · ${esc(suggestion.evidence[0])}`:''}</span></div><button class="btn small" id="useCategorySuggestion" type="button">Use suggestion</button></div>`;
+      const use=document.getElementById('useCategorySuggestion');if(use)use.onclick=()=>{category.value=suggestion.category;refreshCategorySuggestion();};
+    };
+    name.addEventListener('input',refreshCategorySuggestion);
+    code.addEventListener('input',refreshCategorySuggestion);
+    category.addEventListener('change',refreshCategorySuggestion);
+    setTimeout(refreshCategorySuggestion,0);
     document.getElementById('itemForm').onsubmit=async e=>{
       e.preventDefault();
       let defaultLocationId=null;
@@ -2822,7 +2996,7 @@ Keep this file somewhere secure.
         setNotice(`Could not save the default stock location: ${parseError(err)}`,'error');
         return;
       }
-      const row={name:name.value.trim(),item_code:code.value.trim(),qr_value:(qr.value.trim()||code.value.trim()),category:document.getElementById('newCategory').value||null,reorder_level:num(document.getElementById('newReorder').value),unit_cost:document.getElementById('newCost').value===''?null:num(document.getElementById('newCost').value),default_location_id:defaultLocationId};
+      const row={name:name.value.trim(),item_code:code.value.trim(),qr_value:(qr.value.trim()||code.value.trim()),category:category.value||null,reorder_level:num(document.getElementById('newReorder').value),unit_cost:document.getElementById('newCost').value===''?null:num(document.getElementById('newCost').value),default_location_id:defaultLocationId};
       let itemId=existing?.id;
       if(existing){const {error}=await sb.from('items').update(row).eq('id',existing.id);if(error){setNotice(parseError(error),'error');closeModal();render();return;}}
       else {row.created_by=S.profile.id;const {data,error}=await sb.from('items').insert(row).select('id').single();if(error){setNotice(parseError(error),'error');closeModal();render();return;}itemId=data.id;}
@@ -2834,6 +3008,56 @@ Keep this file somewhere secure.
         else if(opening>0){try{const loc=await ensurePosition(locationName,binRef);const {error}=await sb.rpc('apply_stock_transaction',{p_item_id:itemId,p_type:'ADD',p_quantity:opening,p_from_location_id:null,p_to_location_id:loc,p_new_quantity:null,p_reason:'Opening stock',p_reference:null,p_notes:null});if(error)throw error;}catch(err){setNotice(`Item created, but opening stock failed: ${parseError(err)}`,'error');}}
       }
       await loadData();closeModal();if(!S.notice||S.notice.type!=='error')setNotice(existing?'Item updated.':'New item created.');render();
+    };
+  }
+
+
+  async function applyCategorySuggestion(itemId,category) {
+    if(!canManage())throw new Error('Manager or Admin access required');
+    const {error}=await sb.from('items').update({category}).eq('id',itemId);
+    if(error)throw error;
+  }
+
+  function openCategoryReview() {
+    if(!canManage())return;
+    const rows=categoryReviewRows();
+    const uncategorised=rows.filter(r=>r.kind==='uncategorised');
+    const mismatches=rows.filter(r=>r.kind==='mismatch');
+    const highUncat=uncategorised.filter(r=>r.suggestion.confidence==='High');
+    const body=rows.map(r=>`<div class="category-review-row">
+      <div class="category-review-main">
+        <div class="item-title">${esc(r.item.name)}</div>
+        <div class="muted">${esc(r.item.item_code||'')}</div>
+        <div class="category-review-path"><span class="category-current">${r.item.category?esc(r.item.category):'Uncategorised'}</span><span aria-hidden="true">→</span><strong>${esc(r.suggestion.category)}</strong><span class="badge ${r.suggestion.confidence==='High'?'good':'warn'}">${esc(r.suggestion.confidence)} ${r.suggestion.percent}%</span></div>
+        <div class="muted category-evidence">${r.kind==='mismatch'?'Possible category mismatch · ':'Suggested from item name · '}${esc(r.suggestion.evidence.join(' · ')||'inventory learning')}</div>
+      </div>
+      <div class="category-review-actions"><button class="btn small" data-approve-category="${r.item.id}" data-category="${esc(r.suggestion.category)}">${r.kind==='mismatch'?'Approve change':'Approve'}</button><button class="btn ghost small" data-edit-category-item="${r.item.id}">Edit</button></div>
+    </div>`).join('');
+    showModal(`<header><div><h2>Category Review</h2><div class="muted">Automatic suggestions for stock already in Inventory.</div></div><button class="close" data-close>×</button></header>
+      <div class="notice compact"><strong>Live auto-sync:</strong> every active item already stored in Supabase is rescanned whenever inventory data refreshes. Existing categories are never overwritten automatically. Approved categories become examples for future suggestions.</div>
+      <div class="grid cards category-review-stats"><div class="card"><div class="muted">Needs review</div><div class="stat">${rows.length}</div></div><div class="card"><div class="muted">Uncategorised</div><div class="stat">${uncategorised.length}</div></div><div class="card"><div class="muted">Possible mismatch</div><div class="stat">${mismatches.length}</div></div></div>
+      <div class="actions category-review-tools">${highUncat.length?`<button class="btn good" id="approveHighCategories">Approve ${highUncat.length} high-confidence uncategorised</button>`:''}<button class="btn ghost" id="refreshCategoryReview">Refresh scan</button></div>
+      <div class="category-review-list">${body||'<div class="notice success"><strong>All clear.</strong> No category suggestions currently need approval.</div>'}</div>`);
+
+    document.querySelectorAll('[data-approve-category]').forEach(b=>b.onclick=async()=>{
+      b.disabled=true;b.textContent='Saving…';
+      try{await applyCategorySuggestion(b.dataset.approveCategory,b.dataset.category);await loadData({transactions:false});setNotice('Category approved.');openCategoryReview();}
+      catch(err){setNotice(parseError(err),'error');closeModal();render();}
+    });
+    document.querySelectorAll('[data-edit-category-item]').forEach(b=>b.onclick=()=>{
+      const item=byId(S.items,b.dataset.editCategoryItem);if(item)openEditItem(item);
+    });
+    const refresh=document.getElementById('refreshCategoryReview');if(refresh)refresh.onclick=async()=>{
+      refresh.disabled=true;refresh.textContent='Refreshing…';
+      try{await loadData({transactions:false});openCategoryReview();}catch(err){setNotice(parseError(err),'error');closeModal();render();}
+    };
+    const approveAll=document.getElementById('approveHighCategories');if(approveAll)approveAll.onclick=async()=>{
+      if(!confirm(`Approve ${highUncat.length} high-confidence category suggestions? Existing categorised items will not be changed.`))return;
+      approveAll.disabled=true;approveAll.textContent='Approving…';
+      try{
+        for(const r of highUncat)await applyCategorySuggestion(r.item.id,r.suggestion.category);
+        await loadData({transactions:false});setNotice(`${highUncat.length} category suggestion${highUncat.length===1?'':'s'} approved.`);openCategoryReview();
+      }catch(err){setNotice(parseError(err),'error');closeModal();render();}
     };
   }
 

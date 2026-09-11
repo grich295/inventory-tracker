@@ -341,3 +341,33 @@ tbody tr:last-child td{border-bottom:0}
 
 /* Motion accessibility */
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+
+/* =========================================================
+   v8.3 CATEGORY SUGGESTIONS + AUTO REVIEW
+   ========================================================= */
+.category-suggest-badge{margin-top:.35rem}
+.category-suggestion{display:flex;align-items:center;justify-content:space-between;gap:.8rem;padding:.72rem .8rem;border:1px solid #bfdbfe;background:#eff6ff;border-radius:12px}
+.category-suggestion>div,.category-suggestion strong,.category-suggestion span{min-width:0}
+.category-suggestion strong{display:block;color:#1e3a8a}
+.category-suggestion span{display:block;margin-top:.16rem;color:#64748b;font-size:.8rem}
+.category-suggestion.matched{display:block;border-color:#a7f3d0;background:#ecfdf5}
+.category-suggestion.matched strong{color:#065f46}
+.category-suggestion.neutral{display:block;border-color:#e2e8f0;background:#f8fafc}
+.category-suggestion.neutral strong{color:#475569}
+.category-review-stats{margin:.9rem 0}
+.category-review-tools{margin:.3rem 0 1rem}
+.category-review-list{display:grid;gap:.65rem}
+.category-review-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.8rem;align-items:center;border:1px solid #e2e8f0;border-radius:13px;padding:.8rem;background:#fff}
+.category-review-main{min-width:0}
+.category-review-path{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;margin:.35rem 0 .18rem}
+.category-current{color:#64748b}
+.category-evidence{font-size:.8rem}
+.category-review-actions{display:flex;gap:.45rem;flex-wrap:wrap;justify-content:flex-end}
+@media(max-width:720px){
+  .category-suggestion{align-items:flex-start;flex-direction:column}
+  .category-suggestion .btn{width:100%}
+  .category-review-row{grid-template-columns:1fr}
+  .category-review-actions{justify-content:stretch}
+  .category-review-actions .btn{flex:1 1 45%}
+  .category-review-tools .btn{flex:1 1 100%}
+}
