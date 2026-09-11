@@ -506,7 +506,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['binsetup','Bin Setup'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.3</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.3.1</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -818,7 +818,7 @@
   }
 
 
-  // v8.3 Category Suggestions
+  // v8.3.1 Category Suggestions
   // Suggestions are calculated from the current inventory, so existing items are
   // automatically included every time data syncs. Nothing is changed until a
   // manager/admin approves the suggested category.
@@ -828,7 +828,7 @@
   const CATEGORY_SEED_GROUPS=[
     {aliases:['bulbs','bulb','lighting','lamps','lamp'],terms:[['gu10',10],['g9',9],['e27',9],['e14',9],['b22',9],['ba22',9],['sbc',9],['pygmy',9],['led bulb',10],['led lamp',9],['light bulb',10],['fluorescent tube',9],['lamp',5],['bulb',7]]},
     {aliases:['plumbing','pipework'],terms:[['copper pipe',9],['press fit',9],['m-profile',9],['compression fitting',9],['flexible hose',8],['flexi hose',8],['cistern',8],['flush valve',9],['fill valve',9],['isolation valve',9],['ball valve',8],['tap connector',8],['waste pipe',8],['pipe',5],['elbow',6],['coupling',6],['tee',5],['valve',5]]},
-    {aliases:['electrical','electrics'],terms:[['socket',8],['switch',7],['fuse',8],['mcb',9],['rcbo',9],['rcd',9],['isolator',8],['contactor',8],['relay',7],['transformer',8],['cable',7],['flex cable',8],['plug',6],['junction box',8],['connector block',7],['terminal block',7]]},
+    {aliases:['electrical','electrics'],terms:[['light switch',12],['switch cover plate',12],['switch plate',11],['light switch cover',12],['switched socket',11],['socket outlet',10],['socket',9],['switch',8],['faceplate',8],['back box',9],['pattress',9],['fuse',8],['mcb',9],['rcbo',9],['rcd',9],['isolator',8],['contactor',8],['relay',7],['transformer',8],['cable',7],['flex cable',8],['plug',6],['junction box',8],['connector block',7],['terminal block',7]]},
     {aliases:['batteries','battery'],terms:[['battery',10],['batteries',10],['aa battery',10],['aaa battery',10],['cr2032',10],['lead acid',9]]},
     {aliases:['paint','paints','decorating','decoration'],terms:[['dulux',10],['hammerite',10],['paint',9],['emulsion',9],['satinwood',9],['eggshell',9],['matt',6],['primer',7],['undercoat',7],['varnish',7]]},
     {aliases:['sealants','sealant','adhesives','adhesive','glues','glue'],terms:[['sealant',10],['silicone',9],['caulk',9],['adhesive',9],['wood glue',10],['gorilla glue',10],['mapesil',10],['peel stop',8]]},
@@ -846,6 +846,8 @@
   const categoryBigrams=tokens=>tokens.slice(0,-1).map((t,i)=>`${t} ${tokens[i+1]}`);
   const phraseIn=(text,phrase)=>` ${text} `.includes(` ${categoryNorm(phrase)} `);
   const sameCategory=(a,b)=>categoryNorm(a)===categoryNorm(b);
+  const CATEGORY_PLACEHOLDERS=new Set(['imported','uncategorised','uncategorized','unknown','not set','n a','na']);
+  const categoryIsPlaceholder=v=>!String(v||'').trim()||CATEGORY_PLACEHOLDERS.has(categoryNorm(v));
 
   function resolveSeedCategory(aliases,categories) {
     const list=categories.map(name=>({name,norm:categoryNorm(name)}));
@@ -938,16 +940,18 @@
 
   function categorySuggestionForItem(item) {
     if(!item?.active)return null;
-    return suggestCategoryFromText(`${item.name||''} ${item.item_code||''}`,item.category||'');
+    const current=categoryIsPlaceholder(item.category)?'':(item.category||'');
+    return suggestCategoryFromText(`${item.name||''} ${item.item_code||''}`,current);
   }
 
   function categoryReviewSuggestion(item) {
     const suggestion=categorySuggestionForItem(item);
     if(!suggestion||suggestion.currentMatches)return null;
-    // Existing categories are only challenged at high confidence. Uncategorised
-    // items can be shown at medium confidence because approval is still manual.
-    if(String(item.category||'').trim()&&suggestion.confidence!=='High')return null;
-    return {item,suggestion,kind:String(item.category||'').trim()?'mismatch':'uncategorised'};
+    const placeholder=categoryIsPlaceholder(item.category);
+    // Legacy/import placeholders are treated as uncategorised, so useful medium/high
+    // suggestions are shown instead of being hidden as a supposed category mismatch.
+    if(!placeholder&&suggestion.confidence!=='High')return null;
+    return {item,suggestion,kind:placeholder?'uncategorised':'mismatch'};
   }
 
   function categoryReviewRows() {
@@ -2504,6 +2508,7 @@ Keep this file somewhere secure.
     const locationTotals=new Map();
     for(const b of pos){const l=byId(S.locations,b.location_id);if(!l)continue;const key=l.location_name;locationTotals.set(key,(locationTotals.get(key)||0)+num(b.quantity));}
     const recent=S.transactions.filter(t=>t.item_id===id).slice(0,25);
+    const itemCategoryReview=canManage()?categoryReviewSuggestion(i):null;
     showModal(`<header><div><h2>${esc(i.name)}</h2><div class="muted">${esc(i.item_code)} ${i.active?'':'· Archived'}</div></div><button class="close" data-close>×</button></header>
       <div class="split"><div>
         ${photoUrl?`<img class="photo zoomable" id="itemPhoto" src="${esc(photoUrl)}" alt="${esc(i.name)}" title="Tap to enlarge">`:''}
@@ -2511,7 +2516,7 @@ Keep this file somewhere secure.
         <h3>Totals by location</h3>${locationTotals.size?[...locationTotals.entries()].map(([name,q])=>`<div class="location-chip"><strong>${esc(name)}</strong> · ${qty(q)}</div>`).join(''):'<span class="muted">No stock assigned.</span>'}
         <h3>Exact stock positions</h3>${pos.length?pos.map(b=>{const l=byId(S.locations,b.location_id);return `<div class="location-chip"><strong>${esc(l?.location_name||'Unknown')}</strong> → ${esc(effectiveBinCode(l)?`Bin Ref ${effectiveBinCode(l)}`:'No bin ref')} · ${qty(b.quantity)}</div>`;}).join(''):'<div class="notice">No stock location currently has a positive quantity.</div>'}
       </div><div>
-        <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div><div><strong>Default storage</strong><br>${esc(itemDefaultLabel(i))}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div>${onOrder>0?`<div style="margin-top:.7rem"><span class="badge order">ON ORDER ${qty(onOrder)}</span></div>`:''}</div>
+        <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div>${itemCategoryReview?`<div class="category-suggestion item-detail-suggestion"><div><strong>Suggested category: ${esc(itemCategoryReview.suggestion.category)}</strong><span>${esc(itemCategoryReview.suggestion.confidence)} confidence · ${itemCategoryReview.suggestion.percent}%${itemCategoryReview.suggestion.evidence.length?` · ${esc(itemCategoryReview.suggestion.evidence[0])}`:''}</span></div><button class="btn small" id="approveItemCategorySuggestion" type="button">Approve suggestion</button></div>`:''}<div><strong>Default storage</strong><br>${esc(itemDefaultLabel(i))}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div>${onOrder>0?`<div style="margin-top:.7rem"><span class="badge order">ON ORDER ${qty(onOrder)}</span></div>`:''}</div>
         ${i.active?`<div class="actions quick-actions"><button class="btn good" data-stock-action="ADD">+ Add stock</button><button class="btn warn" data-stock-action="USE">− Use stock</button><button class="btn secondary" data-stock-action="ADJUST">Adjust count</button><button class="btn ghost" data-stock-action="MOVE">Move stock</button></div>`:'<div class="notice">This item is archived. Restore it before recording new stock actions.</div>'}
         <div class="actions"><button class="btn ${pref?.favourite?'warn':'ghost'}" id="favouriteBtn">${pref?.favourite?'★ Favourite':'☆ Add favourite'}</button><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()&&i.active?'<button class="btn ghost" id="editItemBtn">Edit item</button><button class="btn ghost" id="suppliersBtn">Suppliers 1–3</button><button class="btn" id="orderItemBtn">Order item</button>':''}${canAdmin()?i.active?'<button class="btn danger" id="archiveItemBtn">Archive item</button>':'<button class="btn good" id="restoreItemBtn">Restore item</button>':''}</div>
       </div></div>
@@ -2523,6 +2528,11 @@ Keep this file somewhere secure.
     document.querySelectorAll('[data-stock-action]').forEach(b=>b.onclick=()=>requestStockAction(i,b.dataset.stockAction));
     document.getElementById('printQrBtn').onclick=()=>printQr(i);
     document.getElementById('favouriteBtn').onclick=()=>toggleFavourite(i.id);
+    const approveItemCategorySuggestion=document.getElementById('approveItemCategorySuggestion');
+    if(approveItemCategorySuggestion&&itemCategoryReview)approveItemCategorySuggestion.onclick=async()=>{
+      try{await applyCategorySuggestion(i.id,itemCategoryReview.suggestion.category);await loadData({transactions:false});setNotice(`Category updated to ${itemCategoryReview.suggestion.category}.`);openItem(i.id);}
+      catch(err){setNotice(parseError(err),'error');}
+    };
     const photo=document.getElementById('itemPhoto'); if(photo) photo.onclick=()=>photo.classList.toggle('photo-large');
     const edit=document.getElementById('editItemBtn'); if(edit) edit.onclick=()=>openEditItem(i);
     const suppliersBtn=document.getElementById('suppliersBtn'); if(suppliersBtn) suppliersBtn.onclick=()=>openSupplierEditor(i);
