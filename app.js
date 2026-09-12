@@ -41,6 +41,7 @@
     purchaseOrders: [],
     userPrefs: [],
     stocktakeSettings: null,
+    inventorySettings: { offline_mode_enabled: true },
     stocktakeTasks: [],
     stocktakeItems: [],
     safetyBridgeSettings: null,
@@ -251,6 +252,7 @@
 
 
   const offlineSnapshotKey = 'inventoryTrackerOfflineSnapshotV1';
+  const offlineEnabled = () => S.inventorySettings?.offline_mode_enabled !== false;
   const offlineQueueKey = 'inventoryTrackerOfflineQueueV1';
   const clientRef = id => `CLIENT:${id}`;
   const makeClientId = () => (crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -289,6 +291,7 @@
   }
   function offlineStatusHtml(){
     const n=pendingOfflineCount();
+    if(!offlineEnabled()) return '<div class="offline-banner disabled"><strong>Offline mode disabled by Admin.</strong> A connection is required for stock changes on this device.</div>';
     if(!S.offline&&!n)return '';
     const when=S.offlineSnapshotAt?` Last saved ${esc(fmtDate(S.offlineSnapshotAt))}.`:'';
     if(S.offline)return `<div class="offline-banner"><strong>Offline mode.</strong> Using the last saved stock data.${when} Scan/search and Add, Use, Move and Adjust will be queued. Counts may be stale until the connection returns.${n?` <strong>${n} action${n===1?'':'s'} pending sync.</strong>`:''}<div class="actions"><button class="btn ghost small" id="reviewOfflineBtn">Pending actions</button></div></div>`;
@@ -415,7 +418,7 @@
   }
 
   async function loadData({transactions=true}={}) {
-    const [profiles,items,locations,balances,itemSuppliers,purchaseOrders,categories,userPrefs,stocktakeSettingsRows,stocktakeTasks,stocktakeItems,safetyBridgeSettingsRows,safetyBridgeLinks,safetyBridgeFeedback] = await Promise.all([
+    const [profiles,items,locations,balances,itemSuppliers,purchaseOrders,categories,userPrefs,stocktakeSettingsRows,inventorySettingsRows,stocktakeTasks,stocktakeItems,safetyBridgeSettingsRows,safetyBridgeLinks,safetyBridgeFeedback] = await Promise.all([
       fetchAll('profiles','*','display_name',true),
       fetchAll('items','*','name',true),
       fetchAll('stock_locations','*','location_name',true),
@@ -425,6 +428,7 @@
       fetchAll('inventory_categories','*','sort_order',true),
       fetchAll('user_item_preferences','*','last_viewed_at',false),
       fetchAll('stocktake_settings','*'),
+      fetchAll('inventory_settings','*'),
       fetchAll('stocktake_tasks','*','created_at',false),
       fetchAll('stocktake_task_items','*'),
       fetchAll('safety_bridge_settings','*'),
@@ -434,7 +438,7 @@
     S.profiles=profiles; S.items=items; S.locations=locations; S.balances=balances;
     S.itemSuppliers=itemSuppliers; S.purchaseOrders=purchaseOrders; S.categories=categories; S.userPrefs=userPrefs;
     S.categoryModel=null;
-    S.stocktakeSettings=stocktakeSettingsRows[0]||null; S.stocktakeTasks=stocktakeTasks; S.stocktakeItems=stocktakeItems;
+    S.stocktakeSettings=stocktakeSettingsRows[0]||null; S.inventorySettings=inventorySettingsRows[0]||{offline_mode_enabled:true}; S.stocktakeTasks=stocktakeTasks; S.stocktakeItems=stocktakeItems;
     S.safetyBridgeSettings=safetyBridgeSettingsRows[0]||{enabled:false,safety_tracker_url:'https://grich295.github.io/Safety-tracker/'}; S.safetyBridgeLinks=safetyBridgeLinks||[]; S.safetyBridgeFeedback=safetyBridgeFeedback||[];
     S.profile=byId(S.profiles,S.session?.user?.id)||S.profile;
     if(transactions) S.transactions=await fetchAll('transactions','*','occurred_at',false);
@@ -482,7 +486,7 @@
         startRealtime();
         if(pendingOfflineCount())setTimeout(syncOfflineQueue,250);
       } catch (e) {
-        if(restoreOfflineSnapshot()){
+        if(offlineEnabled()&&restoreOfflineSnapshot()){
           S.offline=true;S.offlineSyncError=null;
           setNotice(`Offline mode: showing saved inventory from ${fmtDate(S.offlineSnapshotAt)}.`, 'success');
         }else setNotice(navigator.onLine?parseError(e):'No connection and no saved offline inventory is available on this device.','error');
@@ -503,7 +507,7 @@
         startRealtime();
         if(pendingOfflineCount())setTimeout(syncOfflineQueue,250);
       } catch (e) {
-        if(restoreOfflineSnapshot()){S.offline=true;S.notice={message:`Offline mode: showing saved inventory from ${fmtDate(S.offlineSnapshotAt)}.`,type:'success'};}
+        if(offlineEnabled()&&restoreOfflineSnapshot()){S.offline=true;S.notice={message:`Offline mode: showing saved inventory from ${fmtDate(S.offlineSnapshotAt)}.`,type:'success'};}
         else S.notice = {message:parseError(e),type:'error'};
       }
     } else {
@@ -587,7 +591,7 @@
     ];
     if (S.profile?.role === 'admin') nav.push(['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']);
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.4.5</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.4.6</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -610,6 +614,7 @@
     if (S.page==='history') return historyHtml();
     if (S.page==='help') return helpHtml();
     if (S.page==='users') return usersHtml();
+    if (S.page==='features') return featuresHtml();
     if (S.page==='binsetup') return binSetupHtml();
     if (S.page==='safetybridge') return safetyBridgeHtml();
     if (S.page==='legacy') return legacyReviewHtml();
@@ -1481,6 +1486,36 @@
   }
 
 
+
+
+  function featuresHtml() {
+    if(!canAdmin()) return '<div class="notice error">Admin access required.</div>';
+    const enabled=offlineEnabled();
+    return `<div class="card"><h2>Features</h2><p class="muted">Admin-controlled app features.</p><div class="feature-row"><div><strong>Offline Mode</strong><div class="muted">When enabled, previously synced stock can be viewed and Add, Use, Move and Adjust can queue while the connection is down. Pending actions sync when connection returns.</div></div><label class="feature-switch"><input id="offlineFeatureToggle" type="checkbox" ${enabled?'checked':''}><span>${enabled?'Enabled':'Disabled'}</span></label></div>${pendingOfflineCount()?`<div class="notice warn"><strong>${pendingOfflineCount()} pending offline action${pendingOfflineCount()===1?'':'s'}.</strong> Disabling Offline Mode will not delete them; they will still sync when online.</div>`:''}</div>`;
+  }
+
+  function bindFeatures(){
+    const toggle=document.getElementById('offlineFeatureToggle');
+    if(!toggle)return;
+    toggle.onchange=async()=>{
+      const wanted=toggle.checked;
+      toggle.disabled=true;
+      try{
+        const {error}=await sb.from('inventory_settings').update({offline_mode_enabled:wanted,updated_at:new Date().toISOString(),updated_by:S.profile.id}).eq('singleton',true);
+        if(error)throw error;
+        S.inventorySettings={...(S.inventorySettings||{}),offline_mode_enabled:wanted};
+        if(!wanted){S.offline=false;stopRealtime();}
+        else if(navigator.onLine)startRealtime();
+        setNotice(`Offline Mode ${wanted?'enabled':'disabled'}.`);
+        render();
+      }catch(e){
+        toggle.checked=!wanted;
+        setNotice(`Could not change Offline Mode: ${parseError(e)}`,'error');
+        render();
+      }
+    };
+  }
+
   function usersHtml() {
     if(!canAdmin()) return '<div class="notice error">Admin access required.</div>';
     const rows=S.profiles.map(p=>{
@@ -1792,7 +1827,7 @@
       backup_format:'inventory-tracker-backup-v1',
       created_at:new Date().toISOString(),
       created_by:{id:S.profile?.id||null,name:S.profile?.display_name||null,role:S.profile?.role||null},
-      app_version:'8.4.5',
+      app_version:'8.4.6',
       project_url:cfg.supabaseUrl,
       tables:{},
       uploaded_files:{requested:!!includeFiles,downloaded:0,failed:[]}
@@ -1913,6 +1948,7 @@ Keep this file somewhere secure.
     if(S.page==='stocktake') bindStocktake();
     if(S.page==='reports') bindReports();
     if(S.page==='users') bindUsers();
+    if(S.page==='features') bindFeatures();
     if(S.page==='binsetup') bindBinSetup();
     if(S.page==='safetybridge') bindSafetyBridge();
     if(S.page==='legacy') bindLegacyReview();
@@ -3039,6 +3075,7 @@ Keep this file somewhere secure.
         op={id:makeClientId(),user_id:S.profile.id,item_id:item.id,type,quantity,from_location_name:fromName,from_bin_ref:normalizeBin(fromRef),to_location_name:toName,to_bin_ref:normalizeBin(toRef),new_quantity:newQuantity,reason,notes,created_at:new Date().toISOString(),auto_source_location:type==='USE'};
 
         if(S.offline||!navigator.onLine){
+          if(!offlineEnabled()){ showFormMessage('Offline Mode is disabled by Admin. Reconnect to record this stock change.'); return; }
           queueStockOperation(op);
           closeModal();
           setNotice(`${item.name}: ${type.toLowerCase()} saved offline and will sync automatically.`);
@@ -3054,6 +3091,7 @@ Keep this file somewhere secure.
           render();
         }catch(err){
           if(isNetworkError(err)){
+            if(!offlineEnabled()){ showFormMessage('Connection lost and Offline Mode is disabled by Admin. No stock change was saved.'); return; }
             queueStockOperation(op);
             closeModal();
             setNotice(`${item.name}: connection lost — action saved offline for automatic sync.`);
@@ -3475,6 +3513,7 @@ Keep this file somewhere secure.
 
   window.addEventListener('offline',()=>{
     if(!S.session)return;
+    if(!offlineEnabled()){ S.offline=false; stopRealtime(); setNotice('Connection lost. Offline Mode is disabled by Admin, so stock changes are unavailable until reconnection.','error'); render(); return; }
     S.offline=true;stopRealtime();saveOfflineSnapshot();setNotice('Connection lost. Offline stock mode is active.');render();
   });
   window.addEventListener('online',()=>{
