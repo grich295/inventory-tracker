@@ -1,5 +1,5 @@
-const SHELL_CACHE='inventory-shell-v851-interactive-demo';
-const RUNTIME_CACHE='inventory-runtime-v851-interactive-demo';
+const SHELL_CACHE='inventory-shell-v852-safety-training-grace';
+const RUNTIME_CACHE='inventory-runtime-v852-safety-training-grace';
 const SHELL=['./','./index.html','./styles.css','./app.js','./manifest.webmanifest','./icon.svg','./config.js'];
 const RUNTIME_ASSETS=[
   'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2',

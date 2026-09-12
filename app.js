@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.5.1 - full interactive demo + simplified User stocktake workflow. */
+/* Inventory Tracker v8.5.2 - Safety Bridge 7-day warning + one final grace use. */
 (() => {
   'use strict';
 
@@ -93,6 +93,7 @@
     demoItems: [],
     demoHistory: [],
     demoStocktakeState: 'due',
+    pendingSafetyGrace: null,
     demoNotice: null,
     demoSearch: '',
     report: { period: 'month', item: '', graphItem: '', user: '', location: '', bin: '', from: '', to: '' }
@@ -536,7 +537,7 @@
     const adminNav=[['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['reports','Reports'],['history','History'],['help','Help'],['stocktake','Stocktake Admin'],['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']];
     const nav=S.demoRole==='admin'?adminNav:userNav;
     return `<div class="shell demo-shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${demoRoleLabel()} · sample data only · v8.5.1</div></div><div class="top-actions">${demoSafetyLink()}<button class="btn secondary" id="demoRoleBtn">${S.demoRole==='admin'?'Switch to User':'Switch to Admin'}</button><button class="btn secondary" id="exitDemoBtn">Exit demo</button></div></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${demoRoleLabel()} · sample data only · v8.5.2</div></div><div class="top-actions">${demoSafetyLink()}<button class="btn secondary" id="demoRoleBtn">${S.demoRole==='admin'?'Switch to User':'Switch to Admin'}</button><button class="btn secondary" id="exitDemoBtn">Exit demo</button></div></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-demo-page="${p}" class="${S.demoPage===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content"><div class="notice"><strong>Demo mode.</strong> Everything below is fictional sample data. You can click around and try actions; nothing is written to the live inventory.</div>${demoNoticeHtml()}${content}</main>
     </div>`;
@@ -586,7 +587,7 @@
   function demoStocktakeAdminHtml(){const s=S.demoStocktakeState;return `<div class="card"><h2>Stocktake Admin</h2><p>Current demo task: <strong>${s==='complete'?'Complete / none assigned':s==='overdue'?'Overdue':'Due'}</strong></p><p class="muted">Admins create/reassign tasks here. Users only see their assigned task on Home.</p><div class="actions"><button class="btn warn" data-demo-stockstate="due">Assign due task</button><button class="btn danger" data-demo-stockstate="overdue">Make overdue</button><button class="btn good" data-demo-stockstate="complete">Mark complete</button></div></div>`;}
   function demoUsersHtml(){return `<div class="card"><h2>Users</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Status</th></tr></thead><tbody><tr><td>Demo Admin</td><td>Admin</td><td>Active</td></tr><tr><td>Demo Manager</td><td>Manager</td><td>Active</td></tr><tr><td>Demo User</td><td>User</td><td>Active</td></tr></tbody></table></div></div>`;}
   function demoBinSetupHtml(){return `<div class="card"><h2>Bin Setup</h2><label>Location</label><select><option>Workshop Main Store</option><option>Workbench Cupboard</option></select><div class="card" style="margin-top:1rem"><strong>Controlled bins</strong><p class="muted">Bin 1, Bin 2, Bin 3 … Bin 50</p></div></div>`;}
-  function demoSafetyBridgeHtml(){return `<div class="card"><h2>Safety Bridge</h2><p>Status: <strong>${S.demoSafety.enabled?'Enabled':'Not enabled'}</strong></p><p class="muted">When enabled, linked stock items can check the person's current Safety Tracker training before Use Stock is allowed.</p>${S.demoSafety.enabled?demoSafetyLink():'<div class="notice">Enable Safety Bridge in the live Inventory settings to make the Safety Tracker link appear in Demo mode.</div>'}</div>`;}
+  function demoSafetyBridgeHtml(){return `<div class="card"><h2>Safety Bridge</h2><p>Status: <strong>${S.demoSafety.enabled?'Enabled':'Not enabled'}</strong></p><p class="muted">When enabled, linked stock items check Safety Tracker before Use Stock: amber warning 7 days before due, one final warned Use when due/overdue, then blocked until training is completed.</p>${S.demoSafety.enabled?demoSafetyLink():'<div class="notice">Enable Safety Bridge in the live Inventory settings to make the Safety Tracker link appear in Demo mode.</div>'}</div>`;}
   function demoLegacyHtml(){return `<div class="card"><h2>Legacy review</h2><p class="muted">Review imported historical movements so they do not distort current usage.</p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Item</th><th>Imported action</th><th>Classification</th></tr></thead><tbody><tr><td>2025-12-18</td><td>GU10 LED Lamp</td><td>-12</td><td>Use</td></tr><tr><td>2025-11-03</td><td>PTFE Tape</td><td>+20</td><td>Exclude from usage</td></tr></tbody></table></div></div>`;}
   function demoBackupHtml(){return `<div class="card"><h2>Backup</h2><p class="muted">The live Admin can create a ZIP backup of inventory records and item photos.</p><button class="btn" id="demoBackupBtn">Run demo backup</button></div>`;}
 
@@ -759,7 +760,7 @@
     if (canAdmin()) nav.push(['stocktake','Stocktake Admin'],['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']);
     const modeLabel=isAdminUserMode()?'User mode':'Admin';
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(actualCanAdmin()?modeLabel:roleLabel(effectiveRole()))} · v8.5.1</div></div><div class="top-actions">${actualCanAdmin()?`<button class="btn secondary" id="viewModeBtn">${isAdminUserMode()?'Return to Admin':'Switch to User'}</button>`:''}<button class="btn secondary" id="logoutBtn">Sign out</button></div></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(actualCanAdmin()?modeLabel:roleLabel(effectiveRole()))} · v8.5.2</div></div><div class="top-actions">${actualCanAdmin()?`<button class="btn secondary" id="viewModeBtn">${isAdminUserMode()?'Return to Admin':'Switch to User'}</button>`:''}<button class="btn secondary" id="logoutBtn">Sign out</button></div></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -818,7 +819,7 @@
           <h3>Add / Use / Move / Adjust</h3>
           <ul>
             <li><strong>Add:</strong> stock has physically arrived or been added.</li>
-            <li><strong>Use:</strong> stock has been consumed/used. This counts towards usage reports and Suggested Orders. If the optional Safety Bridge trial is enabled for that item, your current Safety Tracker training is checked before the Use form opens.</li>
+            <li><strong>Use:</strong> stock has been consumed/used. This counts towards usage reports and Suggested Orders. If Safety Bridge is enabled for that item, your Safety Tracker training is checked before the Use form opens. Training due within 7 days gives an amber warning; due/overdue training allows one final warned use, then blocks future Use until training is completed.</li>
             <li><strong>Move:</strong> transfer stock between locations/bins. Overall stock does not change and it is not usage.</li>
             <li><strong>Adjust:</strong> correct a stock-count error. Adjustments do not count as usage.</li>
           </ul>
@@ -1843,7 +1844,7 @@
     const suggestions=S.safetySuggestionsGenerated?S.safetySuggestions:[];
     const suggestionRows=suggestions.slice(0,120).map((x,idx)=>`<div class="item-row safety-suggestion"><div><strong>${esc(x.item_name)}</strong><div>${esc((x.entry.reference?x.entry.reference+' - ':'')+x.entry.title)}</div><div class="muted">${esc(x.entry.type||x.entry.target_kind)} · confidence ${Math.min(99,Math.max(1,Math.round(x.score)))}${x.reasons.length?` · ${esc(x.reasons.slice(0,2).join('; '))}`:''}</div></div><div class="actions compact"><button class="btn small" data-approve-safety-suggestion="${idx}">Approve</button><button class="btn ghost small" data-reject-safety-suggestion="${idx}">Not relevant</button></div></div>`).join('')||'<p class="muted">No unreviewed suggestions at the moment.</p>';
     const eventRows=(S.safetyBridgeEvents||[]).map(e=>`<tr><td>${fmtDate(e.created_at)}</td><td>${esc(e.user_name||'Unknown')}</td><td>${esc(e.item_name||'Unknown')}</td><td>${esc(e.event_type.replaceAll('_',' '))}</td><td>${e.attempted_quantity==null?'—':qty(e.attempted_quantity)}</td><td>${esc((e.safety_snapshot?.lacking||[]).map(x=>x.reference||x.title).filter(Boolean).join(', ')||e.safety_snapshot?.message||'—')}</td></tr>`).join('');
-    return `<div class="card"><h2>Safety Bridge <span class="badge ${settings.enabled?'good':''}">${settings.enabled?'ENABLED':'DISABLED'}</span></h2><p class="muted">Optional link between Inventory Tracker and Safety Tracker. Checks happen only when a user taps <strong>Use stock</strong>. Add, Move and Adjust are never checked.</p><div class="notice ${settings.enabled?'warn':''}">${settings.enabled?'<strong>Bridge is ON.</strong> Approved links can stop Use when required training is missing or out of date.':'<strong>Bridge is OFF.</strong> Inventory works exactly as before while you review suggested links.'}</div><label class="ack-check"><input id="safetyBridgeEnabled" type="checkbox" ${settings.enabled?'checked':''}> Enable Safety Bridge</label><p class="muted">This switch saves immediately. Turning it off does not delete links or reports.</p></div>
+    return `<div class="card"><h2>Safety Bridge <span class="badge ${settings.enabled?'good':''}">${settings.enabled?'ENABLED':'DISABLED'}</span></h2><p class="muted">Link between Inventory Tracker and Safety Tracker. Checks happen only when a user taps <strong>Use stock</strong>. Add, Move and Adjust are never checked. Training due within 7 days warns amber; due/overdue training gets one final warned Use, then blocks until completed.</p><div class="notice ${settings.enabled?'warn':''}">${settings.enabled?'<strong>Bridge is ON.</strong> Approved links warn 7 days before training is due. Due/overdue training allows one final warned Use, then blocks further Use until completed.':'<strong>Bridge is OFF.</strong> Inventory works exactly as before while you review suggested links.'}</div><label class="ack-check"><input id="safetyBridgeEnabled" type="checkbox" ${settings.enabled?'checked':''}> Enable Safety Bridge</label><p class="muted">This switch saves immediately. Turning it off does not delete links or reports.</p></div>
     <div class="card" style="margin-top:1rem"><h3>Suggested links — review first</h3><p class="muted">Inventory compares item names and categories with approved Safety Tracker records. Nothing becomes active until you approve it. Approvals and “Not relevant” decisions are remembered and improve later suggestions.</p><div class="actions"><button class="btn" id="generateSafetySuggestions" type="button">${S.safetySuggestionsGenerated?'Refresh suggestions':'Find suggested links'}</button><button class="btn secondary" id="refreshSafetyCatalogue" type="button">Refresh Safety documents</button></div><div style="margin-top:1rem">${S.safetySuggestionsGenerated?suggestionRows:'<p class="muted">Press Find suggested links to create a review list.</p>'}</div></div>
     <div class="card" style="margin-top:1rem"><h3>Review / manually link an item</h3><label>Inventory item<select id="safetyBridgeItem">${activeItems.map(i=>`<option value="${i.id}" ${i.id===selected?'selected':''}>${esc(i.name)}</option>`).join('')}</select></label><div id="safetyBridgeLinks" style="margin-top:.8rem">${linkRows}</div><div class="form-grid" style="margin-top:1rem"><label>Safety requirement<select id="safetyCatalogueSelect"><option value="">${S.safetyCatalogueLoading?'Loading Safety Tracker…':'Select approved safety record'}</option>${options}</select></label><div class="actions align-end"><button class="btn" id="addSafetyLink" type="button" ${!options?'disabled':''}>Approve link</button></div></div></div>
     <div class="card" style="margin-top:1rem"><h3>Stopped / cancelled Use attempts</h3><p class="muted">Records blocked, cancelled, successful rechecks and connection failures. It does not alter stock.</p><div class="table-wrap"><table><thead><tr><th>When</th><th>User</th><th>Item</th><th>Event</th><th>Qty</th><th>Safety requirement</th></tr></thead><tbody>${eventRows||'<tr><td colspan="6">No Safety Bridge events yet.</td></tr>'}</tbody></table></div></div>`;
@@ -1973,7 +1974,7 @@
       backup_format:'inventory-tracker-backup-v1',
       created_at:new Date().toISOString(),
       created_by:{id:S.profile?.id||null,name:S.profile?.display_name||null,role:S.profile?.role||null},
-      app_version:'8.5.1',
+      app_version:'8.5.2',
       project_url:cfg.supabaseUrl,
       tables:{},
       uploaded_files:{requested:!!includeFiles,downloaded:0,failed:[]}
@@ -2830,7 +2831,7 @@ Keep this file somewhere secure.
   const SAFETY_BRIDGE_FUNCTION_URL='https://qvgcralroduuoptbnctt.supabase.co/functions/v1/inventory-safety-bridge';
   const safetyBridgeEnabled=()=>S.safetyBridgeSettings?.enabled===true;
   const safetyLinksForItem=itemId=>S.safetyBridgeLinks.filter(x=>x.item_id===itemId&&x.active!==false);
-  const safetySnapshot=result=>({code:result?.code||null,message:result?.message||null,lacking:(result?.lacking||[]).map(x=>({reference:x.reference||'',title:x.title||'',status:x.status||'',due_date:x.due_date||null}))});
+  const safetySnapshot=result=>({training_state:result?.training_state||null,code:result?.code||null,message:result?.message||null,state_key:result?.state_key||null,warnings:(result?.warnings||[]).map(x=>({reference:x.reference||'',title:x.title||'',status:x.status||'',due_date:x.due_date||null})),overdue:(result?.overdue||[]).map(x=>({reference:x.reference||'',title:x.title||'',status:x.status||'',due_date:x.due_date||null})),hard_blocking:(result?.hard_blocking||[]).map(x=>({reference:x.reference||'',title:x.title||'',status:x.status||'',due_date:x.due_date||null})),lacking:(result?.lacking||[]).map(x=>({reference:x.reference||'',title:x.title||'',status:x.status||'',due_date:x.due_date||null}))});
 
   async function callSafetyBridge(body){
     const {data:{session}}=await sb.auth.getSession();
@@ -2851,28 +2852,71 @@ Keep this file somewhere secure.
     if(S.offline||!navigator.onLine)throw new Error('Safety training cannot be checked while offline. No stock has been removed.');
     return callSafetyBridge({action:'check',item_id:item.id,targets});
   }
-  function showSafetyTrainingGate(item,result){
-    const lacking=result?.lacking||[];
-    const list=lacking.map(x=>`<div class="safety-gap-row"><div><strong>${esc(x.reference?x.reference+' - '+x.title:x.title||'Required safety training')}</strong><div class="muted">${esc(x.status||'Training action required')}${x.due_date?` · due ${esc(fmtShortDate(x.due_date))}`:''}</div></div>${x.document_url?`<a class="btn ghost small" href="${esc(x.document_url)}" target="_blank" rel="noopener">Open document</a>`:''}</div>`).join('');
+  function safetyAttentionRows(rows=[]){
+    return rows.map(x=>`<div class="safety-gap-row"><div><strong>${esc(x.reference?x.reference+' - '+x.title:x.title||'Required safety training')}</strong><div class="muted">${esc(x.status||'Training action required')}${x.due_date?` · due ${esc(fmtShortDate(x.due_date))}`:''}</div></div>${x.document_url?`<a class="btn ghost small" href="${esc(x.document_url)}" target="_blank" rel="noopener">Open document</a>`:''}</div>`).join('');
+  }
+  async function safetyGraceState(item,result){
+    if(!result?.state_key)return 'BLOCKED';
+    const {data,error}=await sb.rpc('get_safety_bridge_overdue_gate_v852',{p_item_id:item.id,p_state_key:result.state_key});
+    if(error)throw error;
+    return data||'BLOCKED';
+  }
+  async function consumeSafetyFinalWarning(itemId,stateKey,snapshot,attemptedQuantity){
+    if(!stateKey)return false;
+    const {data,error}=await sb.rpc('consume_safety_bridge_final_warning_v852',{p_item_id:itemId,p_state_key:stateKey,p_attempted_quantity:attemptedQuantity||null,p_safety_snapshot:snapshot||{}});
+    if(error)throw error;
+    return data===true;
+  }
+  function showSafetyBlockedGate(item,result){
+    const rows=[...(result?.hard_blocking||[]),...(result?.overdue||[])];
+    const list=safetyAttentionRows(rows);
     const appUrl=result?.safety_app_url||S.safetyBridgeSettings?.safety_tracker_url||'https://grich295.github.io/Safety-tracker/';
     S.safetyGate={itemId:item.id,snapshot:safetySnapshot(result)};
-    showModal(`<header><div><h2>Safety training required</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header><div class="notice warn"><strong>Stock has not been removed.</strong> Your Safety Tracker record shows required training that is missing or out of date. Complete/sign off the training before using this item.</div><div class="safety-gap-list">${list||'<div class="muted">Safety training needs attention.</div>'}</div><div class="actions"><a class="btn" href="${esc(appUrl)}" target="_blank" rel="noopener">Open Safety Tracker</a><button class="btn secondary" id="safetyRecheckBtn" type="button">Check again</button><button class="btn ghost" data-close type="button">Cancel use</button></div><p class="muted">If you cancel instead of completing required training, the cancelled stock-use attempt is recorded for manager/admin reporting.</p>`);
+    showModal(`<header><div><h2>Safety training blocked</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header><div class="notice error"><strong>Stock cannot be used.</strong> The final warning has already been used, or required training is missing. Complete/sign off the training in Safety Tracker before using this item again.</div><div class="safety-gap-list">${list||'<div class="muted">Safety training needs attention.</div>'}</div><div class="actions"><a class="btn" href="${esc(appUrl)}" target="_blank" rel="noopener">Open Safety Tracker</a><button class="btn secondary" id="safetyRecheckBtn" type="button">Check again</button><button class="btn ghost" data-close type="button">Cancel use</button></div>`);
     const b=document.getElementById('safetyRecheckBtn');
     if(b)b.onclick=async()=>{
       b.disabled=true;b.textContent='Checking…';
-      try{const fresh=await checkSafetyBeforeUse(item);if(fresh.ok){await recordSafetyBridgeEvent(item.id,'RECHECK_PASSED',safetySnapshot(fresh));S.safetyGate=null;openStockAction(item,'USE');return;}await recordSafetyBridgeEvent(item.id,'TRAINING_BLOCKED',safetySnapshot(fresh));showSafetyTrainingGate(item,fresh);}catch(e){setNotice(parseError(e),'error');S.safetyGate=null;closeModal();render();}
+      try{S.safetyGate=null;closeModal();await requestStockAction(item,'USE');}catch(e){setNotice(parseError(e),'error');render();}
     };
+  }
+  function showSafetyDueSoonWarning(item,result){
+    const rows=result?.warnings||[];
+    const list=safetyAttentionRows(rows);
+    const appUrl=result?.safety_app_url||S.safetyBridgeSettings?.safety_tracker_url||'https://grich295.github.io/Safety-tracker/';
+    showModal(`<header><div><h2>Training due soon</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header><div class="notice warn"><strong>Amber warning.</strong> Required training is due within 7 days. You can use this stock now, but please complete the training before it becomes due.</div><div class="safety-gap-list">${list}</div><div class="actions"><button class="btn warn" id="safetyContinueSoon" type="button">Continue to Use stock</button><a class="btn ghost" href="${esc(appUrl)}" target="_blank" rel="noopener">Open Safety Tracker</a><button class="btn ghost" data-close type="button">Cancel</button></div>`);
+    document.getElementById('safetyContinueSoon').onclick=async()=>{await recordSafetyBridgeEvent(item.id,'DUE_SOON_WARNING',safetySnapshot(result));closeModal();openStockAction(item,'USE');};
+  }
+  function showSafetyFinalWarning(item,result){
+    const rows=result?.overdue||[];
+    const list=safetyAttentionRows(rows);
+    const appUrl=result?.safety_app_url||S.safetyBridgeSettings?.safety_tracker_url||'https://grich295.github.io/Safety-tracker/';
+    showModal(`<header><div><h2>Final training warning</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header><div class="notice error"><strong>Training is due or overdue.</strong> You may take this stock <strong>this time only</strong>. After this Use is recorded, the next attempt will be blocked until the training is completed.</div><div class="safety-gap-list">${list}</div><div class="actions"><button class="btn danger" id="safetyContinueFinal" type="button">I understand — continue this time</button><a class="btn ghost" href="${esc(appUrl)}" target="_blank" rel="noopener">Open Safety Tracker</a><button class="btn ghost" data-close type="button">Cancel</button></div>`);
+    document.getElementById('safetyContinueFinal').onclick=async()=>{await recordSafetyBridgeEvent(item.id,'FINAL_WARNING_SHOWN',safetySnapshot(result));S.pendingSafetyGrace={itemId:item.id,stateKey:result.state_key,snapshot:safetySnapshot(result)};closeModal();openStockAction(item,'USE');};
   }
   async function requestStockAction(item,type){
     if(type!=='USE'||!safetyBridgeEnabled()||!safetyLinksForItem(item.id).length)return openStockAction(item,type);
     try{
       const result=await checkSafetyBeforeUse(item);
-      if(result.ok)return openStockAction(item,type);
+      const state=result?.training_state||((result?.ok)?'CURRENT':'BLOCKED');
+      if(state==='CURRENT'){
+        try{await sb.rpc('reset_safety_bridge_final_warning_v852',{p_item_id:item.id});}catch(_){ }
+        return openStockAction(item,type);
+      }
+      if(state==='DUE_SOON'){
+        try{await sb.rpc('reset_safety_bridge_final_warning_v852',{p_item_id:item.id});}catch(_){ }
+        return showSafetyDueSoonWarning(item,result);
+      }
+      if(state==='DUE_OR_OVERDUE'){
+        const gate=await safetyGraceState(item,result);
+        if(gate==='FINAL_WARNING')return showSafetyFinalWarning(item,result);
+        await recordSafetyBridgeEvent(item.id,'TRAINING_BLOCKED',safetySnapshot(result));
+        return showSafetyBlockedGate(item,result);
+      }
       await recordSafetyBridgeEvent(item.id,'TRAINING_BLOCKED',safetySnapshot(result));
-      showSafetyTrainingGate(item,result);
+      return showSafetyBlockedGate(item,result);
     }catch(e){
       await recordSafetyBridgeEvent(item.id,'CHECK_ERROR',{message:parseError(e)});
-      showModal(`<header><h2>Safety check unavailable</h2><button class="close" data-close>×</button></header><div class="notice error"><strong>No stock has been removed.</strong> ${esc(parseError(e))}</div><p class="muted">Try again when the Safety Tracker connection is available. An Admin can disable the trial Safety Bridge from Admin → Safety Bridge if necessary.</p><div class="actions"><button class="btn ghost" data-close>Close</button></div>`);
+      showModal(`<header><h2>Safety check unavailable</h2><button class="close" data-close>×</button></header><div class="notice error"><strong>No stock has been removed.</strong> ${esc(parseError(e))}</div><p class="muted">Try again when the Safety Tracker connection is available. An Admin can disable Safety Bridge from Admin → Safety Bridge if necessary.</p><div class="actions"><button class="btn ghost" data-close>Close</button></div>`);
     }
   }
 
@@ -3229,6 +3273,10 @@ Keep this file somewhere secure.
 
         try{
           await sendClientStockOperation(op);
+          if(type==='USE'&&S.pendingSafetyGrace?.itemId===item.id){
+            const grace=S.pendingSafetyGrace;S.pendingSafetyGrace=null;
+            try{await consumeSafetyFinalWarning(item.id,grace.stateKey,grace.snapshot,quantity);}catch(e){console.warn('Could not record final Safety Bridge warning use',e);}
+          }
           await loadData();
           closeModal();
           setNotice(`${item.name}: ${type.toLowerCase()} recorded.`);
@@ -3607,6 +3655,7 @@ Keep this file somewhere secure.
     const modal=document.getElementById('modalBackdrop');
     if(!modal) return;
     if(S.safetyGate){const gate=S.safetyGate;S.safetyGate=null;recordSafetyBridgeEvent(gate.itemId,'USE_CANCELLED',gate.snapshot).catch(()=>{});}
+    if(S.pendingSafetyGrace && modal.querySelector?.('#stockActionForm[data-type="USE"]')) S.pendingSafetyGrace=null;
     modal.remove();
     if(!fromPopstate && history.state?.inventoryTracker && history.state.modal){
       suppressNextPopstate=true;
