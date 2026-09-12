@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.4.6 - Admin/User view switch + retained offline PWA. */
+/* Inventory Tracker v8.5.0 - simplified User view, dashboard stocktakes, password guidance + demo mode. */
 (() => {
   'use strict';
 
@@ -86,6 +86,8 @@
     offlineSnapshotAt: null,
     syncingOffline: false,
     offlineSyncError: null,
+    demo: false,
+    demoSafety: {enabled:false,url:'https://grich295.github.io/Safety-tracker/'},
     report: { period: 'month', item: '', graphItem: '', user: '', location: '', bin: '', from: '', to: '' }
   };
 
@@ -113,7 +115,10 @@
   }
   function navigatePage(page,{replace=false}={}) {
     if(!page) return;
-    if(isAdminUserMode()&&['users','binsetup','safetybridge','legacy','backup'].includes(page))page='dashboard';
+    if(effectiveRole()==='staff'){
+      const blocked=['locations','orders','reports','history','users','binsetup','safetybridge','legacy','backup'];
+      if(blocked.includes(page)||(page==='stocktake'&&!assignedOpenStocktake()))page='dashboard';
+    }
     const modal=document.getElementById('modalBackdrop');
     if(modal) modal.remove();
     S.page=page;
@@ -157,7 +162,7 @@
   const canManage = () => ['admin','manager'].includes(effectiveRole());
   const canAdmin = () => effectiveRole()==='admin';
   const roleLabel = r => ({admin:'Admin',manager:'Manager',staff:'User'})[String(r||'staff')] || 'User';
-  function toggleAdminUserMode(){if(!actualCanAdmin())return;S.uiMode=isAdminUserMode()?'full':'user';try{localStorage.setItem(uiModeKey(S.profile?.id),S.uiMode)}catch{}if(isAdminUserMode()&&['users','binsetup','safetybridge','legacy','backup'].includes(S.page))S.page='dashboard';setNotice(isAdminUserMode()?'User mode on — your account remains Admin.':'Admin mode restored.');render()}
+  function toggleAdminUserMode(){if(!actualCanAdmin())return;S.uiMode=isAdminUserMode()?'full':'user';try{localStorage.setItem(uiModeKey(S.profile?.id),S.uiMode)}catch{}if(isAdminUserMode()&&['locations','orders','stocktake','reports','history','users','binsetup','safetybridge','legacy','backup'].includes(S.page))S.page='dashboard';setNotice(isAdminUserMode()?'User mode on — your account remains Admin.':'Admin mode restored.');render()}
   const countsAsUsage = t => t?.transaction_type==='USE' && !t?.exclude_from_usage && (!t?.legacy_import || !t?.legacy_classification || t.legacy_classification==='USE');
   const itemPref = itemId => S.userPrefs.find(x=>x.item_id===itemId&&x.user_id===S.profile?.id) || null;
   // Database rows still represent exact stock positions, but users only manage
@@ -479,7 +484,35 @@
     S.liveChannel=c.subscribe();
   }
 
+  async function enterDemoMode(){
+    S.demo=true;
+    try{
+      const {data}=await sb.rpc('get_inventory_demo_config_v850');
+      const row=Array.isArray(data)?data[0]:data;
+      if(row){S.demoSafety={enabled:row.safety_bridge_enabled===true,url:row.safety_tracker_url||S.demoSafety.url};}
+    }catch(_){ }
+    render();
+  }
+
+  function renderDemo(){
+    const safety=S.demoSafety.enabled?`<a class="btn good" href="${esc(S.demoSafety.url)}" target="_blank" rel="noopener">Open Safety Tracker</a>`:'';
+    app.innerHTML=`<div class="shell demo-shell">
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">Demo mode · v8.5.0</div></div><div class="top-actions"><button class="btn secondary" id="exitDemoBtn">Exit demo</button></div></div>
+      <main class="content">
+        <div class="notice"><strong>Demo mode.</strong> This is sample data only. Nothing you do here changes the live inventory.</div>
+        <div class="card stocktake-status warn"><div class="muted">Stocktake</div><div class="stocktake-status-title">• Stocktake due</div><div class="muted">12 sample items · due in 4 days</div></div>
+        <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Active items</div><div class="stat">104</div></div><div class="card"><div class="muted">Units in stock</div><div class="stat">1,286</div></div><div class="card"><div class="muted">Used this month</div><div class="stat">73</div></div></div>
+        <div class="card" style="margin-top:1rem"><h2>Typical User view</h2><p class="muted">Users get a simple Home, Scan, Items and Help workflow. Assigned stocktakes appear on Home instead of having their own navigation tab.</p><div class="demo-nav"><span>Home</span><span>Scan</span><span>Items</span><span>Help</span></div></div>
+        <div class="card" style="margin-top:1rem"><h3>Sample stock</h3><div class="item-list"><div class="item-row"><div><strong>GU10 LED Lamp</strong><div class="muted">Workshop Main Store → Bin 12</div></div><div class="qty">24</div></div><div class="item-row"><div><strong>22mm Copper Coupling</strong><div class="muted">Workshop Main Store → Bin 8</div></div><div class="qty">16</div></div><div class="item-row"><div><strong>White Silicone Sealant</strong><div class="muted">Workbench Cupboard → C4</div></div><div class="qty">7</div></div></div></div>
+        <div class="actions"><button class="btn" id="demoStocktakeBtn">Preview stocktake</button>${safety}</div>
+        <div id="demoStocktakePreview"></div>
+      </main></div>`;
+    document.getElementById('exitDemoBtn').onclick=()=>{location.href=location.pathname};
+    document.getElementById('demoStocktakeBtn').onclick=()=>{document.getElementById('demoStocktakePreview').innerHTML=`<div class="card" style="margin-top:1rem"><h3>Assigned stocktake</h3><p class="muted">The live app opens the assigned task directly from the Home status card.</p><div class="table-wrap"><table><thead><tr><th>Item</th><th>Location / Bin</th><th>Counted</th></tr></thead><tbody><tr><td>GU10 LED Lamp</td><td>Workshop Main Store / Bin 12</td><td>24</td></tr><tr><td>White Silicone Sealant</td><td>Workbench Cupboard / C4</td><td>7</td></tr></tbody></table></div></div>`;};
+  }
+
   async function bootstrap() {
+    if(new URLSearchParams(location.search).get('demo')==='1'){ await enterDemoMode(); return; }
     const { data: { session } } = await sb.auth.getSession();
     S.session = session;
     const hash = window.location.hash;
@@ -527,7 +560,12 @@
 
   function render() {
     stopScanner();
+    if(S.demo) return renderDemo();
     ensureUiMode();
+    if(S.session&&effectiveRole()==='staff'){
+      const blocked=['locations','orders','reports','history','users','binsetup','safetybridge','legacy','backup'];
+      if(blocked.includes(S.page)||(S.page==='stocktake'&&!assignedOpenStocktake()))S.page='dashboard';
+    }
     if (!S.session) return renderLogin();
     if (S.passwordMode) return renderPasswordUpdate();
     app.innerHTML = shellHtml(pageHtml());
@@ -540,12 +578,13 @@
       <div class="login">
         <h1>Inventory Tracker</h1>
         <p class="muted">Sign in to scan, find and update stock.</p>
+        <div class="notice warn"><strong>Keep your password private.</strong> Never share your Inventory Tracker password with anyone. If you think somebody may know it, use <strong>Forgot password</strong> to change it.</div>
         ${!navigator.onLine?'<div class="notice warn">No connection. Offline mode is available only if this device still has a previously signed-in session and saved inventory data.</div>':''}
         ${noticeHtml()}
         <form id="loginForm">
           <label>Email</label><input id="loginEmail" type="email" autocomplete="email" required>
           <label>Password</label><input id="loginPassword" type="password" autocomplete="current-password" required>
-          <div class="actions"><button class="btn" type="submit">Sign in</button><button class="btn ghost" id="forgotBtn" type="button">Forgot password</button></div>
+          <div class="actions"><button class="btn" type="submit">Sign in</button><button class="btn ghost" id="forgotBtn" type="button">Forgot password</button><button class="btn secondary" id="demoBtn" type="button">Try Demo</button></div>
         </form>
       </div>`;
     document.getElementById('loginForm').onsubmit = async e => {
@@ -555,6 +594,7 @@
       const { error } = await sb.auth.signInWithPassword({email,password});
       if (error) { S.notice={message:parseError(error),type:'error'}; renderLogin(); }
     };
+    document.getElementById('demoBtn').onclick = () => { location.href=location.pathname+'?demo=1'; };
     document.getElementById('forgotBtn').onclick = async () => {
       const email = document.getElementById('loginEmail').value.trim();
       if (!email) { S.notice={message:'Enter your email address first.',type:'error'}; return renderLogin(); }
@@ -594,13 +634,13 @@
   }
 
   function shellHtml(content) {
-    const nav = [
-      ['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['stocktake','Stocktake'],['reports','Reports'],['history','History'],['help','Help']
-    ];
-    if (canAdmin()) nav.push(['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']);
+    const nav = effectiveRole()==='staff'
+      ? [['dashboard','Home'],['scan','Scan'],['items','Items'],['help','Help']]
+      : [['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['reports','Reports'],['history','History'],['help','Help']];
+    if (canAdmin()) nav.push(['stocktake','Stocktake Admin'],['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']);
     const modeLabel=isAdminUserMode()?'User mode':'Admin';
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(actualCanAdmin()?modeLabel:roleLabel(effectiveRole()))} · v8.4.6</div></div><div class="top-actions">${actualCanAdmin()?`<button class="btn secondary" id="viewModeBtn">${isAdminUserMode()?'Return to Admin':'Switch to User'}</button>`:''}<button class="btn secondary" id="logoutBtn">Sign out</button></div></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(actualCanAdmin()?modeLabel:roleLabel(effectiveRole()))} · v8.5.0</div></div><div class="top-actions">${actualCanAdmin()?`<button class="btn secondary" id="viewModeBtn">${isAdminUserMode()?'Return to Admin':'Switch to User'}</button>`:''}<button class="btn secondary" id="logoutBtn">Sign out</button></div></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -701,7 +741,7 @@
         <div class="card help-card">
           <h3>Stocktake</h3>
           <ul>
-            <li>Open <strong>Stocktake</strong> when a task is assigned to you.</li>
+            <li>Your stocktake status is shown on the <strong>Home</strong> screen.</li>
             <li>Count the physical stock in each listed Location/Bin.</li>
             <li>Enter the actual count, not the expected count.</li>
             <li>Completing the task creates audited stock corrections for differences.</li>
@@ -718,18 +758,16 @@
             <li>View quantities and stock positions.</li>
             <li>Add, Use, Move and Adjust stock.</li>
             <li>Receive deliveries against open orders.</li>
-            <li>Complete assigned stocktakes.</li>
-            <li>View Orders, Reports and History.</li>
+            <li>Complete assigned stocktakes directly from the Home screen.</li>
           </ul>
         </div>
 
         <div class="card help-card">
-          <h3>Receiving an order</h3>
+          <h3>Simple User view</h3>
           <ul>
-            <li>Open <strong>Orders → On Order</strong>.</li>
-            <li>Open the relevant order and receive the quantity actually delivered.</li>
-            <li>Choose/check the destination location and bin.</li>
-            <li>Part deliveries remain open for the outstanding balance.</li>
+            <li>Users see only <strong>Home, Scan, Items and Help</strong>.</li>
+            <li>Locations, Orders, Reports and History are kept out of the day-to-day User navigation.</li>
+            <li>If a stocktake is assigned, the Home status card opens it directly.</li>
           </ul>
         </div>
       </div>`;
@@ -845,6 +883,15 @@
     return common + (canManage()?manager:'') + (canAdmin()?admin:'');
   }
 
+  function stocktakeStatusCardHtml() {
+    const task=assignedOpenStocktake();
+    if(!task) return `<div class="card stocktake-status good" id="stocktakeStatusCard"><div class="muted">Stocktake</div><div class="stocktake-status-title">✓ None assigned</div><div class="muted">No stocktake action is due.</div></div>`;
+    const overdue=task.status==='OVERDUE'||(task.due_at&&new Date(task.due_at).getTime()<Date.now());
+    const cls=overdue?'danger':'warn';
+    const label=overdue?'Stocktake overdue':'Stocktake due';
+    return `<div class="card stocktake-status ${cls}" data-go="stocktake"><div class="muted">Stocktake</div><div class="stocktake-status-title">${overdue?'!':'•'} ${label}</div><div class="muted">${stocktakeItemsFor(task.id).length} items · due ${esc(fmtShortDate(task.due_at))}</div><div class="actions"><button class="btn ${overdue?'danger':'warn'}" type="button">Open stocktake</button></div></div>`;
+  }
+
   function dashboardHtml() {
     const active = S.items.filter(i=>i.active);
     const totalUnits = S.balances.reduce((a,b)=>a+num(b.quantity),0);
@@ -853,21 +900,20 @@
     const usedMonth = S.transactions.filter(t=>countsAsUsage(t) && new Date(t.occurred_at)>=mStart).reduce((a,t)=>a+num(t.quantity),0);
     const onOrderUnits = S.purchaseOrders.filter(o=>['OPEN','PART_RECEIVED'].includes(o.status)).reduce((a,o)=>a+orderRemaining(o),0);
     const recent = S.transactions.slice(0,8);
+    const userView=effectiveRole()==='staff';
     return `
-      <div class="grid cards">
+      ${stocktakeStatusCardHtml()}
+      <div class="grid cards" style="margin-top:1rem">
         <div class="card"><div class="muted">Active items</div><div class="stat">${active.length}</div></div>
         <div class="card"><div class="muted">Units in stock</div><div class="stat">${qty(totalUnits)}</div></div>
-        <div class="card" data-go="orders" data-order-tab-go="suggested" title="Open Suggested Orders"><div class="muted">Low-stock items</div><div class="stat">${low.length}</div></div>
-        <div class="card" data-go="orders" data-order-tab-go="open" title="Open On Order"><div class="muted">Units on order</div><div class="stat">${qty(onOrderUnits)}</div></div>
-        <div class="card"><div class="muted">Used this month</div><div class="stat">${qty(usedMonth)}</div></div>
+        ${userView?`<div class="card"><div class="muted">Used this month</div><div class="stat">${qty(usedMonth)}</div></div>`:`<div class="card" data-go="orders" data-order-tab-go="suggested" title="Open Suggested Orders"><div class="muted">Low-stock items</div><div class="stat">${low.length}</div></div><div class="card" data-go="orders" data-order-tab-go="open" title="Open On Order"><div class="muted">Units on order</div><div class="stat">${qty(onOrderUnits)}</div></div><div class="card"><div class="muted">Used this month</div><div class="stat">${qty(usedMonth)}</div></div>`}
       </div>
       <div class="toolbar" style="margin-top:1rem"><button class="btn good" data-go="scan">Scan Stock QR</button><button class="btn" data-go="items">Manual search</button>${canManage()?'<button class="btn secondary" id="dashAddItem">Add new item</button>':''}</div>
       ${S.offline?`<div class="notice warn"><strong>Offline stock mode:</strong> QR/manual search and stock Add, Use, Move and Adjust are available. Orders, user/admin changes, stocktake submission and other database changes need a connection. Any queued stock changes are checked against the live database when syncing.</div>`:''}
-      ${assignedOpenStocktake()?`<div class="notice warn" style="margin-top:1rem"><strong>Stocktake ${assignedOpenStocktake().status==='OVERDUE'?'overdue':'due'}.</strong> About ${stocktakeItemsFor(assignedOpenStocktake().id).length} items have been assigned to you. <button class="btn ghost" data-go="stocktake">Open Stocktake</button></div>`:''}
       ${dashboardPersonalHtml()}
       ${canAdmin()&&backupDue()?`<div class="notice warn" style="margin-top:1rem"><strong>Admin backup due.</strong> ${lastBackupAt()?`Last backup: ${esc(fmtDate(lastBackupAt()))}.`:'No app backup has been recorded on this device yet.'} <button class="btn ghost" data-go="backup">Open Backup</button></div>`:''}
-      ${low.length?`<div class="card"><h3>Low stock</h3><div class="item-list">${low.slice(0,8).map(itemRowHtml).join('')}</div></div>`:''}
-      <div class="card" style="margin-top:1rem"><h3>Recent activity</h3>${transactionTable(recent)}</div>`;
+      ${!userView&&low.length?`<div class="card"><h3>Low stock</h3><div class="item-list">${low.slice(0,8).map(itemRowHtml).join('')}</div></div>`:''}
+      ${!userView?`<div class="card" style="margin-top:1rem"><h3>Recent activity</h3>${transactionTable(recent)}</div>`:''}`;
   }
 
   function scanHtml() {
@@ -1620,7 +1666,7 @@
         }
         const {error}=await sb.from('stocktake_tasks').update({status:'COMPLETED',completed_at:new Date().toISOString(),completed_by:S.profile.id}).eq('id',task.id);
         if(error)throw error;
-        await loadData();setNotice('Stocktake completed. Any differences were recorded as audited adjustments.');render();
+        await loadData();setNotice('Stocktake completed. Any differences were recorded as audited adjustments.');if(effectiveRole()==='staff')S.page='dashboard';render();
       }catch(e){setNotice(parseError(e),'error');render();}
     };
     document.querySelectorAll('[data-reassign-task]').forEach(sel=>sel.onchange=async()=>{
@@ -1808,7 +1854,7 @@
       backup_format:'inventory-tracker-backup-v1',
       created_at:new Date().toISOString(),
       created_by:{id:S.profile?.id||null,name:S.profile?.display_name||null,role:S.profile?.role||null},
-      app_version:'8.4.6',
+      app_version:'8.5.0',
       project_url:cfg.supabaseUrl,
       tables:{},
       uploaded_files:{requested:!!includeFiles,downloaded:0,failed:[]}

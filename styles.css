@@ -400,3 +400,17 @@ tbody tr:last-child td{border-bottom:0}
 /* v8.4.6 Admin/User view switch */
 .top-actions{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;justify-content:flex-end}
 @media(max-width:720px){.top-actions{gap:.35rem}.top-actions .btn{padding:.5rem .6rem;font-size:.74rem}.userline{max-width:58vw}}
+
+
+/* v8.5.0 simplified User home + stocktake traffic lights + demo */
+.stocktake-status{border-width:2px;overflow:hidden}
+.stocktake-status.good{border-color:#86efac;background:#f0fdf4}
+.stocktake-status.warn{border-color:#fbbf24;background:#fffbeb}
+.stocktake-status.danger{border-color:#f87171;background:#fef2f2}
+.stocktake-status-title{font-size:1.18rem;font-weight:850;margin:.22rem 0 .3rem;color:#172033}
+.stocktake-status.warn .stocktake-status-title{color:#92400e}
+.stocktake-status.danger .stocktake-status-title{color:#991b1b}
+.stocktake-status[data-go]{cursor:pointer}
+.demo-nav{display:flex;gap:.45rem;flex-wrap:wrap;margin-top:.7rem}.demo-nav span{padding:.5rem .7rem;border-radius:999px;background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;font-weight:750;font-size:.82rem}
+.demo-shell .content{padding-top:1.2rem}.demo-shell .stocktake-status{max-width:520px}
+@media(max-width:720px){.stocktake-status .actions .btn{width:100%}}
