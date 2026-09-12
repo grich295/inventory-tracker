@@ -397,8 +397,6 @@ tbody tr:last-child td{border-bottom:0}
   .users-table td[data-label="Account"] .btn{min-height:39px;flex:1 1 120px}
 }
 
-
-/* v8.4.6 Admin Features */
-.feature-row{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;padding:1rem 0;border-top:1px solid var(--border,#d1d5db)}
-.feature-row:first-of-type{border-top:0}.feature-switch{display:flex;align-items:center;gap:.55rem;margin:0;white-space:nowrap}.feature-switch input{width:auto;min-height:0}.offline-banner.disabled{background:#f8fafc;border-color:#cbd5e1;color:#475569}
-@media(max-width:720px){.feature-row{flex-direction:column}.feature-switch{width:100%;justify-content:space-between}}
+/* v8.4.6 Admin/User view switch */
+.top-actions{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;justify-content:flex-end}
+@media(max-width:720px){.top-actions{gap:.35rem}.top-actions .btn{padding:.5rem .6rem;font-size:.74rem}.userline{max-width:58vw}}

@@ -1,4 +1,4 @@
-/* Inventory Tracker - static PWA frontend for Supabase */
+/* Inventory Tracker v8.4.6 - Admin/User view switch + retained offline PWA. */
 (() => {
   'use strict';
 
@@ -41,7 +41,6 @@
     purchaseOrders: [],
     userPrefs: [],
     stocktakeSettings: null,
-    inventorySettings: { offline_mode_enabled: true },
     stocktakeTasks: [],
     stocktakeItems: [],
     safetyBridgeSettings: null,
@@ -81,6 +80,8 @@
     liveTimer: null,
     notice: null,
     passwordMode: false,
+    uiMode: null,
+    uiModeUserId: null,
     offline: !navigator.onLine,
     offlineSnapshotAt: null,
     syncingOffline: false,
@@ -112,6 +113,7 @@
   }
   function navigatePage(page,{replace=false}={}) {
     if(!page) return;
+    if(isAdminUserMode()&&['users','binsetup','safetybridge','legacy','backup'].includes(page))page='dashboard';
     const modal=document.getElementById('modalBackdrop');
     if(modal) modal.remove();
     S.page=page;
@@ -146,9 +148,16 @@
   };
   const monthStartISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`; };
   const byId = (arr, id) => arr.find(x => x.id === id);
-  const canManage = () => ['admin','manager'].includes(S.profile?.role);
-  const canAdmin = () => S.profile?.role === 'admin';
+  const actualRole = () => String(S.profile?.role||'staff');
+  const actualCanAdmin = () => actualRole()==='admin';
+  const uiModeKey = uid => `inventoryTrackerUiMode:${uid||'unknown'}`;
+  function ensureUiMode(){const uid=S.profile?.id||null;if(!actualCanAdmin()){S.uiMode='full';S.uiModeUserId=uid;return}if(S.uiModeUserId!==uid||!['full','user'].includes(S.uiMode)){try{S.uiMode=localStorage.getItem(uiModeKey(uid))==='user'?'user':'full'}catch{S.uiMode='full'}S.uiModeUserId=uid}}
+  const isAdminUserMode = () => actualCanAdmin()&&S.uiMode==='user';
+  const effectiveRole = () => isAdminUserMode()?'staff':actualRole();
+  const canManage = () => ['admin','manager'].includes(effectiveRole());
+  const canAdmin = () => effectiveRole()==='admin';
   const roleLabel = r => ({admin:'Admin',manager:'Manager',staff:'User'})[String(r||'staff')] || 'User';
+  function toggleAdminUserMode(){if(!actualCanAdmin())return;S.uiMode=isAdminUserMode()?'full':'user';try{localStorage.setItem(uiModeKey(S.profile?.id),S.uiMode)}catch{}if(isAdminUserMode()&&['users','binsetup','safetybridge','legacy','backup'].includes(S.page))S.page='dashboard';setNotice(isAdminUserMode()?'User mode on — your account remains Admin.':'Admin mode restored.');render()}
   const countsAsUsage = t => t?.transaction_type==='USE' && !t?.exclude_from_usage && (!t?.legacy_import || !t?.legacy_classification || t.legacy_classification==='USE');
   const itemPref = itemId => S.userPrefs.find(x=>x.item_id===itemId&&x.user_id===S.profile?.id) || null;
   // Database rows still represent exact stock positions, but users only manage
@@ -252,7 +261,6 @@
 
 
   const offlineSnapshotKey = 'inventoryTrackerOfflineSnapshotV1';
-  const offlineEnabled = () => S.inventorySettings?.offline_mode_enabled !== false;
   const offlineQueueKey = 'inventoryTrackerOfflineQueueV1';
   const clientRef = id => `CLIENT:${id}`;
   const makeClientId = () => (crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -291,7 +299,6 @@
   }
   function offlineStatusHtml(){
     const n=pendingOfflineCount();
-    if(!offlineEnabled()) return '<div class="offline-banner disabled"><strong>Offline mode disabled by Admin.</strong> A connection is required for stock changes on this device.</div>';
     if(!S.offline&&!n)return '';
     const when=S.offlineSnapshotAt?` Last saved ${esc(fmtDate(S.offlineSnapshotAt))}.`:'';
     if(S.offline)return `<div class="offline-banner"><strong>Offline mode.</strong> Using the last saved stock data.${when} Scan/search and Add, Use, Move and Adjust will be queued. Counts may be stale until the connection returns.${n?` <strong>${n} action${n===1?'':'s'} pending sync.</strong>`:''}<div class="actions"><button class="btn ghost small" id="reviewOfflineBtn">Pending actions</button></div></div>`;
@@ -418,7 +425,7 @@
   }
 
   async function loadData({transactions=true}={}) {
-    const [profiles,items,locations,balances,itemSuppliers,purchaseOrders,categories,userPrefs,stocktakeSettingsRows,inventorySettingsRows,stocktakeTasks,stocktakeItems,safetyBridgeSettingsRows,safetyBridgeLinks,safetyBridgeFeedback] = await Promise.all([
+    const [profiles,items,locations,balances,itemSuppliers,purchaseOrders,categories,userPrefs,stocktakeSettingsRows,stocktakeTasks,stocktakeItems,safetyBridgeSettingsRows,safetyBridgeLinks,safetyBridgeFeedback] = await Promise.all([
       fetchAll('profiles','*','display_name',true),
       fetchAll('items','*','name',true),
       fetchAll('stock_locations','*','location_name',true),
@@ -428,7 +435,6 @@
       fetchAll('inventory_categories','*','sort_order',true),
       fetchAll('user_item_preferences','*','last_viewed_at',false),
       fetchAll('stocktake_settings','*'),
-      fetchAll('inventory_settings','*'),
       fetchAll('stocktake_tasks','*','created_at',false),
       fetchAll('stocktake_task_items','*'),
       fetchAll('safety_bridge_settings','*'),
@@ -438,9 +444,10 @@
     S.profiles=profiles; S.items=items; S.locations=locations; S.balances=balances;
     S.itemSuppliers=itemSuppliers; S.purchaseOrders=purchaseOrders; S.categories=categories; S.userPrefs=userPrefs;
     S.categoryModel=null;
-    S.stocktakeSettings=stocktakeSettingsRows[0]||null; S.inventorySettings=inventorySettingsRows[0]||{offline_mode_enabled:true}; S.stocktakeTasks=stocktakeTasks; S.stocktakeItems=stocktakeItems;
+    S.stocktakeSettings=stocktakeSettingsRows[0]||null; S.stocktakeTasks=stocktakeTasks; S.stocktakeItems=stocktakeItems;
     S.safetyBridgeSettings=safetyBridgeSettingsRows[0]||{enabled:false,safety_tracker_url:'https://grich295.github.io/Safety-tracker/'}; S.safetyBridgeLinks=safetyBridgeLinks||[]; S.safetyBridgeFeedback=safetyBridgeFeedback||[];
     S.profile=byId(S.profiles,S.session?.user?.id)||S.profile;
+    ensureUiMode();
     if(transactions) S.transactions=await fetchAll('transactions','*','occurred_at',false);
     S.offline=false; S.offlineSyncError=null; saveOfflineSnapshot();
   }
@@ -486,7 +493,7 @@
         startRealtime();
         if(pendingOfflineCount())setTimeout(syncOfflineQueue,250);
       } catch (e) {
-        if(offlineEnabled()&&restoreOfflineSnapshot()){
+        if(restoreOfflineSnapshot()){
           S.offline=true;S.offlineSyncError=null;
           setNotice(`Offline mode: showing saved inventory from ${fmtDate(S.offlineSnapshotAt)}.`, 'success');
         }else setNotice(navigator.onLine?parseError(e):'No connection and no saved offline inventory is available on this device.','error');
@@ -507,12 +514,12 @@
         startRealtime();
         if(pendingOfflineCount())setTimeout(syncOfflineQueue,250);
       } catch (e) {
-        if(offlineEnabled()&&restoreOfflineSnapshot()){S.offline=true;S.notice={message:`Offline mode: showing saved inventory from ${fmtDate(S.offlineSnapshotAt)}.`,type:'success'};}
+        if(restoreOfflineSnapshot()){S.offline=true;S.notice={message:`Offline mode: showing saved inventory from ${fmtDate(S.offlineSnapshotAt)}.`,type:'success'};}
         else S.notice = {message:parseError(e),type:'error'};
       }
     } else {
       stopRealtime();
-      S.profile = null; S.profiles=[]; S.items=[]; S.locations=[]; S.balances=[]; S.transactions=[];
+      S.profile = null; S.uiMode=null; S.uiModeUserId=null; S.profiles=[]; S.items=[]; S.locations=[]; S.balances=[]; S.transactions=[];
     }
     ensureNavigationHistory();
     render();
@@ -520,6 +527,7 @@
 
   function render() {
     stopScanner();
+    ensureUiMode();
     if (!S.session) return renderLogin();
     if (S.passwordMode) return renderPasswordUpdate();
     app.innerHTML = shellHtml(pageHtml());
@@ -589,9 +597,10 @@
     const nav = [
       ['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['stocktake','Stocktake'],['reports','Reports'],['history','History'],['help','Help']
     ];
-    if (S.profile?.role === 'admin') nav.push(['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']);
+    if (canAdmin()) nav.push(['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']);
+    const modeLabel=isAdminUserMode()?'User mode':'Admin';
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(roleLabel(S.profile?.role))} · v8.4.6</div></div><button class="btn secondary" id="logoutBtn">Sign out</button></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(actualCanAdmin()?modeLabel:roleLabel(effectiveRole()))} · v8.4.6</div></div><div class="top-actions">${actualCanAdmin()?`<button class="btn secondary" id="viewModeBtn">${isAdminUserMode()?'Return to Admin':'Switch to User'}</button>`:''}<button class="btn secondary" id="logoutBtn">Sign out</button></div></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -599,6 +608,7 @@
 
   function bindShell() {
     document.getElementById('logoutBtn').onclick = () => sb.auth.signOut();
+    const modeBtn=document.getElementById('viewModeBtn');if(modeBtn)modeBtn.onclick=toggleAdminUserMode;
     document.querySelectorAll('[data-page]').forEach(b => b.onclick = () => navigatePage(b.dataset.page));
     const sync=document.getElementById('syncOfflineBtn');if(sync)sync.onclick=()=>syncOfflineQueue();
     const review=document.getElementById('reviewOfflineBtn');if(review)review.onclick=()=>showOfflineQueue();
@@ -614,7 +624,6 @@
     if (S.page==='history') return historyHtml();
     if (S.page==='help') return helpHtml();
     if (S.page==='users') return usersHtml();
-    if (S.page==='features') return featuresHtml();
     if (S.page==='binsetup') return binSetupHtml();
     if (S.page==='safetybridge') return safetyBridgeHtml();
     if (S.page==='legacy') return legacyReviewHtml();
@@ -624,7 +633,7 @@
 
 
   function helpHtml() {
-    const role=String(S.profile?.role||'staff');
+    const role=String(effectiveRole()||'staff');
     const roleName=esc(roleLabel(role));
 
     const common=`
@@ -632,6 +641,7 @@
         <h2>Help</h2>
         <p><strong>Your role: ${roleName}</strong></p>
         <p class="muted">Use your own login so stock actions and audit history are recorded against the correct person.</p>
+        ${actualCanAdmin()?`<div class="help-tip"><strong>Admin/User view switch:</strong> use the header switch for day-to-day work as a normal User. It changes only what the interface shows; your account and audit identity remain Admin. Switch back to Admin when you need Users, Bin Setup, Safety Bridge, Legacy or Backup.</div>`:''}
       </div>
 
       <h2 class="help-heading">Everyday use</h2>
@@ -788,6 +798,7 @@
             <li>Change a registered email without losing the user's password, role or stock history.</li>
             <li>Disable users rather than deleting them so audit history is retained.</li>
             <li>Re-enable an account if the person needs access again later.</li>
+            <li>Use <strong>Switch to User</strong> in the header for normal day-to-day stock work without the Admin-only screens. Your real role is not changed.</li>
           </ul>
         </div>
 
@@ -1486,36 +1497,6 @@
   }
 
 
-
-
-  function featuresHtml() {
-    if(!canAdmin()) return '<div class="notice error">Admin access required.</div>';
-    const enabled=offlineEnabled();
-    return `<div class="card"><h2>Features</h2><p class="muted">Admin-controlled app features.</p><div class="feature-row"><div><strong>Offline Mode</strong><div class="muted">When enabled, previously synced stock can be viewed and Add, Use, Move and Adjust can queue while the connection is down. Pending actions sync when connection returns.</div></div><label class="feature-switch"><input id="offlineFeatureToggle" type="checkbox" ${enabled?'checked':''}><span>${enabled?'Enabled':'Disabled'}</span></label></div>${pendingOfflineCount()?`<div class="notice warn"><strong>${pendingOfflineCount()} pending offline action${pendingOfflineCount()===1?'':'s'}.</strong> Disabling Offline Mode will not delete them; they will still sync when online.</div>`:''}</div>`;
-  }
-
-  function bindFeatures(){
-    const toggle=document.getElementById('offlineFeatureToggle');
-    if(!toggle)return;
-    toggle.onchange=async()=>{
-      const wanted=toggle.checked;
-      toggle.disabled=true;
-      try{
-        const {error}=await sb.from('inventory_settings').update({offline_mode_enabled:wanted,updated_at:new Date().toISOString(),updated_by:S.profile.id}).eq('singleton',true);
-        if(error)throw error;
-        S.inventorySettings={...(S.inventorySettings||{}),offline_mode_enabled:wanted};
-        if(!wanted){S.offline=false;stopRealtime();}
-        else if(navigator.onLine)startRealtime();
-        setNotice(`Offline Mode ${wanted?'enabled':'disabled'}.`);
-        render();
-      }catch(e){
-        toggle.checked=!wanted;
-        setNotice(`Could not change Offline Mode: ${parseError(e)}`,'error');
-        render();
-      }
-    };
-  }
-
   function usersHtml() {
     if(!canAdmin()) return '<div class="notice error">Admin access required.</div>';
     const rows=S.profiles.map(p=>{
@@ -1948,7 +1929,6 @@ Keep this file somewhere secure.
     if(S.page==='stocktake') bindStocktake();
     if(S.page==='reports') bindReports();
     if(S.page==='users') bindUsers();
-    if(S.page==='features') bindFeatures();
     if(S.page==='binsetup') bindBinSetup();
     if(S.page==='safetybridge') bindSafetyBridge();
     if(S.page==='legacy') bindLegacyReview();
@@ -3075,7 +3055,6 @@ Keep this file somewhere secure.
         op={id:makeClientId(),user_id:S.profile.id,item_id:item.id,type,quantity,from_location_name:fromName,from_bin_ref:normalizeBin(fromRef),to_location_name:toName,to_bin_ref:normalizeBin(toRef),new_quantity:newQuantity,reason,notes,created_at:new Date().toISOString(),auto_source_location:type==='USE'};
 
         if(S.offline||!navigator.onLine){
-          if(!offlineEnabled()){ showFormMessage('Offline Mode is disabled by Admin. Reconnect to record this stock change.'); return; }
           queueStockOperation(op);
           closeModal();
           setNotice(`${item.name}: ${type.toLowerCase()} saved offline and will sync automatically.`);
@@ -3091,7 +3070,6 @@ Keep this file somewhere secure.
           render();
         }catch(err){
           if(isNetworkError(err)){
-            if(!offlineEnabled()){ showFormMessage('Connection lost and Offline Mode is disabled by Admin. No stock change was saved.'); return; }
             queueStockOperation(op);
             closeModal();
             setNotice(`${item.name}: connection lost — action saved offline for automatic sync.`);
@@ -3513,7 +3491,6 @@ Keep this file somewhere secure.
 
   window.addEventListener('offline',()=>{
     if(!S.session)return;
-    if(!offlineEnabled()){ S.offline=false; stopRealtime(); setNotice('Connection lost. Offline Mode is disabled by Admin, so stock changes are unavailable until reconnection.','error'); render(); return; }
     S.offline=true;stopRealtime();saveOfflineSnapshot();setNotice('Connection lost. Offline stock mode is active.');render();
   });
   window.addEventListener('online',()=>{
