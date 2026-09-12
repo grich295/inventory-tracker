@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.5.0 - simplified User view, dashboard stocktakes, password guidance + demo mode. */
+/* Inventory Tracker v8.5.1 - full interactive demo + simplified User stocktake workflow. */
 (() => {
   'use strict';
 
@@ -88,6 +88,13 @@
     offlineSyncError: null,
     demo: false,
     demoSafety: {enabled:false,url:'https://grich295.github.io/Safety-tracker/'},
+    demoPage: 'dashboard',
+    demoRole: 'staff',
+    demoItems: [],
+    demoHistory: [],
+    demoStocktakeState: 'due',
+    demoNotice: null,
+    demoSearch: '',
     report: { period: 'month', item: '', graphItem: '', user: '', location: '', bin: '', from: '', to: '' }
   };
 
@@ -484,32 +491,144 @@
     S.liveChannel=c.subscribe();
   }
 
+  const DEMO_ITEM_SEED = [
+    {id:'d1',name:'GU10 LED Lamp 5W',code:'ELEC-GU10-5W',category:'Bulbs',qty:24,min:12,location:'Workshop Main Store',bin:'Bin 12'},
+    {id:'d2',name:'22mm Copper Coupling',code:'PLUMB-22-COUP',category:'Plumbing',qty:16,min:8,location:'Workshop Main Store',bin:'Bin 8'},
+    {id:'d3',name:'White Silicone Sealant',code:'SEAL-WHITE',category:'Sealants',qty:7,min:6,location:'Workbench Cupboard',bin:'C4'},
+    {id:'d4',name:'AA Alkaline Battery',code:'BAT-AA',category:'Batteries',qty:38,min:20,location:'Workshop Main Store',bin:'Bin 21'},
+    {id:'d5',name:'15mm Isolation Valve',code:'PLUMB-15-IV',category:'Plumbing',qty:5,min:6,location:'Workshop Main Store',bin:'Bin 10'},
+    {id:'d6',name:'WD-40 Multi-Use 400ml',code:'CHEM-WD40',category:'Chemicals',qty:9,min:4,location:'External Maintenance Container',bin:'Shelf 2'},
+    {id:'d7',name:'13A Plug Top',code:'ELEC-13A-PLUG',category:'Electrical',qty:14,min:8,location:'Workshop Main Store',bin:'Bin 17'},
+    {id:'d8',name:'PTFE Tape',code:'PLUMB-PTFE',category:'Plumbing',qty:31,min:15,location:'Workbench Cupboard',bin:'C2'}
+  ];
+
+  const demoItemById=id=>S.demoItems.find(x=>x.id===id);
+  const demoSafetyLink=()=>S.demoSafety.enabled?`<a class="btn good" href="${esc(S.demoSafety.url)}" target="_blank" rel="noopener">Open Safety Tracker</a>`:'';
+  const demoRoleLabel=()=>S.demoRole==='admin'?'Demo Admin':'Demo User';
+  const demoSetNotice=(message,type='success')=>{S.demoNotice={message,type};renderDemo();};
+  const demoNoticeHtml=()=>S.demoNotice?`<div class="notice ${S.demoNotice.type==='error'?'error':'success'}">${esc(S.demoNotice.message)}</div>`:'';
+
   async function enterDemoMode(){
     S.demo=true;
+    S.demoPage='dashboard';
+    S.demoRole='staff';
+    S.demoItems=DEMO_ITEM_SEED.map(x=>({...x}));
+    S.demoHistory=[
+      {when:'Today 09:18',action:'USE',item:'GU10 LED Lamp 5W',qty:2,user:'Demo User'},
+      {when:'Yesterday 15:42',action:'ADD',item:'White Silicone Sealant',qty:6,user:'Demo User'},
+      {when:'Yesterday 11:05',action:'MOVE',item:'PTFE Tape',qty:10,user:'Demo User'}
+    ];
+    S.demoStocktakeState='due';
+    S.demoNotice=null;
+    S.demoSearch='';
     try{
       const {data}=await sb.rpc('get_inventory_demo_config_v850');
       const row=Array.isArray(data)?data[0]:data;
       if(row){S.demoSafety={enabled:row.safety_bridge_enabled===true,url:row.safety_tracker_url||S.demoSafety.url};}
     }catch(_){ }
-    render();
+    renderDemo();
   }
 
-  function renderDemo(){
-    const safety=S.demoSafety.enabled?`<a class="btn good" href="${esc(S.demoSafety.url)}" target="_blank" rel="noopener">Open Safety Tracker</a>`:'';
-    app.innerHTML=`<div class="shell demo-shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">Demo mode · v8.5.0</div></div><div class="top-actions"><button class="btn secondary" id="exitDemoBtn">Exit demo</button></div></div>
-      <main class="content">
-        <div class="notice"><strong>Demo mode.</strong> This is sample data only. Nothing you do here changes the live inventory.</div>
-        <div class="card stocktake-status warn"><div class="muted">Stocktake</div><div class="stocktake-status-title">• Stocktake due</div><div class="muted">12 sample items · due in 4 days</div></div>
-        <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Active items</div><div class="stat">104</div></div><div class="card"><div class="muted">Units in stock</div><div class="stat">1,286</div></div><div class="card"><div class="muted">Used this month</div><div class="stat">73</div></div></div>
-        <div class="card" style="margin-top:1rem"><h2>Typical User view</h2><p class="muted">Users get a simple Home, Scan, Items and Help workflow. Assigned stocktakes appear on Home instead of having their own navigation tab.</p><div class="demo-nav"><span>Home</span><span>Scan</span><span>Items</span><span>Help</span></div></div>
-        <div class="card" style="margin-top:1rem"><h3>Sample stock</h3><div class="item-list"><div class="item-row"><div><strong>GU10 LED Lamp</strong><div class="muted">Workshop Main Store → Bin 12</div></div><div class="qty">24</div></div><div class="item-row"><div><strong>22mm Copper Coupling</strong><div class="muted">Workshop Main Store → Bin 8</div></div><div class="qty">16</div></div><div class="item-row"><div><strong>White Silicone Sealant</strong><div class="muted">Workbench Cupboard → C4</div></div><div class="qty">7</div></div></div></div>
-        <div class="actions"><button class="btn" id="demoStocktakeBtn">Preview stocktake</button>${safety}</div>
-        <div id="demoStocktakePreview"></div>
-      </main></div>`;
-    document.getElementById('exitDemoBtn').onclick=()=>{location.href=location.pathname};
-    document.getElementById('demoStocktakeBtn').onclick=()=>{document.getElementById('demoStocktakePreview').innerHTML=`<div class="card" style="margin-top:1rem"><h3>Assigned stocktake</h3><p class="muted">The live app opens the assigned task directly from the Home status card.</p><div class="table-wrap"><table><thead><tr><th>Item</th><th>Location / Bin</th><th>Counted</th></tr></thead><tbody><tr><td>GU10 LED Lamp</td><td>Workshop Main Store / Bin 12</td><td>24</td></tr><tr><td>White Silicone Sealant</td><td>Workbench Cupboard / C4</td><td>7</td></tr></tbody></table></div></div>`;};
+  function demoNavigate(page){S.demoPage=page;S.demoNotice=null;renderDemo();}
+
+  function demoShellHtml(content){
+    const userNav=[['dashboard','Home'],['scan','Scan'],['items','Items'],['help','Help']];
+    const adminNav=[['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['reports','Reports'],['history','History'],['help','Help'],['stocktake','Stocktake Admin'],['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']];
+    const nav=S.demoRole==='admin'?adminNav:userNav;
+    return `<div class="shell demo-shell">
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${demoRoleLabel()} · sample data only · v8.5.1</div></div><div class="top-actions">${demoSafetyLink()}<button class="btn secondary" id="demoRoleBtn">${S.demoRole==='admin'?'Switch to User':'Switch to Admin'}</button><button class="btn secondary" id="exitDemoBtn">Exit demo</button></div></div>
+      <div class="nav">${nav.map(([p,t])=>`<button data-demo-page="${p}" class="${S.demoPage===p?'active':''}">${t}</button>`).join('')}</div>
+      <main class="content"><div class="notice"><strong>Demo mode.</strong> Everything below is fictional sample data. You can click around and try actions; nothing is written to the live inventory.</div>${demoNoticeHtml()}${content}</main>
+    </div>`;
   }
+
+  function demoStocktakeCard(){
+    if(S.demoStocktakeState==='complete')return `<div class="card stocktake-status good"><div class="muted">Stocktake</div><div class="stocktake-status-title">● No stocktake assigned</div><div class="muted">All assigned stocktakes are complete.</div></div>`;
+    const overdue=S.demoStocktakeState==='overdue';
+    return `<div class="card stocktake-status ${overdue?'danger':'warn'}" data-demo-go-stocktake="1"><div class="muted">Stocktake</div><div class="stocktake-status-title">● ${overdue?'Stocktake overdue':'Stocktake due'}</div><div class="muted">4 sample items · ${overdue?'2 days overdue':'due in 4 days'} · tap to complete</div></div>`;
+  }
+
+  function demoDashboardHtml(){
+    const total=S.demoItems.reduce((a,b)=>a+Number(b.qty||0),0),low=S.demoItems.filter(x=>x.qty<=x.min).length;
+    const admin=S.demoRole==='admin';
+    return `${demoStocktakeCard()}
+      <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Active items</div><div class="stat">${S.demoItems.length}</div></div><div class="card"><div class="muted">Units in stock</div><div class="stat">${qty(total)}</div></div><div class="card"><div class="muted">Low stock</div><div class="stat">${low}</div></div>${admin?'<div class="card"><div class="muted">Open orders</div><div class="stat">2</div></div>':''}</div>
+      <div class="card" style="margin-top:1rem"><h2>${admin?'Demo dashboard':'Quick access'}</h2><div class="actions"><button class="btn" data-demo-page="scan">Scan item</button><button class="btn secondary" data-demo-page="items">Find item</button>${S.demoStocktakeState!=='complete'?'<button class="btn warn" data-demo-page="stocktake-user">Complete stocktake</button>':''}${demoSafetyLink()}</div></div>
+      <div class="card" style="margin-top:1rem"><h3>Recent stock</h3><div class="item-list">${S.demoItems.slice(0,4).map(demoItemRow).join('')}</div></div>`;
+  }
+
+  function demoItemRow(i){return `<div class="item-row inventory-item-row" data-demo-item="${i.id}" tabindex="0"><div class="item-thumb placeholder">${esc((i.name||'?').slice(0,1))}</div><div class="item-main"><div class="item-title">${esc(i.name)}</div><div class="muted">${esc(i.code)} · ${esc(i.category)}<br>${esc(i.location)} → ${esc(i.bin)}</div></div><div class="qty">${qty(i.qty)}${i.qty<=i.min?'<div><span class="badge low">Low</span></div>':''}</div></div>`;}
+
+  function demoItemsHtml(){
+    const q=String(S.demoSearch||'').toLowerCase().trim();
+    const rows=S.demoItems.filter(i=>!q||[i.name,i.code,i.category,i.location,i.bin].join(' ').toLowerCase().includes(q));
+    return `<div class="toolbar"><input id="demoItemSearch" placeholder="Search item, code, category, location or bin" value="${esc(S.demoSearch)}"></div><div class="muted" style="margin-bottom:.6rem">${rows.length} sample item${rows.length===1?'':'s'}</div><div class="item-list">${rows.map(demoItemRow).join('')||'<div class="card">No matching sample items.</div>'}</div>`;
+  }
+
+  function demoScanHtml(){
+    return `<div class="scan-box"><div class="card"><h2>Scan</h2><div class="scanner demo-scanner"><div><div class="demo-scan-icon">▦</div><strong>Camera scanning is simulated in Demo mode</strong><p class="muted">Choose one of the sample QR labels below to see what happens after a successful scan.</p></div></div><div class="actions">${S.demoItems.slice(0,3).map(i=>`<button class="btn secondary" data-demo-scan="${i.id}">Scan ${esc(i.code)}</button>`).join('')}</div></div></div>`;
+  }
+
+  function demoHelpHtml(){
+    return `<div class="card help-role-banner"><h2>Help · ${demoRoleLabel()}</h2><p class="muted">This demo follows the same navigation as the live app.</p></div><div class="help-grid" style="margin-top:1rem"><div class="card help-card"><h3>Everyday User workflow</h3><ul><li>Home shows assigned stocktakes without a separate Stocktake tab.</li><li>Scan or search for an item.</li><li>Open the item and Add, Use, Move or Adjust stock.</li><li>Users see only Home, Scan, Items and Help.</li></ul></div><div class="card help-card"><h3>Stocktake traffic light</h3><ul><li><strong>Green:</strong> none assigned.</li><li><strong>Amber:</strong> due.</li><li><strong>Red:</strong> overdue.</li></ul></div>${S.demoRole==='admin'?'<div class="card help-card"><h3>Admin demo</h3><p>Use the extra tabs to preview Locations, Orders, Reports, History, Stocktake Admin, Users, Bin Setup, Safety Bridge, Legacy and Backup.</p></div>':''}</div>`;
+  }
+
+  function demoStocktakeUserHtml(){
+    if(S.demoStocktakeState==='complete')return `<div class="card stocktake-status good"><h2>Stocktake complete</h2><p>No stocktake is currently assigned.</p><button class="btn secondary" data-demo-page="dashboard">Back to Home</button></div>`;
+    const ids=['d1','d3','d5','d8'];
+    return `<div class="card"><h2>Assigned stocktake</h2><p class="muted">Count the physical quantity. Demo values are pre-filled so you can complete the workflow.</p><form id="demoStocktakeForm"><div class="table-wrap"><table><thead><tr><th>Item</th><th>Location / Bin</th><th>Counted</th></tr></thead><tbody>${ids.map(id=>{const i=demoItemById(id);return `<tr><td>${esc(i.name)}</td><td>${esc(i.location)} / ${esc(i.bin)}</td><td><input type="number" min="0" step="1" data-demo-count="${i.id}" value="${i.qty}"></td></tr>`}).join('')}</tbody></table></div><div class="actions"><button class="btn good" type="submit">Complete stocktake</button><button class="btn secondary" type="button" data-demo-page="dashboard">Cancel</button></div></form></div>`;
+  }
+
+  function demoLocationsHtml(){return `<div class="card"><h2>Locations</h2><div class="table-wrap"><table><thead><tr><th>Location</th><th>Controlled bins</th><th>Stock units</th></tr></thead><tbody><tr><td>Workshop Main Store</td><td>Bin 1–50</td><td>128</td></tr><tr><td>Workbench Cupboard</td><td>C1–C15</td><td>38</td></tr><tr><td>External Maintenance Container</td><td>Shelf 1–6</td><td>24</td></tr></tbody></table></div></div>`;}
+  function demoOrdersHtml(){return `<div class="card"><h2>Orders</h2><div class="table-wrap"><table><thead><tr><th>Order</th><th>Supplier</th><th>Status</th><th>Items</th></tr></thead><tbody><tr><td>PO-DEMO-104</td><td>CEF</td><td><span class="badge">On order</span></td><td>GU10 LED Lamp × 20</td></tr><tr><td>PO-DEMO-105</td><td>BES</td><td><span class="badge">Part delivered</span></td><td>15mm Isolation Valve × 10</td></tr></tbody></table></div></div>`;}
+  function demoReportsHtml(){return `<div class="card"><h2>Usage report</h2><p class="muted">Sample month-to-date usage.</p><div class="table-wrap"><table><thead><tr><th>Item</th><th>Used</th><th>User</th></tr></thead><tbody><tr><td>GU10 LED Lamp 5W</td><td>18</td><td>Demo User</td></tr><tr><td>White Silicone Sealant</td><td>9</td><td>Demo User</td></tr><tr><td>PTFE Tape</td><td>7</td><td>Demo User</td></tr></tbody></table></div><div class="actions"><button class="btn secondary" id="demoCsvBtn">Try CSV export</button></div></div>`;}
+  function demoHistoryHtml(){return `<div class="card"><h2>History</h2><div class="table-wrap"><table><thead><tr><th>When</th><th>Action</th><th>Item</th><th>Qty</th><th>User</th></tr></thead><tbody>${S.demoHistory.map(h=>`<tr><td>${esc(h.when)}</td><td>${esc(h.action)}</td><td>${esc(h.item)}</td><td>${esc(h.qty)}</td><td>${esc(h.user)}</td></tr>`).join('')}</tbody></table></div></div>`;}
+  function demoStocktakeAdminHtml(){const s=S.demoStocktakeState;return `<div class="card"><h2>Stocktake Admin</h2><p>Current demo task: <strong>${s==='complete'?'Complete / none assigned':s==='overdue'?'Overdue':'Due'}</strong></p><p class="muted">Admins create/reassign tasks here. Users only see their assigned task on Home.</p><div class="actions"><button class="btn warn" data-demo-stockstate="due">Assign due task</button><button class="btn danger" data-demo-stockstate="overdue">Make overdue</button><button class="btn good" data-demo-stockstate="complete">Mark complete</button></div></div>`;}
+  function demoUsersHtml(){return `<div class="card"><h2>Users</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Status</th></tr></thead><tbody><tr><td>Demo Admin</td><td>Admin</td><td>Active</td></tr><tr><td>Demo Manager</td><td>Manager</td><td>Active</td></tr><tr><td>Demo User</td><td>User</td><td>Active</td></tr></tbody></table></div></div>`;}
+  function demoBinSetupHtml(){return `<div class="card"><h2>Bin Setup</h2><label>Location</label><select><option>Workshop Main Store</option><option>Workbench Cupboard</option></select><div class="card" style="margin-top:1rem"><strong>Controlled bins</strong><p class="muted">Bin 1, Bin 2, Bin 3 … Bin 50</p></div></div>`;}
+  function demoSafetyBridgeHtml(){return `<div class="card"><h2>Safety Bridge</h2><p>Status: <strong>${S.demoSafety.enabled?'Enabled':'Not enabled'}</strong></p><p class="muted">When enabled, linked stock items can check the person's current Safety Tracker training before Use Stock is allowed.</p>${S.demoSafety.enabled?demoSafetyLink():'<div class="notice">Enable Safety Bridge in the live Inventory settings to make the Safety Tracker link appear in Demo mode.</div>'}</div>`;}
+  function demoLegacyHtml(){return `<div class="card"><h2>Legacy review</h2><p class="muted">Review imported historical movements so they do not distort current usage.</p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Item</th><th>Imported action</th><th>Classification</th></tr></thead><tbody><tr><td>2025-12-18</td><td>GU10 LED Lamp</td><td>-12</td><td>Use</td></tr><tr><td>2025-11-03</td><td>PTFE Tape</td><td>+20</td><td>Exclude from usage</td></tr></tbody></table></div></div>`;}
+  function demoBackupHtml(){return `<div class="card"><h2>Backup</h2><p class="muted">The live Admin can create a ZIP backup of inventory records and item photos.</p><button class="btn" id="demoBackupBtn">Run demo backup</button></div>`;}
+
+  function demoPageHtml(){
+    if(S.demoPage==='scan')return demoScanHtml();
+    if(S.demoPage==='items')return demoItemsHtml();
+    if(S.demoPage==='help')return demoHelpHtml();
+    if(S.demoPage==='stocktake-user')return demoStocktakeUserHtml();
+    if(S.demoRole==='admin'){
+      if(S.demoPage==='locations')return demoLocationsHtml(); if(S.demoPage==='orders')return demoOrdersHtml(); if(S.demoPage==='reports')return demoReportsHtml(); if(S.demoPage==='history')return demoHistoryHtml(); if(S.demoPage==='stocktake')return demoStocktakeAdminHtml(); if(S.demoPage==='users')return demoUsersHtml(); if(S.demoPage==='binsetup')return demoBinSetupHtml(); if(S.demoPage==='safetybridge')return demoSafetyBridgeHtml(); if(S.demoPage==='legacy')return demoLegacyHtml(); if(S.demoPage==='backup')return demoBackupHtml();
+    }
+    return demoDashboardHtml();
+  }
+
+  function showDemoItem(id){
+    const i=demoItemById(id);if(!i)return;
+    const modal=document.createElement('div');modal.className='modal-backdrop';modal.id='demoModal';
+    modal.innerHTML=`<div class="modal"><header><div><h2>${esc(i.name)}</h2><div class="muted">${esc(i.code)} · ${esc(i.category)}</div></div><button class="close" id="demoModalClose">×</button></header><div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Current stock</div><div class="stat">${qty(i.qty)}</div></div><div class="card"><div class="muted">Reorder level</div><div class="stat">${qty(i.min)}</div></div></div><p><strong>Default storage:</strong> ${esc(i.location)} → ${esc(i.bin)}</p><div class="actions"><button class="btn good" data-demo-action="ADD">Add 5</button><button class="btn" data-demo-action="USE">Use 1</button><button class="btn secondary" data-demo-action="MOVE">Move 2</button><button class="btn warn" data-demo-action="ADJUST">Adjust +1</button></div><p class="muted">These buttons only change the temporary sample data in this demo.</p></div>`;
+    document.body.appendChild(modal);document.getElementById('demoModalClose').onclick=()=>modal.remove();modal.onclick=e=>{if(e.target===modal)modal.remove()};
+    modal.querySelectorAll('[data-demo-action]').forEach(b=>b.onclick=()=>{const a=b.dataset.demoAction;let q=0;if(a==='ADD'){i.qty+=5;q=5}else if(a==='USE'){if(i.qty<1)return;i.qty-=1;q=1}else if(a==='MOVE'){q=2}else if(a==='ADJUST'){i.qty+=1;q=1}S.demoHistory.unshift({when:'Just now',action:a,item:i.name,qty:q,user:'Demo User'});modal.remove();demoSetNotice(`${a==='MOVE'?'Moved 2 units of':a==='USE'?'Used 1 unit of':a==='ADD'?'Added 5 units of':'Adjusted'} ${i.name}. Demo data only.`)});
+  }
+
+  function demoDownloadCsv(){
+    const rows=[['Item','Used','User'],['GU10 LED Lamp 5W','18','Demo User'],['White Silicone Sealant','9','Demo User'],['PTFE Tape','7','Demo User']];
+    const csv=rows.map(r=>r.map(x=>`"${String(x).replaceAll('"','""')}"`).join(',')).join('\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='inventory-demo-usage.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  }
+
+  function bindDemo(){
+    document.getElementById('exitDemoBtn').onclick=()=>{location.href=location.pathname};
+    document.getElementById('demoRoleBtn').onclick=()=>{S.demoRole=S.demoRole==='admin'?'staff':'admin';S.demoPage='dashboard';S.demoNotice=null;renderDemo()};
+    document.querySelectorAll('[data-demo-page]').forEach(b=>b.onclick=()=>demoNavigate(b.dataset.demoPage));
+    document.querySelectorAll('[data-demo-item]').forEach(r=>{r.onclick=()=>showDemoItem(r.dataset.demoItem);r.onkeydown=e=>{if(e.key==='Enter'||e.key===' ')showDemoItem(r.dataset.demoItem)}});
+    document.querySelectorAll('[data-demo-scan]').forEach(b=>b.onclick=()=>showDemoItem(b.dataset.demoScan));
+    const stockCard=document.querySelector('[data-demo-go-stocktake]');if(stockCard)stockCard.onclick=()=>demoNavigate('stocktake-user');
+    const search=document.getElementById('demoItemSearch');if(search)search.oninput=e=>{S.demoSearch=e.target.value;const pos=e.target.selectionStart;renderDemo();requestAnimationFrame(()=>{const n=document.getElementById('demoItemSearch');if(n){n.focus();try{n.setSelectionRange(pos,pos)}catch{}}})};
+    const sf=document.getElementById('demoStocktakeForm');if(sf)sf.onsubmit=e=>{e.preventDefault();document.querySelectorAll('[data-demo-count]').forEach(inp=>{const i=demoItemById(inp.dataset.demoCount);if(i)i.qty=Math.max(0,Number(inp.value||0))});S.demoStocktakeState='complete';S.demoHistory.unshift({when:'Just now',action:'STOCKTAKE',item:'4 assigned items',qty:4,user:'Demo User'});S.demoPage='dashboard';demoSetNotice('Stocktake completed. Home is now green with no task assigned.')};
+    document.querySelectorAll('[data-demo-stockstate]').forEach(b=>b.onclick=()=>{S.demoStocktakeState=b.dataset.demoStockstate;demoSetNotice(`Demo stocktake status changed to ${b.dataset.demoStockstate}.`)});
+    const csv=document.getElementById('demoCsvBtn');if(csv)csv.onclick=demoDownloadCsv;
+    const backup=document.getElementById('demoBackupBtn');if(backup)backup.onclick=()=>demoSetNotice('Demo backup completed. No live records were accessed.');
+  }
+
+  function renderDemo(){app.innerHTML=demoShellHtml(demoPageHtml());bindDemo();}
 
   async function bootstrap() {
     if(new URLSearchParams(location.search).get('demo')==='1'){ await enterDemoMode(); return; }
@@ -640,7 +759,7 @@
     if (canAdmin()) nav.push(['stocktake','Stocktake Admin'],['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']);
     const modeLabel=isAdminUserMode()?'User mode':'Admin';
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(actualCanAdmin()?modeLabel:roleLabel(effectiveRole()))} · v8.5.0</div></div><div class="top-actions">${actualCanAdmin()?`<button class="btn secondary" id="viewModeBtn">${isAdminUserMode()?'Return to Admin':'Switch to User'}</button>`:''}<button class="btn secondary" id="logoutBtn">Sign out</button></div></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(actualCanAdmin()?modeLabel:roleLabel(effectiveRole()))} · v8.5.1</div></div><div class="top-actions">${actualCanAdmin()?`<button class="btn secondary" id="viewModeBtn">${isAdminUserMode()?'Return to Admin':'Switch to User'}</button>`:''}<button class="btn secondary" id="logoutBtn">Sign out</button></div></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -1854,7 +1973,7 @@
       backup_format:'inventory-tracker-backup-v1',
       created_at:new Date().toISOString(),
       created_by:{id:S.profile?.id||null,name:S.profile?.display_name||null,role:S.profile?.role||null},
-      app_version:'8.5.0',
+      app_version:'8.5.1',
       project_url:cfg.supabaseUrl,
       tables:{},
       uploaded_files:{requested:!!includeFiles,downloaded:0,failed:[]}
