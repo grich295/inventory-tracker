@@ -1,6 +1,1 @@
-{
-  "version": "2.3.3",
-  "build": "people-edit-resend-access-v232-20260911",
-  "clean_build": true,
-  "notes": "Cache-bust fix so full admin user editing (name, email, role and department) plus a resend access/password email action. Retains v2.3.1 departments and approved-document audience editing."
-}
+{"version":"8.5.3","label":"CLEAN","date":"2026-09-13"}
