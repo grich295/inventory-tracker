@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.5.2 - Safety Bridge 7-day warning + one final grace use. */
+/* Inventory Tracker v8.5.3 - User delivery receiving restored on Home and item details. */
 (() => {
   'use strict';
 
@@ -537,7 +537,7 @@
     const adminNav=[['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['reports','Reports'],['history','History'],['help','Help'],['stocktake','Stocktake Admin'],['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']];
     const nav=S.demoRole==='admin'?adminNav:userNav;
     return `<div class="shell demo-shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${demoRoleLabel()} · sample data only · v8.5.2</div></div><div class="top-actions">${demoSafetyLink()}<button class="btn secondary" id="demoRoleBtn">${S.demoRole==='admin'?'Switch to User':'Switch to Admin'}</button><button class="btn secondary" id="exitDemoBtn">Exit demo</button></div></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${demoRoleLabel()} · sample data only · v8.5.3</div></div><div class="top-actions">${demoSafetyLink()}<button class="btn secondary" id="demoRoleBtn">${S.demoRole==='admin'?'Switch to User':'Switch to Admin'}</button><button class="btn secondary" id="exitDemoBtn">Exit demo</button></div></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-demo-page="${p}" class="${S.demoPage===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content"><div class="notice"><strong>Demo mode.</strong> Everything below is fictional sample data. You can click around and try actions; nothing is written to the live inventory.</div>${demoNoticeHtml()}${content}</main>
     </div>`;
@@ -553,6 +553,7 @@
     const total=S.demoItems.reduce((a,b)=>a+Number(b.qty||0),0),low=S.demoItems.filter(x=>x.qty<=x.min).length;
     const admin=S.demoRole==='admin';
     return `${demoStocktakeCard()}
+      ${admin?'':`<div class="card stocktake-status warn" style="margin-top:1rem"><div class="muted">Deliveries</div><div class="stocktake-status-title">• 2 orders waiting</div><div class="muted">30 sample units still on order</div><div class="actions"><button class="btn good" data-demo-page="orders">Receive delivery</button></div></div>`}
       <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Active items</div><div class="stat">${S.demoItems.length}</div></div><div class="card"><div class="muted">Units in stock</div><div class="stat">${qty(total)}</div></div><div class="card"><div class="muted">Low stock</div><div class="stat">${low}</div></div>${admin?'<div class="card"><div class="muted">Open orders</div><div class="stat">2</div></div>':''}</div>
       <div class="card" style="margin-top:1rem"><h2>${admin?'Demo dashboard':'Quick access'}</h2><div class="actions"><button class="btn" data-demo-page="scan">Scan item</button><button class="btn secondary" data-demo-page="items">Find item</button>${S.demoStocktakeState!=='complete'?'<button class="btn warn" data-demo-page="stocktake-user">Complete stocktake</button>':''}${demoSafetyLink()}</div></div>
       <div class="card" style="margin-top:1rem"><h3>Recent stock</h3><div class="item-list">${S.demoItems.slice(0,4).map(demoItemRow).join('')}</div></div>`;
@@ -571,7 +572,7 @@
   }
 
   function demoHelpHtml(){
-    return `<div class="card help-role-banner"><h2>Help · ${demoRoleLabel()}</h2><p class="muted">This demo follows the same navigation as the live app.</p></div><div class="help-grid" style="margin-top:1rem"><div class="card help-card"><h3>Everyday User workflow</h3><ul><li>Home shows assigned stocktakes without a separate Stocktake tab.</li><li>Scan or search for an item.</li><li>Open the item and Add, Use, Move or Adjust stock.</li><li>Users see only Home, Scan, Items and Help.</li></ul></div><div class="card help-card"><h3>Stocktake traffic light</h3><ul><li><strong>Green:</strong> none assigned.</li><li><strong>Amber:</strong> due.</li><li><strong>Red:</strong> overdue.</li></ul></div>${S.demoRole==='admin'?'<div class="card help-card"><h3>Admin demo</h3><p>Use the extra tabs to preview Locations, Orders, Reports, History, Stocktake Admin, Users, Bin Setup, Safety Bridge, Legacy and Backup.</p></div>':''}</div>`;
+    return `<div class="card help-role-banner"><h2>Help · ${demoRoleLabel()}</h2><p class="muted">This demo follows the same navigation as the live app.</p></div><div class="help-grid" style="margin-top:1rem"><div class="card help-card"><h3>Everyday User workflow</h3><ul><li>Home shows assigned stocktakes without a separate Stocktake tab.</li><li>Scan or search for an item.</li><li>Open the item and Add, Use, Move or Adjust stock.</li><li>Users see only Home, Scan, Items and Help.</li><li>Open deliveries appear on Home so Users can receive stock without an Orders tab.</li></ul></div><div class="card help-card"><h3>Stocktake traffic light</h3><ul><li><strong>Green:</strong> none assigned.</li><li><strong>Amber:</strong> due.</li><li><strong>Red:</strong> overdue.</li></ul></div>${S.demoRole==='admin'?'<div class="card help-card"><h3>Admin demo</h3><p>Use the extra tabs to preview Locations, Orders, Reports, History, Stocktake Admin, Users, Bin Setup, Safety Bridge, Legacy and Backup.</p></div>':''}</div>`;
   }
 
   function demoStocktakeUserHtml(){
@@ -760,7 +761,7 @@
     if (canAdmin()) nav.push(['stocktake','Stocktake Admin'],['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']);
     const modeLabel=isAdminUserMode()?'User mode':'Admin';
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(actualCanAdmin()?modeLabel:roleLabel(effectiveRole()))} · v8.5.2</div></div><div class="top-actions">${actualCanAdmin()?`<button class="btn secondary" id="viewModeBtn">${isAdminUserMode()?'Return to Admin':'Switch to User'}</button>`:''}<button class="btn secondary" id="logoutBtn">Sign out</button></div></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker</div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(actualCanAdmin()?modeLabel:roleLabel(effectiveRole()))} · v8.5.3</div></div><div class="top-actions">${actualCanAdmin()?`<button class="btn secondary" id="viewModeBtn">${isAdminUserMode()?'Return to Admin':'Switch to User'}</button>`:''}<button class="btn secondary" id="logoutBtn">Sign out</button></div></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -886,7 +887,7 @@
           <h3>Simple User view</h3>
           <ul>
             <li>Users see only <strong>Home, Scan, Items and Help</strong>.</li>
-            <li>Locations, Orders, Reports and History are kept out of the day-to-day User navigation.</li>
+            <li>Locations, Orders, Reports and History are kept out of the day-to-day User navigation. Users still receive ordered stock from the Deliveries card on Home or from the item itself.</li>
             <li>If a stocktake is assigned, the Home status card opens it directly.</li>
           </ul>
         </div>
@@ -1012,6 +1013,20 @@
     return `<div class="card stocktake-status ${cls}" data-go="stocktake"><div class="muted">Stocktake</div><div class="stocktake-status-title">${overdue?'!':'•'} ${label}</div><div class="muted">${stocktakeItemsFor(task.id).length} items · due ${esc(fmtShortDate(task.due_at))}</div><div class="actions"><button class="btn ${overdue?'danger':'warn'}" type="button">Open stocktake</button></div></div>`;
   }
 
+  function userDeliveryStatusCardHtml() {
+    const outstanding=S.purchaseOrders.filter(o=>['OPEN','PART_RECEIVED'].includes(o.status));
+    if(!outstanding.length) return `<div class="card stocktake-status good"><div class="muted">Deliveries</div><div class="stocktake-status-title">✓ None waiting</div><div class="muted">No open orders are waiting to be received.</div></div>`;
+    const units=outstanding.reduce((a,o)=>a+orderRemaining(o),0);
+    return `<div class="card stocktake-status warn" id="userDeliveriesCard"><div class="muted">Deliveries</div><div class="stocktake-status-title">• ${outstanding.length} order${outstanding.length===1?'':'s'} waiting</div><div class="muted">${qty(units)} unit${Math.abs(units-1)<1e-9?'':'s'} still on order</div><div class="actions"><button class="btn good" id="dashReceiveDeliveries" type="button">Receive delivery</button></div></div>`;
+  }
+
+  function openUserDeliveries() {
+    const outstanding=S.purchaseOrders.filter(o=>['OPEN','PART_RECEIVED'].includes(o.status));
+    showModal(`<header><div><h2>Receive deliveries</h2><div class="muted">Open orders waiting to be received</div></div><button class="close" data-close>×</button></header><div class="order-list">${outstanding.map(purchaseOrderCard).join('')||'<div class="notice good">No deliveries are waiting.</div>'}</div>`);
+    document.querySelectorAll('[data-receive-order]').forEach(b=>b.onclick=e=>{e.stopPropagation();openReceiveOrder(b.dataset.receiveOrder);});
+    document.querySelectorAll('[data-item]').forEach(el=>el.onclick=()=>openItem(el.dataset.item));
+  }
+
   function dashboardHtml() {
     const active = S.items.filter(i=>i.active);
     const totalUnits = S.balances.reduce((a,b)=>a+num(b.quantity),0);
@@ -1023,6 +1038,7 @@
     const userView=effectiveRole()==='staff';
     return `
       ${stocktakeStatusCardHtml()}
+      ${userView?userDeliveryStatusCardHtml():''}
       <div class="grid cards" style="margin-top:1rem">
         <div class="card"><div class="muted">Active items</div><div class="stat">${active.length}</div></div>
         <div class="card"><div class="muted">Units in stock</div><div class="stat">${qty(totalUnits)}</div></div>
@@ -1974,7 +1990,7 @@
       backup_format:'inventory-tracker-backup-v1',
       created_at:new Date().toISOString(),
       created_by:{id:S.profile?.id||null,name:S.profile?.display_name||null,role:S.profile?.role||null},
-      app_version:'8.5.2',
+      app_version:'8.5.3',
       project_url:cfg.supabaseUrl,
       tables:{},
       uploaded_files:{requested:!!includeFiles,downloaded:0,failed:[]}
@@ -2087,6 +2103,7 @@ Keep this file somewhere secure.
     document.querySelectorAll('[data-item]').forEach(el=>el.onclick=()=>openItem(el.dataset.item));
     if(S.page==='dashboard') {
       const b=document.getElementById('dashAddItem'); if(b) b.onclick=openAddItem;
+      const d=document.getElementById('dashReceiveDeliveries'); if(d) d.onclick=openUserDeliveries;
     }
     if(S.page==='scan') bindScan();
     if(S.page==='items') bindItems();
@@ -2946,7 +2963,7 @@ Keep this file somewhere secure.
       </div></div>
       <div class="card" style="margin-top:1rem"><h3>Suppliers & orders</h3>
         ${suppliers.length?suppliers.map(s=>`<div class="supplier-line"><strong>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</strong>${s.preferred?' <span class="badge">Preferred</span>':''}<div class="muted">Ref ${esc(s.supplier_ref||'—')} · Pack ${qty(s.pack_size||1)} · Lead ${s.lead_time_days==null?'—':esc(s.lead_time_days)+' days'} · ${s.unit_price==null?'Price —':money(s.unit_price)}</div></div>`).join(''):'<p class="muted">No suppliers saved yet.</p>'}
-        ${itemOrders.length?`<div style="margin-top:.7rem"><strong>Currently on order</strong>${itemOrders.map(o=>`<div class="muted">${qty(orderRemaining(o))} from ${esc(o.supplier_name)}${o.expected_date?` · expected ${fmtShortDate(o.expected_date)}`:''}</div>`).join('')}</div>`:''}
+        ${itemOrders.length?`<div style="margin-top:.7rem"><strong>Currently on order</strong>${itemOrders.map(o=>`<div class="order-inline"><div class="muted">${qty(orderRemaining(o))} from ${esc(o.supplier_name)}${o.expected_date?` · expected ${fmtShortDate(o.expected_date)}`:''}</div><button class="btn good small" data-item-receive-order="${o.id}" type="button">Receive delivery</button></div>`).join('')}</div>`:''}
       </div>
       <div class="card" style="margin-top:1rem"><h3>Recent item history</h3>${transactionTable(recent)}</div>`);
     document.querySelectorAll('[data-stock-action]').forEach(b=>b.onclick=()=>requestStockAction(i,b.dataset.stockAction));
@@ -2961,6 +2978,7 @@ Keep this file somewhere secure.
     const edit=document.getElementById('editItemBtn'); if(edit) edit.onclick=()=>openEditItem(i);
     const suppliersBtn=document.getElementById('suppliersBtn'); if(suppliersBtn) suppliersBtn.onclick=()=>openSupplierEditor(i);
     const orderItemBtn=document.getElementById('orderItemBtn'); if(orderItemBtn) orderItemBtn.onclick=()=>openCreateOrder(i.id);
+    document.querySelectorAll('[data-item-receive-order]').forEach(b=>b.onclick=()=>openReceiveOrder(b.dataset.itemReceiveOrder));
     const archive=document.getElementById('archiveItemBtn'); if(archive) archive.onclick=()=>archiveItem(i);
     const restore=document.getElementById('restoreItemBtn'); if(restore) restore.onclick=()=>restoreItem(i);
   }
