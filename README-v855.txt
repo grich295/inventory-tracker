@@ -1,16 +1,16 @@
-Inventory Tracker v8.5.5
+Inventory Tracker v8.5.5 FULL BUILD
 
-Updated Add Stock and Use Stock quantity controls:
-- Compact quantity input box.
-- Green ▲ increases by exactly 1.
-- Red ▼ decreases by exactly 1.
-- Arrow controls only produce whole-number quantities.
-- Manual quantity box remains available.
-- Use Stock continues to respect available stock.
-- Move/Adjust stock are unchanged.
-- No Supabase migration required.
+Created from the uploaded current Inventory Tracker repository.
 
-Install:
-Keep the existing app.js v8.5.3 baseline and all existing supporting files.
-Upload app-v855.js and replace index.html with the supplied file.
-Commit/deploy, then hard-refresh/reopen the PWA if necessary.
+Included:
+- Existing Inventory Tracker functionality retained.
+- Add Stock and Use Stock keep the manual quantity box.
+- Quantity box is compact.
+- Green ▲ increases quantity by exactly 1.
+- Red ▼ decreases quantity by exactly 1.
+- Arrow controls use whole units only.
+- Existing stock availability limits remain in force.
+- version.json updated to 8.5.5 CLEAN.
+
+This is a complete repository pack, not just a small patch pack.
+No Supabase migration is required for this quantity-control update.
