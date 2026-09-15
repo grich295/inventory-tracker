@@ -424,3 +424,28 @@ tbody tr:last-child td{border-bottom:0}
 /* v8.5.6 mobile/version cleanup */
 .app-version-badge{display:inline-flex;align-items:center;flex:0 0 auto;margin-left:.45rem;padding:.14rem .42rem;border-radius:999px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.2);color:#fff;font-size:.68rem;font-weight:800;white-space:nowrap;vertical-align:middle}
 @media(max-width:720px){.brand{flex-wrap:wrap;row-gap:.2rem}.app-version-badge{font-size:.64rem;margin-left:.25rem}.userline{max-width:54vw}}
+
+/* v8.5.7: keep the complete build number visible in the header on all screen sizes. */
+.brand{flex-wrap:nowrap!important;white-space:nowrap;min-width:0}
+.app-version-badge{
+  display:inline-flex!important;
+  flex:0 0 auto!important;
+  margin-left:.25rem!important;
+  padding:.18rem .46rem!important;
+  background:#fff!important;
+  border:1px solid rgba(255,255,255,.95)!important;
+  color:#0f172a!important;
+  font-size:.68rem!important;
+  line-height:1.15!important;
+  white-space:nowrap!important;
+  overflow:visible!important;
+}
+@media(max-width:720px){
+  .brand{gap:.34rem!important;font-size:.91rem!important}
+  .brand::before{flex:0 0 26px;width:26px;height:26px}
+  .app-version-badge{font-size:.66rem!important;margin-left:.08rem!important}
+}
+@media(max-width:390px){
+  .brand{font-size:.86rem!important;gap:.28rem!important}
+  .app-version-badge{font-size:.63rem!important;padding:.16rem .38rem!important}
+}
