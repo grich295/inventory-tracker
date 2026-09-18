@@ -1,6 +1,6 @@
 {
-  "version": "2.10.35",
-  "build_id": "v21035-monthly-random-knowledge-checks-20260918",
+  "version": "2.10.43",
+  "build_id": "v21043-safety-calendar-20260918",
   "clean": true,
-  "notes": "Adds switchable monthly knowledge checks. When enabled, each active user gets 3 random multiple-choice questions once per calendar month from current safety information assigned to them. Each question has 3 choices and one correct answer; 3/3 completes the month. Formal training renewal schedules are unchanged. OFF creates no due/overdue status, history is retained, and re-enabling starts with the current month only. Admin can build/review version-aware question banks; Admin/Manager can view monthly completion status."
+  "notes": "Adds a Manager/Admin Safety Calendar under Reports. It combines training renewal dates, controlled-document review dates, monthly PPE checks, First Aid checks, custom checklist due dates and contractor/PTW start/finish dates in one month view. Calendar items use red/amber/green status, include type/person/status filters, a mobile-friendly month grid and agenda, and each event has a direct Go there button. Role-aware Help gains a direct Safety Calendar entry. No database migration is required. Includes all v2.10.42 Toolbox Talk suggestions and prior fixes."
 }

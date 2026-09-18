@@ -1,5 +1,5 @@
-const SHELL_CACHE='safety-shell-v21035-monthly-knowledge';
-const RUNTIME_CACHE='safety-runtime-v21035-monthly-knowledge';
+const SHELL_CACHE='safety-shell-v21043-safety-calendar';
+const RUNTIME_CACHE='safety-runtime-v21043-safety-calendar';
 const SHELL=['./','./index.html','./styles-v21019.css','./app-v21028.js','./hotfix-v21029-core.js','./hotfix-v21029-ui.js','./hotfix-v21029-exception.js','./hotfix-v21030-ptw.js','./hotfix-v21031-ptw-stability.js','./hotfix-v21032-checklists.js','./bulk-import-v21028.js','./demo-v2100.js','./config.js','./manifest.webmanifest'];
 const RUNTIME=[
 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2',
