@@ -1,1 +1,6 @@
-{"version":"8.5.9","label":"CLEAN","date":"2026-09-18","notes":"Paint size variants with separate stock/QR/orders and inherited Safety Bridge links."}
+{
+  "version": "2.10.35",
+  "build_id": "v21035-monthly-random-knowledge-checks-20260918",
+  "clean": true,
+  "notes": "Adds switchable monthly knowledge checks. When enabled, each active user gets 3 random multiple-choice questions once per calendar month from current safety information assigned to them. Each question has 3 choices and one correct answer; 3/3 completes the month. Formal training renewal schedules are unchanged. OFF creates no due/overdue status, history is retained, and re-enabling starts with the current month only. Admin can build/review version-aware question banks; Admin/Manager can view monthly completion status."
+}
