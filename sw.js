@@ -1,5 +1,5 @@
-const CACHE='inventory-tracker-v8-5-7';
-const CORE=['./','./index.html','./app.js','./app-v857.js','./styles.css','./config.js','./manifest.webmanifest'];
+const CACHE='inventory-tracker-v8-5-8';
+const CORE=['./','./index.html','./app.js','./app-v858.js','./styles.css','./config.js','./manifest.webmanifest'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(CORE)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
 self.addEventListener('fetch',e=>{
