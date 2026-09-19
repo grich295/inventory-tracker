@@ -1,6 +1,6 @@
 {
-  "version": "2.10.43",
-  "build_id": "v21043-safety-calendar-20260918",
+  "version": "8.5.9",
+  "build_id": "v859-paint-size-variants-20260919",
   "clean": true,
-  "notes": "Adds a Manager/Admin Safety Calendar under Reports. It combines training renewal dates, controlled-document review dates, monthly PPE checks, First Aid checks, custom checklist due dates and contractor/PTW start/finish dates in one month view. Calendar items use red/amber/green status, include type/person/status filters, a mobile-friendly month grid and agenda, and each event has a direct Go there button. Role-aware Help gains a direct Safety Calendar entry. No database migration is required. Includes all v2.10.42 Toolbox Talk suggestions and prior fixes."
+  "notes": "Inventory Tracker v8.5.9 CLEAN. Paint tin sizes, half-tin stock tracking and linked size variants. Each size keeps separate stock, QR, supplier, cost, reorder and order history while Safety Bridge links are inherited from the parent product."
 }
