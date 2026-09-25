@@ -1,0 +1,1 @@
+Shared Inventory/Energy Supabase People & Access database foundation and manage-user-access-v21137 Edge Function are already applied to project zgmcxgumdsssngfgtmth. No SQL upload is required for this patch.

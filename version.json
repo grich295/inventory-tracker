@@ -1,6 +1,6 @@
 {
-  "version": "8.5.9",
-  "build_id": "v859-paint-size-variants-20260919",
+  "version": "8.6.0",
+  "build_id": "v860-people-app-access-20260925",
   "clean": true,
-  "notes": "Inventory Tracker v8.5.9 CLEAN. Paint tin sizes, half-tin stock tracking and linked size variants. Each size keeps separate stock, QR, supplier, cost, reorder and order history while Safety Bridge links are inherited from the parent product."
+  "notes": "Adds People & App Access foundation for the shared Inventory/Energy account directory. Supports username or email sign-in, username-only staff with one-time temporary passwords and forced password change, separate Inventory and Energy ON/OFF access and role per person, Home Site/additional-site access structure ready for multi-site, and Manager day-to-day User view without changing real permissions. Existing stock, history, Safety Bridge and current Energy access are retained. Shared Supabase migration and manage-user-access-v21137 Edge Function are already applied."
 }
