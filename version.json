@@ -1,6 +1,6 @@
 {
-  "version": "8.6.0",
-  "build_id": "v860-people-app-access-20260925",
+  "version": "8.6.1",
+  "build_id": "v861-multisite-clean-start-20260925",
   "clean": true,
-  "notes": "Adds People & App Access foundation for the shared Inventory/Energy account directory. Supports username or email sign-in, username-only staff with one-time temporary passwords and forced password change, separate Inventory and Energy ON/OFF access and role per person, Home Site/additional-site access structure ready for multi-site, and Manager day-to-day User view without changing real permissions. Existing stock, history, Safety Bridge and current Energy access are retained. Shared Supabase migration and manage-user-access-v21137 Edge Function are already applied."
+  "notes": "Adds enforced Inventory site isolation and clean new-site creation. All existing Inventory data remains assigned to Main Hotel. New sites contain only default Inventory settings/categories and a blank Energy site shell; no stock, locations, transactions, orders, invoices, meter reads or history are copied. Adds current-site switching, Admin site creation, and additional-site assignment in People & App Access. Existing Backup remains available and is current-site scoped. Database migrations are already applied."
 }

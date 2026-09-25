@@ -1,1 +1,3 @@
-Shared Inventory/Energy Supabase People & Access database foundation and manage-user-access-v21137 Edge Function are already applied to project zgmcxgumdsssngfgtmth. No SQL upload is required for this patch.
+Shared Inventory/Energy Supabase multi-site clean-start migrations are already applied to project zgmcxgumdsssngfgtmth.
+Existing Inventory records were backfilled to Main Hotel and Inventory RLS now enforces the selected site.
+Do not run SQL manually.
