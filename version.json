@@ -1,6 +1,6 @@
 {
-  "version": "8.6.3",
-  "build_id": "v863-safe-boot-recovery-20260925",
+  "version": "8.6.5",
+  "build_id": "v865-master-email-username-login-20260925",
   "clean": true,
-  "notes": "Emergency recovery build for Inventory not opening. Stops loading the v8.6.0 People/Access and v8.6.2 Multi-site frontend decorators while retaining all database migrations and existing Main Hotel data. Replaces the service-worker cache with v8.6.3 and prevents index.html being returned for failed JavaScript requests. No additional Supabase migration is required."
+  "notes": "Adds shared master email/username login to Inventory without changing inventory data loading. Username-only users can now sign in with the same username/password used by the shared account. Email password recovery remains the master recovery flow; username-only users require Admin reset."
 }
