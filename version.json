@@ -1,6 +1,6 @@
 {
-  "version": "8.6.6",
-  "build_id": "v866-stocktake-exact-position-20260929",
+  "version": "8.6.7",
+  "build_id": "v867-stocktake-variance-history-20260929",
   "clean": true,
-  "notes": "Stocktake tasks now show the exact stock position clearly: full Location and Bin Ref are displayed as separate fields for every item. Mobile stocktake rows switch to a card layout so long location names and bin numbers are not clipped."
+  "notes": "Stocktake results are now shown inside History rather than as a separate report. History shows expected, counted, difference, exact location/bin and who counted it; stocktake adjustment rows also show expected-to-counted details."
 }
