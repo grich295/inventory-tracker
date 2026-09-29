@@ -1,11 +1,11 @@
-/* Inventory Tracker v8.6.6 CLEAN
+/* Inventory Tracker v8.6.7 CLEAN
    Paint tin sizes + half-tin stock tracking + true linked size variants.
    Patch over v8.5.7 base app.js. Variants keep separate stock/QR/orders while inheriting Safety Bridge links.
 */
 (() => {
   'use strict';
 
-  const VERSION='8.6.6';
+  const VERSION='8.6.7';
   const PAINT_SIZE_OPTIONS=[0.25,0.5,0.75,1,2.5,5,7.5,10,12,15,20];
   let paintClient=null;
   let currentItemId=null;
@@ -15,7 +15,7 @@
   function loadBase(){
     return new Promise((resolve,reject)=>{
       const s=document.createElement('script');
-      s.src='app.js?v=866';
+      s.src='app.js?v=867';
       s.onload=resolve;
       s.onerror=()=>reject(new Error('Could not load Inventory Tracker base app.'));
       document.head.appendChild(s);
