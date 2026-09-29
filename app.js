@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.6.6 CLEAN - exact stocktake location/bin display. */
+/* Inventory Tracker v8.6.7 CLEAN - stocktake variances integrated into History. */
 (() => {
   'use strict';
 
@@ -1456,13 +1456,61 @@
     <div class="card" style="margin-top:1rem"><h3>Detailed usage</h3>${transactionTable(list)}</div>`;
   }
 
+  function stocktakeHistoryHtml(){
+    const rows=S.stocktakeItems
+      .filter(x=>x.completed_at)
+      .map(x=>({row:x,task:S.stocktakeTasks.find(t=>t.id===x.task_id)}))
+      .sort((a,b)=>new Date(b.row.completed_at||b.task?.completed_at||0)-new Date(a.row.completed_at||a.task?.completed_at||0));
+    if(!rows.length)return '<div class="card"><h3>Stocktake history</h3><p class="muted">No completed stocktake counts yet.</p></div>';
+
+    const differences=rows.filter(x=>Math.abs(num(x.row.discrepancy))>1e-9);
+    const body=rows.slice(0,250).map(({row,task})=>{
+      const pos=byId(S.locations,row.location_id);
+      const location=pos?.location_name||'Unknown location';
+      const bin=effectiveBinCode(pos)||'No bin ref';
+      const diff=num(row.discrepancy);
+      const diffText=Math.abs(diff)<1e-9?'0':`${diff>0?'+':''}${qty(diff)}`;
+      const diffClass=Math.abs(diff)<1e-9?'good':diff<0?'danger':'warn';
+      return `<tr>
+        <td>${fmtDate(row.completed_at||task?.completed_at)}</td>
+        <td>${esc(itemName(row.item_id))}</td>
+        <td><strong>${esc(location)}</strong><div class="muted">Bin Ref: ${esc(bin)}</div></td>
+        <td>${qty(row.expected_quantity)}</td>
+        <td>${qty(row.counted_quantity)}</td>
+        <td><span class="badge ${diffClass}">${esc(diffText)}</span></td>
+        <td>${esc(userName(task?.completed_by||task?.assigned_user_id))}</td>
+      </tr>`;
+    }).join('');
+
+    return `<div class="card stocktake-history-card">
+      <div class="row-between"><div><h3>Stocktake history</h3><p class="muted">Counts are retained here. Any difference updates the actual stock at that exact Location / Bin Ref and creates an audited stock adjustment.</p></div></div>
+      <div class="grid cards stocktake-history-summary">
+        <div class="card"><div class="muted">Counts checked</div><div class="stat">${rows.length}</div></div>
+        <div class="card"><div class="muted">Matched stock</div><div class="stat">${rows.length-differences.length}</div></div>
+        <div class="card"><div class="muted">Differences</div><div class="stat">${differences.length}</div></div>
+      </div>
+      <div class="table-wrap stocktake-history-table-wrap"><table class="stocktake-history-table"><thead><tr><th>Date/time</th><th>Item</th><th>Exact location / bin</th><th>Expected</th><th>Counted</th><th>Difference</th><th>Counted by</th></tr></thead><tbody>${body}</tbody></table></div>
+      ${rows.length>250?'<p class="muted">Showing the newest 250 stocktake lines.</p>':''}
+    </div>`;
+  }
+
   function historyHtml() {
-    return `<div class="card"><h2>Full audit history</h2><p class="muted">Adds, uses, moves and adjustments are all recorded with the user and location.</p>${transactionTable(S.transactions)}</div>`;
+    return `${stocktakeHistoryHtml()}<div class="card" style="margin-top:1rem"><h2>Full audit history</h2><p class="muted">Adds, uses, moves and adjustments are all recorded with the user and location. Stocktake corrections below also show the expected, counted and difference values.</p>${transactionTable(S.transactions)}</div>`;
   }
 
   function transactionTable(list) {
-    const rows=list.slice(0,500).map(t=>`<tr><td>${fmtDate(t.occurred_at)}</td><td>${esc(itemName(t.item_id))}</td><td><span class="badge">${esc(t.transaction_type)}</span></td><td>${qty(t.quantity)}</td><td>${esc(userName(t.user_id))}</td><td>${esc(locName(t.from_location_id))}</td><td>${esc(locName(t.to_location_id))}</td><td>${esc(t.reason||t.notes||'—')}</td></tr>`).join('');
-    return `<div class="table-wrap"><table><thead><tr><th>Date/time</th><th>Item</th><th>Action</th><th>Qty</th><th>User</th><th>From</th><th>To</th><th>Reason / note</th></tr></thead><tbody>${rows||'<tr><td colspan="8">No transactions yet.</td></tr>'}</tbody></table></div>${list.length>500?'<p class="muted">Showing the newest 500 rows.</p>':''}`;
+    const rows=list.slice(0,500).map(t=>{
+      const stocktakeRow=(t.reason==='Stocktake correction'||t.notes==='Random scheduled stocktake')
+        ? S.stocktakeItems.find(x=>x.adjusted_transaction_id===t.id)
+        : null;
+      const action=stocktakeRow?'STOCKTAKE':t.transaction_type;
+      const amount=stocktakeRow?qty(stocktakeRow.counted_quantity):qty(t.quantity);
+      const note=stocktakeRow
+        ? `Expected ${qty(stocktakeRow.expected_quantity)} → counted ${qty(stocktakeRow.counted_quantity)} · difference ${num(stocktakeRow.discrepancy)>0?'+':''}${qty(stocktakeRow.discrepancy)}`
+        : (t.reason||t.notes||'—');
+      return `<tr><td>${fmtDate(t.occurred_at)}</td><td>${esc(itemName(t.item_id))}</td><td><span class="badge">${esc(action)}</span></td><td>${amount}</td><td>${esc(userName(t.user_id))}</td><td>${esc(locName(t.from_location_id))}</td><td>${esc(locName(t.to_location_id))}</td><td>${esc(note)}</td></tr>`;
+    }).join('');
+    return `<div class="table-wrap"><table><thead><tr><th>Date/time</th><th>Item</th><th>Action</th><th>Qty / counted</th><th>User</th><th>From</th><th>To</th><th>Reason / note</th></tr></thead><tbody>${rows||'<tr><td colspan="8">No transactions yet.</td></tr>'}</tbody></table></div>${list.length>500?'<p class="muted">Showing the newest 500 rows.</p>':''}`;
   }
 
 
