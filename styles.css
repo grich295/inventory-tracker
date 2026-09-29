@@ -471,3 +471,24 @@ tbody tr:last-child td{border-bottom:0}
   .stocktake-table td[data-label]::before{content:attr(data-label);flex:0 0 76px;color:var(--muted,#6b7280);font-size:.74rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
   .stocktake-count{min-width:0!important;width:120px;max-width:45%;font-size:1rem}
 }
+
+
+/* v8.6.7 stocktake variance history */
+.stocktake-history-card .stocktake-history-summary{margin:.9rem 0 1rem}
+.stocktake-history-table td .badge{white-space:nowrap}
+@media(max-width:720px){
+  .stocktake-history-table-wrap{overflow:visible;border:0;background:transparent;box-shadow:none}
+  .stocktake-history-table{display:block;min-width:0!important;width:100%;background:transparent}
+  .stocktake-history-table thead{display:none}
+  .stocktake-history-table tbody{display:grid;gap:.7rem}
+  .stocktake-history-table tr{display:block;padding:.8rem;border:1px solid var(--border,#d8dee8);border-radius:12px;background:#fff}
+  .stocktake-history-table td{display:flex;justify-content:space-between;gap:.8rem;padding:.32rem 0;border:0}
+  .stocktake-history-table td:nth-child(1)::before{content:'Date'}
+  .stocktake-history-table td:nth-child(2)::before{content:'Item'}
+  .stocktake-history-table td:nth-child(3)::before{content:'Location / bin'}
+  .stocktake-history-table td:nth-child(4)::before{content:'Expected'}
+  .stocktake-history-table td:nth-child(5)::before{content:'Counted'}
+  .stocktake-history-table td:nth-child(6)::before{content:'Difference'}
+  .stocktake-history-table td:nth-child(7)::before{content:'Counted by'}
+  .stocktake-history-table td::before{flex:0 0 88px;color:var(--muted,#6b7280);font-size:.72rem;font-weight:800;text-transform:uppercase}
+}
