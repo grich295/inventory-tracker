@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.5.7 CLEAN - visibility/bridge-persistence build. */
+/* Inventory Tracker v8.6.6 CLEAN - exact stocktake location/bin display. */
 (() => {
   'use strict';
 
@@ -1775,7 +1775,30 @@
   function stocktakeHtml() {
     const task=assignedOpenStocktake();
     const myHistory=S.stocktakeTasks.filter(t=>t.assigned_user_id===S.profile?.id&&t.status==='COMPLETED').slice(0,10);
-    const taskBlock=task?`<div class="card"><h2>${task.status==='OVERDUE'?'Overdue':'Assigned'} stocktake</h2><p class="muted">Due ${fmtDate(task.due_at)}. Count the actual quantity in each location/bin. Differences create audited stock adjustments when you complete the task.</p><div class="table-wrap"><table><thead><tr><th>Item</th><th>Location / Bin</th><th>Expected</th><th>Counted</th></tr></thead><tbody>${stocktakeItemsFor(task.id).map(x=>`<tr><td>${esc(itemName(x.item_id))}</td><td>${esc(locName(x.location_id))}</td><td>${qty(x.expected_quantity)}</td><td><input class="stocktake-count" data-stocktake-item="${x.id}" type="number" inputmode="decimal" min="0" step="0.01" value="${x.counted_quantity??''}" placeholder="Count"></td></tr>`).join('')}</tbody></table></div><div class="actions"><button class="btn good" id="completeStocktake">Complete stocktake</button></div></div>`:`<div class="card"><h2>Stocktake</h2><p>No stocktake is currently assigned to you.</p><p class="muted">The tracker creates the next random task automatically when the configured interval is due.</p></div>`;
+    const taskRows=task?stocktakeItemsFor(task.id).map(x=>{
+      const item=byId(S.items,x.item_id);
+      const pos=byId(S.locations,x.location_id);
+      const location=pos?.location_name||'Location not recorded';
+      const bin=effectiveBinCode(pos)||'No bin ref recorded';
+      return `<tr>
+        <td class="stocktake-item-cell">
+          <strong>${esc(itemName(x.item_id))}</strong>
+          ${item?.item_code?`<div class="muted stocktake-item-code">${esc(item.item_code)}</div>`:''}
+        </td>
+        <td class="stocktake-position-cell">
+          <div class="stocktake-position-line"><span>Location</span><strong>${esc(location)}</strong></div>
+          <div class="stocktake-position-line"><span>Bin Ref</span><strong>${esc(bin)}</strong></div>
+        </td>
+        <td data-label="Expected" class="stocktake-expected">${qty(x.expected_quantity)}</td>
+        <td data-label="Counted"><input class="stocktake-count" data-stocktake-item="${x.id}" type="number" inputmode="decimal" min="0" step="0.01" value="${x.counted_quantity??''}" placeholder="Count"></td>
+      </tr>`;
+    }).join(''):'';
+
+    const taskBlock=task?`<div class="card"><h2>${task.status==='OVERDUE'?'Overdue':'Assigned'} stocktake</h2>
+      <p class="muted">Due ${fmtDate(task.due_at)}. Each line now shows the exact stock location and Bin Ref. Count the physical quantity at that exact position. Differences create audited stock adjustments when you complete the task.</p>
+      <div class="table-wrap stocktake-table-wrap"><table class="stocktake-table"><thead><tr><th>Item</th><th>Exact location / bin</th><th>Expected</th><th>Counted</th></tr></thead><tbody>${taskRows}</tbody></table></div>
+      <div class="actions"><button class="btn good" id="completeStocktake">Complete stocktake</button></div></div>`:`<div class="card"><h2>Stocktake</h2><p>No stocktake is currently assigned to you.</p><p class="muted">The tracker creates the next random task automatically when the configured interval is due.</p></div>`;
+
     const admin=canAdmin()?`<div class="card" style="margin-top:1rem"><h3>Admin stocktake settings</h3><form id="stocktakeSettingsForm" class="form-grid"><div><label>Enabled</label><select id="stocktakeEnabled"><option value="true" ${S.stocktakeSettings?.enabled!==false?'selected':''}>Yes</option><option value="false" ${S.stocktakeSettings?.enabled===false?'selected':''}>No</option></select></div><div><label>Interval (days)</label><input id="stocktakeInterval" type="number" min="1" max="365" value="${S.stocktakeSettings?.interval_days||14}"></div><div><label>Items per task</label><input id="stocktakeCount" type="number" min="1" max="100" value="${S.stocktakeSettings?.item_count||12}"></div><div><label>Due within (days)</label><input id="stocktakeDueDays" type="number" min="1" max="60" value="${S.stocktakeSettings?.due_days||7}"></div><div class="full"><div class="muted">Next automatic task: ${fmtDate(S.stocktakeSettings?.next_task_at)}</div><div class="actions"><button class="btn" type="submit">Save stocktake settings</button><button class="btn ghost" type="button" id="generateStocktakeNow">Create next stocktake now</button></div></div></form><h3>Open / overdue tasks</h3>${S.stocktakeTasks.filter(t=>['OPEN','OVERDUE'].includes(t.status)).map(t=>`<div class="item-row"><div><strong>${esc(userName(t.assigned_user_id))}</strong><div class="muted">${stocktakeItemsFor(t.id).length} items · due ${fmtShortDate(t.due_at)} · ${esc(t.status)}</div></div><div><select data-reassign-task="${t.id}">${S.profiles.filter(p=>p.active!==false).map(p=>`<option value="${p.id}" ${p.id===t.assigned_user_id?'selected':''}>${esc(p.display_name)}</option>`).join('')}</select></div></div>`).join('')||'<p class="muted">No open tasks.</p>'}</div>`:'';
     return `${taskBlock}<div class="card" style="margin-top:1rem"><h3>My completed stocktakes</h3>${myHistory.length?myHistory.map(t=>`<div class="muted">${fmtDate(t.completed_at)} · ${stocktakeItemsFor(t.id).length} items</div>`).join(''):'<p class="muted">No completed stocktakes yet.</p>'}</div>${admin}`;
   }
