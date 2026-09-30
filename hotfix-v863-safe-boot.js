@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.6.7 SAFE BOOT
+/* Inventory Tracker v8.6.8 SAFE BOOT
    Emergency recovery layer.
    The v8.6.0 People/Access and v8.6.2 Multi-site frontend decorators are
    deliberately NOT loaded by index.html in this build.
@@ -12,7 +12,7 @@
 
   function markVersion(){
     document.querySelectorAll('.app-version-badge').forEach(el=>{
-      if(el.textContent !== 'v8.6.7') el.textContent = 'v8.6.7';
+      if(el.textContent !== 'v8.6.8') el.textContent = 'v8.6.8';
     });
   }
 
