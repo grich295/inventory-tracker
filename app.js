@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.6.7 CLEAN - stocktake variances integrated into History. */
+/* Inventory Tracker v8.6.8 CLEAN - live stocktake position correction. */
 (() => {
   'use strict';
 
@@ -1852,6 +1852,18 @@
   }
 
   function bindStocktake() {
+    const liveTask=assignedOpenStocktake();
+    if(liveTask&&!S.stocktakeRefreshBusy){
+      S.stocktakeRefreshBusy=true;
+      sb.rpc('refresh_stocktake_task_positions_v868',{p_task_id:liveTask.id}).then(async({data,error})=>{
+        if(error){console.warn('Stocktake live-position refresh failed',error);return}
+        if(Number(data||0)>0){
+          await loadData({transactions:false});
+          setNotice('Stocktake positions refreshed to the current exact location/bin.');
+          render();
+        }
+      }).finally(()=>{S.stocktakeRefreshBusy=false});
+    }
     const complete=document.getElementById('completeStocktake');
     if(complete) complete.onclick=async()=>{
       const task=assignedOpenStocktake(); if(!task)return;
