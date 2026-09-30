@@ -1,6 +1,6 @@
 {
-  "version": "8.6.7",
-  "build_id": "v867-stocktake-variance-history-20260929",
+  "version": "8.6.8",
+  "build_id": "v868-live-stocktake-position-refresh-20260930",
   "clean": true,
-  "notes": "Stocktake results are now shown inside History rather than as a separate report. History shows expected, counted, difference, exact location/bin and who counted it; stocktake adjustment rows also show expected-to-counted details."
+  "notes": "Fixes stale stocktake locations. When an assigned stocktake is opened, each pending line is refreshed against the current live stock balance so it shows the exact current location/bin and current expected quantity. Existing overdue task rows have also been corrected; Guest bathroom Mr16 led now points to Workshop main store → Bin 11 with expected quantity 22."
 }
