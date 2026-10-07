@@ -6,6 +6,7 @@
   const cfg = window.APP_CONFIG || {};
   const LIVE_APP_URL = 'https://grich295.github.io/inventory-tracker/';
   const configured = cfg.supabaseUrl && cfg.anonKey && !cfg.supabaseUrl.includes('YOUR_PROJECT') && !cfg.anonKey.includes('YOUR_SUPABASE');
+  const IOS_SCANNER = /iP(?:hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
 
   if (!configured || !window.supabase) {
     app.innerHTML = `
@@ -70,6 +71,8 @@
     cameraStream: null,
     cameraTrack: null,
     scanFrame: null,
+    scanGeneration: 0,
+    scanBusy: false,
     smallQrMode: false,
     torchOn: false,
     cameraBaseZoom: null,
@@ -2403,7 +2406,7 @@ Keep this file somewhere secure.
     const vw=video.videoWidth,vh=video.videoHeight;
     ctx.imageSmoothingEnabled=false;
     if(region==='full') {
-      const maxDim=1500,ratio=Math.min(1,maxDim/Math.max(vw,vh));
+      const maxDim=IOS_SCANNER?960:1500,ratio=Math.min(1,maxDim/Math.max(vw,vh));
       const outW=Math.max(1,Math.round(vw*ratio)),outH=Math.max(1,Math.round(vh*ratio));
       canvas.width=outW;canvas.height=outH;ctx.imageSmoothingEnabled=false;
       ctx.drawImage(video,0,0,vw,vh,0,0,outW,outH);return;
@@ -2411,7 +2414,9 @@ Keep this file somewhere secure.
     const scale=Number(region)||0.7;
     const crop=Math.max(160,Math.floor(Math.min(vw,vh)*scale));
     const sx=Math.floor((vw-crop)/2),sy=Math.floor((vh-crop)/2);
-    const out=Math.min(1700,Math.max(crop,S.smallQrMode?900:crop));
+    const outCap=IOS_SCANNER?900:1700;
+    const minOut=IOS_SCANNER?(S.smallQrMode?700:520):(S.smallQrMode?900:crop);
+    const out=Math.min(outCap,Math.max(crop,minOut));
     canvas.width=out;canvas.height=out;ctx.imageSmoothingEnabled=false;
     ctx.drawImage(video,sx,sy,crop,crop,0,0,out,out);
   }
@@ -2466,10 +2471,13 @@ Keep this file somewhere secure.
       return;
     }
 
+    const generation=++S.scanGeneration;
+    S.scanBusy=false;
+
     try {
       if(status) {
         status.className='notice';
-        status.textContent='Starting high-resolution rear camera…';
+        status.textContent=IOS_SCANNER?'Starting iPhone-optimised rear camera…':'Starting rear camera…';
       }
 
       S.smallQrMode=false;
@@ -2479,15 +2487,21 @@ Keep this file somewhere secure.
         audio:false,
         video:{
           facingMode:{ideal:'environment'},
-          width:{ideal:3840},
-          height:{ideal:2160},
-          frameRate:{ideal:30}
+          width:{ideal:IOS_SCANNER?1280:2560},
+          height:{ideal:IOS_SCANNER?720:1440},
+          frameRate:{ideal:IOS_SCANNER?24:30,max:IOS_SCANNER?30:60}
         }
       });
+
+      if(generation!==S.scanGeneration || S.page!=='scan' || document.hidden){
+        try{stream.getTracks().forEach(t=>t.stop())}catch(_){}
+        return;
+      }
 
       S.cameraStream=stream;
       const track=stream.getVideoTracks()[0] || null;
       await configureCameraTrack(track);
+      if(generation!==S.scanGeneration){try{stream.getTracks().forEach(t=>t.stop())}catch(_){};return}
       video.srcObject=stream;
       await video.play();
 
@@ -2502,6 +2516,7 @@ Keep this file somewhere secure.
       let detector=null;
       let regionIndex=0;
       let scanCycle=0;
+      const scanDelay=IOS_SCANNER?220:130;
 
       if('BarcodeDetector' in window) {
         try {
@@ -2511,28 +2526,31 @@ Keep this file somewhere secure.
       }
 
       const scanFrame=async(ts)=>{
-        if(!S.cameraStream || !video.videoWidth || !video.videoHeight) {
+        if(generation!==S.scanGeneration || S.page!=='scan' || document.hidden)return;
+
+        if(!S.cameraStream || !video.videoWidth || !video.videoHeight || S.scanBusy) {
           S.scanFrame=requestAnimationFrame(scanFrame);
           return;
         }
 
-        if(ts-lastScan < 105) {
+        if(ts-lastScan < scanDelay) {
           S.scanFrame=requestAnimationFrame(scanFrame);
           return;
         }
         lastScan=ts;
+        S.scanBusy=true;
 
         try {
           let decoded='';
 
           scanCycle++;
-          // Native detector checks the full frame and, in small-label mode, a centre crop too.
           if(detector) decoded=await nativeDetectQr(detector,video,S.smallQrMode,scanCycle);
 
-          // jsQR checks more than one centre crop per cycle in small-label mode.
-          if(!decoded && window.jsQR) {
-            const regions=S.smallQrMode?[0.58,0.44,0.32,0.72,'full']:['full',0.84,0.66,0.50];
-            const attempts=S.smallQrMode?2:1;
+          if(!decoded && window.jsQR && generation===S.scanGeneration) {
+            const regions=S.smallQrMode
+              ? (IOS_SCANNER?[0.48,0.36,0.62,'full']:[0.58,0.44,0.32,0.72,'full'])
+              : (IOS_SCANNER?[0.72,0.56,0.42,'full']:['full',0.84,0.66,0.50]);
+            const attempts=IOS_SCANNER?1:(S.smallQrMode?2:1);
             for(let n=0;n<attempts&&!decoded;n++){
               const region=regions[regionIndex%regions.length];regionIndex++;
               drawScanRegion(ctx,canvas,video,region);
@@ -2542,7 +2560,7 @@ Keep this file somewhere secure.
             }
           }
 
-          if(decoded) {
+          if(decoded && generation===S.scanGeneration) {
             if(status) {
               status.className='notice success';
               status.textContent='QR found.';
@@ -2552,14 +2570,21 @@ Keep this file somewhere secure.
             findScanned(decoded);
             return;
           }
-        } catch(_) {}
+        } catch(_) {
+          // Keep scanning after a single decode/frame failure.
+        } finally {
+          S.scanBusy=false;
+        }
 
-        if(S.cameraStream) S.scanFrame=requestAnimationFrame(scanFrame);
+        if(generation===S.scanGeneration && S.cameraStream && S.page==='scan' && !document.hidden) {
+          S.scanFrame=requestAnimationFrame(scanFrame);
+        }
       };
 
       S.scanFrame=requestAnimationFrame(scanFrame);
 
     } catch(e) {
+      if(generation!==S.scanGeneration)return;
       if(status) {
         status.className='notice error';
         status.textContent='Camera could not start. Use Scan QR from photo or manual search.';
@@ -2568,6 +2593,8 @@ Keep this file somewhere secure.
   }
 
   async function stopScanner() {
+    S.scanGeneration++;
+    S.scanBusy=false;
     if(S.scanFrame) {
       cancelAnimationFrame(S.scanFrame);
       S.scanFrame=null;
@@ -2596,6 +2623,20 @@ Keep this file somewhere secure.
       S.scanner=null;
     }
   }
+
+  // Safari/iOS can suspend camera and animation work abruptly when the PWA is
+  // backgrounded. Release the camera immediately, then restart only if Scan is
+  // still the active page when the app returns.
+  document.addEventListener('visibilitychange',()=>{
+    if(document.hidden){
+      if(S.cameraStream) void stopScanner();
+      return;
+    }
+    if(S.page==='scan' && !S.cameraStream && document.getElementById('qrVideo')){
+      setTimeout(()=>{if(S.page==='scan'&&!document.hidden&&!S.cameraStream)void startQrScanner()},180);
+    }
+  },{passive:true});
+  window.addEventListener('pagehide',()=>{if(S.cameraStream)void stopScanner()},{passive:true});
 
   function findScanned(value) {
     if(!value) return;
