@@ -1,4 +1,4 @@
-const CACHE='inventory-tracker-v8-6-3-safe-boot';
+const CACHE='inventory-tracker-v8-6-9-iphone-scanner';
 const CORE=[
   './',
   './index.html',
