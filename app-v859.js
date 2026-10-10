@@ -6,6 +6,7 @@
   'use strict';
 
   const VERSION='8.7.0';
+  window.INVENTORY_BUILD_VERSION=VERSION;
   const PAINT_SIZE_OPTIONS=[0.25,0.5,0.75,1,2.5,5,7.5,10,12,15,20];
   let paintClient=null;
   let currentItemId=null;
@@ -15,7 +16,7 @@
   function loadBase(){
     return new Promise((resolve,reject)=>{
       const s=document.createElement('script');
-      s.src='app.js?v=869';
+      s.src='app.js?v=870';
       s.onload=resolve;
       s.onerror=()=>reject(new Error('Could not load Inventory Tracker base app.'));
       document.head.appendChild(s);
