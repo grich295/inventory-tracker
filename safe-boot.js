@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.1 SAFE BOOT
+/* Inventory Tracker v8.7.2 SAFE BOOT
    Passive recovery/version layer: no MutationObserver, auth interception or reload loop.
    Older frontend decorators were removed from the current branch; database migrations remain.
 */
@@ -8,7 +8,7 @@
   window.__INVENTORY_SAFE_BOOT_V863 = true;
 
   function markVersion(){
-    const version=window.INVENTORY_BUILD_VERSION||'8.7.1';
+    const version=window.INVENTORY_BUILD_VERSION||'8.7.2';
     document.querySelectorAll('.app-version-badge').forEach(el=>{
       if(el.textContent !== 'v'+version) el.textContent = 'v'+version;
     });
