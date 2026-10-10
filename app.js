@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.6.8 CLEAN - live stocktake position correction. */
+/* Inventory Tracker v8.7.0 CLEAN - audit/performance baseline. */
 (() => {
   'use strict';
 
@@ -81,6 +81,7 @@
     chart: null,
     liveChannel: null,
     liveTimer: null,
+    liveRefreshPending: false,
     notice: null,
     passwordMode: false,
     uiMode: null,
@@ -126,6 +127,7 @@
   }
   function navigatePage(page,{replace=false}={}) {
     if(!page) return;
+    const previousPage=S.page;
     if(effectiveRole()==='staff'){
       const blocked=['locations','orders','reports','history','users','binsetup','safetybridge','legacy','backup'];
       if(blocked.includes(page)||(page==='stocktake'&&!assignedOpenStocktake()))page='dashboard';
@@ -138,6 +140,7 @@
     if(replace) history.replaceState(state,'',location.href);
     else history.pushState(state,'',location.href);
     render();
+    if(previousPage==='scan'&&S.page!=='scan') flushLiveRefreshSoon();
   }
   function pushModalHistory() {
     if(!S.session || S.passwordMode) return;
@@ -465,7 +468,7 @@
     S.profile=byId(S.profiles,S.session?.user?.id)||S.profile;
     ensureUiMode();
     if(transactions) S.transactions=await fetchAll('transactions','*','occurred_at',false);
-    S.offline=false; S.offlineSyncError=null; saveOfflineSnapshot();
+    S.offline=false; S.offlineSyncError=null; S.liveRefreshPending=false; saveOfflineSnapshot();
   }
 
 
@@ -476,6 +479,14 @@
 
   function queueLiveRefresh() {
     clearTimeout(S.liveTimer);
+    // Do not run a full multi-table reload while the camera decoder is active
+    // or while a stock-action modal is being submitted. On iPhone this can
+    // compete with camera/canvas work and was a major source of scan lag/freezes.
+    if(S.page==='scan'||S.cameraStream||S.scanBusy||document.getElementById('modalBackdrop')){
+      S.liveRefreshPending=true;
+      return;
+    }
+    S.liveRefreshPending=false;
     S.liveTimer=setTimeout(async()=>{
       if(!S.session)return;
       try{
@@ -484,6 +495,11 @@
         if(S.page!=='scan' && !document.getElementById('modalBackdrop')) render();
       }catch(e){console.warn('Live refresh failed',e);}
     },350);
+  }
+  function flushLiveRefreshSoon(){
+    if(!S.liveRefreshPending||!S.session||S.offline||!navigator.onLine)return;
+    if(S.page==='scan'||S.cameraStream||S.scanBusy||document.getElementById('modalBackdrop'))return;
+    setTimeout(()=>{if(S.liveRefreshPending)queueLiveRefresh()},60);
   }
 
   function startRealtime() {
@@ -540,7 +556,7 @@
     const adminNav=[['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['reports','Reports'],['history','History'],['help','Help'],['stocktake','Stocktake Admin'],['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']];
     const nav=S.demoRole==='admin'?adminNav:userNav;
     return `<div class="shell demo-shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker <span class="app-version-badge">v8.5.7</span></div><div class="userline">${demoRoleLabel()} · sample data only</div></div><div class="top-actions">${demoSafetyLink()}<button class="btn secondary" id="demoRoleBtn">${S.demoRole==='admin'?'Switch to User':'Switch to Admin'}</button><button class="btn secondary" id="exitDemoBtn">Exit demo</button></div></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker <span class="app-version-badge">v8.7.0</span></div><div class="userline">${demoRoleLabel()} · sample data only</div></div><div class="top-actions">${demoSafetyLink()}<button class="btn secondary" id="demoRoleBtn">${S.demoRole==='admin'?'Switch to User':'Switch to Admin'}</button><button class="btn secondary" id="exitDemoBtn">Exit demo</button></div></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-demo-page="${p}" class="${S.demoPage===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content"><div class="notice"><strong>Demo mode.</strong> Everything below is fictional sample data. You can click around and try actions; nothing is written to the live inventory.</div>${demoNoticeHtml()}${content}</main>
     </div>`;
@@ -764,7 +780,7 @@
     if (canAdmin()) nav.push(['stocktake','Stocktake Admin'],['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']);
     const modeLabel=isAdminUserMode()?'User mode':'Admin';
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker <span class="app-version-badge">v8.5.7</span></div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(actualCanAdmin()?modeLabel:roleLabel(effectiveRole()))}</div></div><div class="top-actions">${actualCanAdmin()?`<button class="btn secondary" id="viewModeBtn">${isAdminUserMode()?'Return to Admin':'Switch to User'}</button>`:''}<button class="btn secondary" id="logoutBtn">Sign out</button></div></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker <span class="app-version-badge">v8.7.0</span></div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(actualCanAdmin()?modeLabel:roleLabel(effectiveRole()))}</div></div><div class="top-actions">${actualCanAdmin()?`<button class="btn secondary" id="viewModeBtn">${isAdminUserMode()?'Return to Admin':'Switch to User'}</button>`:''}<button class="btn secondary" id="logoutBtn">Sign out</button></div></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -3803,6 +3819,7 @@ Keep this file somewhere secure.
       suppressNextPopstate=true;
       history.back();
     }
+    flushLiveRefreshSoon();
   }
 
   window.addEventListener('popstate',e=>{
