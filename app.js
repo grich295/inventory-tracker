@@ -421,7 +421,18 @@
 
   function setNotice(message, type='success') {
     S.notice = { message, type };
-    setTimeout(() => { if (S.notice?.message === message) { S.notice = null; render(); } }, 4500);
+    setTimeout(() => {
+      if(S.notice?.message!==message)return;
+      S.notice=null;
+      // Never rebuild a live camera, modal form or in-progress stocktake just
+      // because a temporary message expired.
+      if(S.page==='scan'||document.getElementById('modalBackdrop')||document.querySelector('[data-stocktake-item]')){
+        const n=document.querySelector('main.content > .notice');
+        if(n)n.remove();
+        return;
+      }
+      render();
+    },4500);
   }
 
   function noticeHtml() {
