@@ -29,11 +29,7 @@ Current production build: **v8.7.1 CLEAN**
 
 ## Database migration
 
-The v8.7.1 migration is stored at:
-
-supabase/migrations/20261010_inventory_v871_stocktake_integrity.sql
-
-It is already applied to the live project.
+The v8.7.1 database migrations are stored under `supabase/migrations/` and are already applied to the live project. They cover stocktake integrity/history indexes and removal of a duplicate supplier index.
 
 ## Source layout
 
