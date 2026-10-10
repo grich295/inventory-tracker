@@ -144,7 +144,7 @@
     if(replace) history.replaceState(state,'',location.href);
     else history.pushState(state,'',location.href);
     render();
-    if(previousPage==='scan'&&S.page!=='scan') flushLiveRefreshSoon();
+    if((previousPage==='scan'||previousPage==='stocktake')&&S.page!==previousPage) flushLiveRefreshSoon();
   }
   function pushModalHistory() {
     if(!S.session || S.passwordMode) return;
@@ -530,7 +530,7 @@
     // Do not run a full multi-table reload while the camera decoder is active
     // or while a stock-action modal is being submitted. On iPhone this can
     // compete with camera/canvas work and was a major source of scan lag/freezes.
-    if(S.page==='scan'||S.cameraStream||S.scanBusy||document.getElementById('modalBackdrop')){
+    if(S.page==='scan'||S.cameraStream||S.scanBusy||document.getElementById('modalBackdrop')||document.querySelector('[data-stocktake-item]')){
       S.liveRefreshPending=true;
       return;
     }
@@ -546,7 +546,7 @@
   }
   function flushLiveRefreshSoon(){
     if(!S.liveRefreshPending||!S.session||S.offline||!navigator.onLine)return;
-    if(S.page==='scan'||S.cameraStream||S.scanBusy||document.getElementById('modalBackdrop'))return;
+    if(S.page==='scan'||S.cameraStream||S.scanBusy||document.getElementById('modalBackdrop')||document.querySelector('[data-stocktake-item]'))return;
     setTimeout(()=>{if(S.liveRefreshPending)queueLiveRefresh()},60);
   }
 
@@ -1939,23 +1939,28 @@
       const rows=stocktakeItemsFor(task.id);
       const values=new Map([...document.querySelectorAll('[data-stocktake-item]')].map(x=>[x.dataset.stocktakeItem,x.value]));
       if(rows.some(r=>values.get(r.id)==='')){setNotice('Enter a counted quantity for every stocktake item.','error');render();return;}
+      const counts=rows.map(r=>({id:r.id,counted:num(values.get(r.id))}));
+      if(counts.some(x=>!Number.isFinite(x.counted)||x.counted<0)){setNotice('Every count must be zero or more.','error');render();return;}
       complete.disabled=true;
       try{
-        for(const row of rows){
-          const counted=num(values.get(row.id));
-          const current=num(S.balances.find(b=>b.item_id===row.item_id&&b.location_id===row.location_id)?.quantity);
-          let txId=null;
-          if(Math.abs(counted-current)>1e-9){
-            const {data,error}=await sb.rpc('apply_stock_transaction',{p_item_id:row.item_id,p_type:'ADJUST',p_quantity:0,p_from_location_id:row.location_id,p_to_location_id:null,p_new_quantity:counted,p_reason:'Stocktake correction',p_reference:task.id,p_notes:'Random scheduled stocktake'});
-            if(error)throw error; txId=data;
-          }
-          const {error}=await sb.from('stocktake_task_items').update({counted_quantity:counted,discrepancy:counted-num(row.expected_quantity),adjusted_transaction_id:txId,completed_at:new Date().toISOString()}).eq('id',row.id);
-          if(error)throw error;
-        }
-        const {error}=await sb.from('stocktake_tasks').update({status:'COMPLETED',completed_at:new Date().toISOString(),completed_by:S.profile.id}).eq('id',task.id);
+        const {data,error}=await sb.rpc('complete_stocktake_task_v870',{p_task_id:task.id,p_counts:counts});
         if(error)throw error;
-        await loadData();setNotice('Stocktake completed. Any differences were recorded as audited adjustments.');if(effectiveRole()==='staff')S.page='dashboard';render();
-      }catch(e){setNotice(parseError(e),'error');render();}
+        await loadData();
+        const adjustments=Number(data?.adjustments||0);
+        setNotice(`Stocktake completed · ${adjustments} audited adjustment${adjustments===1?'':'s'} recorded.`);
+        if(effectiveRole()==='staff')S.page='dashboard';
+        render();
+      }catch(e){
+        const msg=parseError(e);
+        if(msg.includes('STOCKTAKE_CHANGED:')){
+          try{await sb.rpc('refresh_stocktake_task_positions_v868',{p_task_id:task.id});await loadData({transactions:false});}catch(_){}
+          setNotice(msg.replace(/^.*STOCKTAKE_CHANGED:\s*/,'')+' No stocktake changes were saved; recount against the refreshed quantity.','error');
+          render();
+          return;
+        }
+        setNotice(msg,'error');
+        render();
+      }
     };
     document.querySelectorAll('[data-reassign-task]').forEach(sel=>sel.onchange=async()=>{
       const {error}=await sb.from('stocktake_tasks').update({assigned_user_id:sel.value}).eq('id',sel.dataset.reassignTask);
