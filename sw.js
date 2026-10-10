@@ -96,3 +96,35 @@ self.addEventListener('fetch',event=>{
     }
   })());
 });
+
+
+self.addEventListener('push',event=>{
+  let data={};
+  try{data=event.data?event.data.json():{};}catch(_){try{data={body:event.data?.text?.()||''};}catch(__){}}
+  const title=data.title||'Inventory Tracker';
+  const options={
+    body:data.body||'Inventory Tracker needs your attention.',
+    icon:data.icon||'./icon.svg',
+    badge:data.badge||'./icon.svg',
+    tag:data.tag||'inventory-alert',
+    renotify:true,
+    data:{url:data.url||'./'}
+  };
+  event.waitUntil(self.registration.showNotification(title,options));
+});
+
+self.addEventListener('notificationclick',event=>{
+  event.notification.close();
+  const target=new URL(event.notification?.data?.url||'./',self.registration.scope).href;
+  event.waitUntil((async()=>{
+    const wins=await self.clients.matchAll({type:'window',includeUncontrolled:true});
+    for(const client of wins){
+      try{
+        if('navigate' in client)await client.navigate(target);
+        await client.focus();
+        return;
+      }catch(_){}
+    }
+    if(self.clients.openWindow)await self.clients.openWindow(target);
+  })());
+});
