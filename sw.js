@@ -1,4 +1,4 @@
-const CACHE='inventory-tracker-v8-7-0-audit-performance';
+const CACHE='inventory-tracker-v8-7-1-clean-integrity';
 const CORE=[
   './',
   './index.html',
