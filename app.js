@@ -94,6 +94,9 @@
     offlineSnapshotAt: null,
     syncingOffline: false,
     offlineSyncError: null,
+    watchdogIssues: [],
+    pushStatus: 'unknown',
+    pushBusy: false,
     demo: false,
     demoSafety: {enabled:false,url:'https://grich295.github.io/Safety-tracker/'},
     demoPage: 'dashboard',
@@ -410,6 +413,11 @@
     }
     try{if(navigator.onLine){await loadData();S.offline=false;startRealtime();}}catch(e){if(restoreOfflineSnapshot())S.offline=true;}
     S.syncingOffline=false;
+    if(S.offlineSyncError&&navigator.onLine){
+      void recordInventoryClientAlert('OFFLINE_SYNC_FAILED',S.offlineSyncError,{pending:currentOfflineQueue().length});
+    }else if(!S.offlineSyncError&&navigator.onLine){
+      void resolveInventoryClientAlert('OFFLINE_SYNC_FAILED');
+    }
     if(synced&&!S.offlineSyncError)setNotice(`${synced} offline stock action${synced===1?'':'s'} synced.`);
     render();
   }
@@ -442,6 +450,87 @@
 
   function parseError(e) {
     return e?.message || e?.error_description || String(e || 'Something went wrong');
+  }
+
+  const pushSupported=()=>('serviceWorker' in navigator)&&('PushManager' in window)&&('Notification' in window);
+  function urlBase64ToUint8Array(base64String){
+    const padding='='.repeat((4-base64String.length%4)%4);
+    const base64=(base64String+padding).replace(/-/g,'+').replace(/_/g,'/');
+    const raw=atob(base64);
+    return Uint8Array.from([...raw].map(ch=>ch.charCodeAt(0)));
+  }
+  async function currentPushSubscription(){
+    if(!pushSupported())return null;
+    const reg=await navigator.serviceWorker.ready;
+    return reg.pushManager.getSubscription();
+  }
+  async function refreshPushStatus(){
+    if(!pushSupported()){S.pushStatus='unsupported';return S.pushStatus;}
+    if(Notification.permission==='denied'){S.pushStatus='blocked';return S.pushStatus;}
+    try{
+      S.pushStatus=(await currentPushSubscription())?'enabled':'disabled';
+    }catch(_){S.pushStatus='disabled';}
+    return S.pushStatus;
+  }
+  async function enableInventoryPush(){
+    if(!pushSupported())throw new Error('Phone alerts are not supported by this browser.');
+    const permission=await Notification.requestPermission();
+    if(permission!=='granted')throw new Error(permission==='denied'?'Phone notifications are blocked in browser settings.':'Notification permission was not granted.');
+    const {data:key,error:keyError}=await sb.rpc('get_inventory_push_public_key_v872');
+    if(keyError)throw keyError;
+    if(!key)throw new Error('Phone alerts are still initialising. Try again in a moment.');
+    const reg=await navigator.serviceWorker.ready;
+    let sub=await reg.pushManager.getSubscription();
+    if(!sub){
+      sub=await reg.pushManager.subscribe({
+        userVisibleOnly:true,
+        applicationServerKey:urlBase64ToUint8Array(String(key))
+      });
+    }
+    const json=sub.toJSON();
+    const {error}=await sb.rpc('save_inventory_push_subscription_v872',{
+      p_endpoint:json.endpoint,
+      p_p256dh:json.keys?.p256dh||'',
+      p_auth:json.keys?.auth||'',
+      p_user_agent:navigator.userAgent||null
+    });
+    if(error)throw error;
+    S.pushStatus='enabled';
+    return true;
+  }
+  async function disableInventoryPush(){
+    if(!pushSupported())return;
+    const sub=await currentPushSubscription();
+    if(sub){
+      const endpoint=sub.endpoint;
+      try{await sb.rpc('delete_inventory_push_subscription_v872',{p_endpoint:endpoint});}catch(_){}
+      try{await sub.unsubscribe();}catch(_){}
+    }
+    S.pushStatus='disabled';
+  }
+  async function recordInventoryClientAlert(type,message,details={}){
+    if(!S.session||!navigator.onLine)return;
+    try{
+      await sb.rpc('record_inventory_client_alert_v872',{
+        p_alert_type:type,
+        p_message:message,
+        p_details:details||{}
+      });
+    }catch(_){}
+  }
+  async function resolveInventoryClientAlert(type){
+    if(!S.session||!navigator.onLine)return;
+    try{await sb.rpc('resolve_inventory_client_alert_v872',{p_alert_type:type});}catch(_){}
+  }
+  function watchdogSeverity(){
+    if(!S.watchdogIssues?.length)return 'OK';
+    return S.watchdogIssues.some(x=>x.severity==='CRITICAL')?'CRITICAL':'WARN';
+  }
+  function showWatchdogDetails(){
+    const rows=S.watchdogIssues||[];
+    showModal(`<header><div><h2>Inventory system health</h2><div class="muted">Automatic integrity checks run every hour.</div></div><button class="close" data-close>×</button></header>
+      ${rows.length?rows.map(x=>`<div class="notice ${x.severity==='CRITICAL'?'error':'warn'}"><strong>${esc(x.title)}</strong><div class="muted">${esc(x.category)} · first seen ${esc(fmtDate(x.first_seen_at))}</div><div class="muted">${esc(JSON.stringify(x.details||{}))}</div></div>`).join(''):'<div class="notice success"><strong>No open integrity issues.</strong> Stock, site links, orders and stocktakes passed the latest watchdog checks.</div>'}
+      <div class="actions"><button class="btn ghost" data-close>Close</button></div>`);
   }
 
   async function fetchAll(table, select='*', orderCol=null, ascending=true) {
@@ -522,6 +611,13 @@
     S.safetyBridgeSettings=safetyBridgeSettingsRows[0]||{enabled:false,safety_tracker_url:'https://grich295.github.io/Safety-tracker/'}; S.safetyBridgeLinks=safetyBridgeLinks||[]; S.safetyBridgeFeedback=safetyBridgeFeedback||[];
     S.profile=byId(S.profiles,S.session?.user?.id)||S.profile;
     ensureUiMode();
+    S.watchdogIssues=[];
+    if(canManage()&&navigator.onLine){
+      try{
+        const {data,error}=await sb.rpc('inventory_watchdog_summary_v872');
+        if(!error)S.watchdogIssues=data||[];
+      }catch(_){}
+    }
     if(transactions){
       S.transactions=await fetchRecentTransactions();
       S.fullTransactions=null;
