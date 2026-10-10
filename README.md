@@ -1,6 +1,6 @@
 # Inventory Tracker
 
-Current production build: **v8.7.3 CLEAN**
+Current production build: **v8.7.4 CLEAN**
 
 ## Active runtime
 
@@ -29,7 +29,7 @@ Current production build: **v8.7.3 CLEAN**
 
 ## Database migration
 
-Database migrations under `supabase/migrations/` are already applied to the live project. v8.7.3 adds site-safe RLS, SECURITY DEFINER hardening, Inventory indexes, an hourly integrity watchdog, and Web Push infrastructure.
+Database migrations under `supabase/migrations/` are already applied to the live project. v8.7.4 adds site-safe RLS, SECURITY DEFINER hardening, Inventory indexes, an hourly integrity watchdog, and Web Push infrastructure.
 
 The deployed alert function source is stored at:
 
@@ -49,6 +49,14 @@ Old versioned loaders, disabled frontend decorators and unrelated historical fil
 
 Inventory cache names begin with inventory-tracker-. The Inventory service worker must only remove Inventory caches so it cannot clear caches belonging to the other tracker apps.
 
-## v8.7.3 access hardening
+## v8.7.4 access hardening
 
 Inventory demo mode and its RPC are removed. The seven anonymously callable privileged functions were reviewed: anonymous grants were revoked, the trigger helper cannot be called by app roles, and legacy Energy imports require the selected authorised site. citext is in the extensions schema; case-insensitive username comparison was verified.
+
+## v8.7.4 role and policy review
+
+Reviewed all 43 signed-in SECURITY DEFINER functions. Two trigger functions no longer allow direct authenticated calls. Active profile and app membership are required for site resolution; disabled modules cannot use site-only fallback. Inventory admin/manager helpers use the selected-site role override then module role. Privileged Inventory operations check active accounts and app/site access; stock operations reject viewers. Risk assessments are restricted to Inventory admins and selected-site items.
+
+Consolidated policies on 11 tables, retaining separate read and write permissions and combining site checks with role checks. Added 40 FK indexes reported by Supabase; retained existing unused indexes pending workload evidence.
+
+Validation: database-role tests for Admin, Manager, User and simulated Viewer; unconfigured and disabled-module accounts denied; User admin action denied; invalid item denied; authorised User stock ADD verified in a transaction and rolled back. Advisor reports now retain only intentional authenticated-definer notices, unused indexes and disabled leaked-password protection. No enabled push subscriptions are registered, so phone delivery is unverified.

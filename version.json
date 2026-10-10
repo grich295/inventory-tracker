@@ -1,6 +1,6 @@
 {
-  "version": "8.7.3",
-  "build_id": "v873-authorised-access-no-demo-20261010",
+  "version": "8.7.4",
+  "build_id": "v874-authorised-roles-policies-20261010",
   "clean": true,
-  "notes": "Demo mode removed; anonymous privileged RPC access revoked; legacy Energy import restricted to selected authorised site; citext moved to extensions."
+  "notes": "Active app membership and site roles enforced; trigger RPC access removed; overlapping policies and repeated permission checks corrected; 40 missing foreign-key indexes added. Admin, Manager, User, Viewer and denied-access checks passed."
 }
