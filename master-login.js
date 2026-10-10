@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.4 - email/username login.
+/* Inventory Tracker v8.7.5 - email/username login.
    Authentication helper only; it does not change stock/data loading.
 */
 (() => {

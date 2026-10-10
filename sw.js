@@ -1,4 +1,4 @@
-const CACHE='inventory-tracker-v8-7-4-authorised-roles';
+const CACHE='inventory-tracker-v8-7-5-new-low-stock';
 const CORE=[
   './',
   './index.html',

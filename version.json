@@ -1,6 +1,6 @@
 {
-  "version": "8.7.4",
-  "build_id": "v874-authorised-roles-policies-20261010",
+  "version": "8.7.5",
+  "build_id": "v875-new-low-stock-alerts-only-20261010",
   "clean": true,
-  "notes": "Active app membership and site roles enforced; trigger RPC access removed; overlapping policies and repeated permission checks corrected; 40 missing foreign-key indexes added. Admin, Manager, User, Viewer and denied-access checks passed."
+  "notes": "Low-stock alerts only when a product newly joins the low list; includes all current low products. No quantity-change or daily reminders. Restocked items can alert if they later go low again."
 }

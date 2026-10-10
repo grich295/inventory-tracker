@@ -77,9 +77,33 @@ Deno.serve(async (req: Request) => {
   const now=Date.now();
   for (const c of candidates) {
     const previous:any = state.get(c.event_key);
+    if (c.event_key.startsWith("LOW_STOCK:")) {
+      const parseIds = (value: string): string[] | null => {
+        try { const ids=JSON.parse(value); return Array.isArray(ids)&&ids.every(x=>typeof x==="string") ? ids : null; }
+        catch { return null; }
+      };
+      const currentIds=parseIds(c.event_hash);
+      if (!currentIds) { failed++; continue; }
+      const previousIds=previous ? parseIds(previous.event_hash) : [];
+      // Legacy hashes are baselined silently. Restocks update the observed list,
+      // allowing the same product to alert again if it later falls low.
+      const hasNew=previousIds!==null && currentIds.some(id=>!previousIds.includes(id));
+      if (!hasNew) {
+        if (!previous || previous.event_hash!==c.event_hash) {
+          const {error}=await sb.from("inventory_push_event_state").upsert({
+            event_key:c.event_key,event_hash:c.event_hash,
+            last_sent_at:previous?.last_sent_at || new Date().toISOString(),
+            updated_at:new Date().toISOString()
+          },{onConflict:"event_key"});
+          if(error) { failed++; continue; }
+        }
+        skipped++;
+        continue;
+      }
+    }
     const age = previous?.last_sent_at ? now-new Date(previous.last_sent_at).getTime() : Infinity;
     const repeatMs = c.severity==="CRITICAL" ? 6*60*60*1000 : 24*60*60*1000;
-    if (previous && previous.event_hash===c.event_hash && age<repeatMs) {
+    if (!c.event_key.startsWith("LOW_STOCK:") && previous && previous.event_hash===c.event_hash && age<repeatMs) {
       skipped++;
       continue;
     }

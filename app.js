@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.4 CLEAN - security, watchdog and phone alerts. */
+/* Inventory Tracker v8.7.5 CLEAN - security, watchdog and phone alerts. */
 (() => {
   'use strict';
 
@@ -7,7 +7,7 @@
   const LIVE_APP_URL = 'https://grich295.github.io/inventory-tracker/';
   const configured = cfg.supabaseUrl && cfg.anonKey && !cfg.supabaseUrl.includes('YOUR_PROJECT') && !cfg.anonKey.includes('YOUR_SUPABASE');
   const IOS_SCANNER = /iP(?:hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
-  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.4';
+  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.5';
 
   if (!configured || !window.supabase) {
     app.innerHTML = `
@@ -837,7 +837,7 @@
       <h3>Phone alerts</h3>
       <p class="muted">Optional Web Push alerts can arrive even when Inventory Tracker is closed, once this device has been enabled.</p>
       <ul>
-        ${manager?'<li>Low stock and overdue purchase orders.</li><li>Inventory watchdog/integrity warnings.</li>':''}
+        ${manager?'<li>Low stock: a notification only when another product joins the low-stock list, including the other products still low. No repeated low-stock reminders.</li><li>Overdue purchase orders.</li><li>Inventory watchdog/integrity warnings.</li>':''}
         <li>Overdue stocktakes assigned to you.</li>
         <li>Offline sync failures that need attention.</li>
       </ul>
