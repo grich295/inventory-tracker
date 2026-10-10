@@ -1,6 +1,5 @@
-/* Inventory Tracker v8.6.5 - shared email/username login.
-   Inventory is the master authentication project. This patch adds username login
-   without changing stock/data loading.
+/* Inventory Tracker v8.7.1 - email/username login.
+   Authentication helper only; it does not change stock/data loading.
 */
 (() => {
   'use strict';
