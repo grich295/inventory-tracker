@@ -1,6 +1,6 @@
 # Inventory Tracker
 
-Current production build: **v8.7.2 CLEAN**
+Current production build: **v8.7.3 CLEAN**
 
 ## Active runtime
 
@@ -29,7 +29,7 @@ Current production build: **v8.7.2 CLEAN**
 
 ## Database migration
 
-Database migrations under `supabase/migrations/` are already applied to the live project. v8.7.2 adds site-safe RLS, SECURITY DEFINER hardening, Inventory indexes, an hourly integrity watchdog, and Web Push infrastructure.
+Database migrations under `supabase/migrations/` are already applied to the live project. v8.7.3 adds site-safe RLS, SECURITY DEFINER hardening, Inventory indexes, an hourly integrity watchdog, and Web Push infrastructure.
 
 The deployed alert function source is stored at:
 
@@ -48,3 +48,7 @@ Old versioned loaders, disabled frontend decorators and unrelated historical fil
 ## PWA cache rule
 
 Inventory cache names begin with inventory-tracker-. The Inventory service worker must only remove Inventory caches so it cannot clear caches belonging to the other tracker apps.
+
+## v8.7.3 access hardening
+
+Inventory demo mode and its RPC are removed. The seven anonymously callable privileged functions were reviewed: anonymous grants were revoked, the trigger helper cannot be called by app roles, and legacy Energy imports require the selected authorised site. citext is in the extensions schema; case-insensitive username comparison was verified.

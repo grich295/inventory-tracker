@@ -1,6 +1,6 @@
 {
-  "version": "8.7.2",
-  "build_id": "v872-security-watchdog-push-20261010",
+  "version": "8.7.3",
+  "build_id": "v873-authorised-access-no-demo-20261010",
   "clean": true,
-  "notes": "Security and reliability hardening: site-safe RLS replaces permissive cross-site policies, Inventory SECURITY DEFINER RPCs were reviewed/hardened, missing Inventory indexes were added, an hourly integrity watchdog reports impossible stock/site/order/stocktake states, and opt-in Web Push phone alerts now work while the PWA is closed for low stock, overdue orders, overdue stocktakes, watchdog issues and sync failures."
+  "notes": "Demo mode removed; anonymous privileged RPC access revoked; legacy Energy import restricted to selected authorised site; citext moved to extensions."
 }

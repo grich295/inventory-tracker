@@ -1,4 +1,4 @@
-const CACHE='inventory-tracker-v8-7-2-security-watchdog-push';
+const CACHE='inventory-tracker-v8-7-3-authorised-access';
 const CORE=[
   './',
   './index.html',
