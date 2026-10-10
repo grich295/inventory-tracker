@@ -7,6 +7,7 @@
   const LIVE_APP_URL = 'https://grich295.github.io/inventory-tracker/';
   const configured = cfg.supabaseUrl && cfg.anonKey && !cfg.supabaseUrl.includes('YOUR_PROJECT') && !cfg.anonKey.includes('YOUR_SUPABASE');
   const IOS_SCANNER = /iP(?:hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.0';
 
   if (!configured || !window.supabase) {
     app.innerHTML = `
@@ -556,7 +557,7 @@
     const adminNav=[['dashboard','Dashboard'],['scan','Scan'],['items','Items'],['locations','Locations'],['orders','Orders'],['reports','Reports'],['history','History'],['help','Help'],['stocktake','Stocktake Admin'],['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']];
     const nav=S.demoRole==='admin'?adminNav:userNav;
     return `<div class="shell demo-shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker <span class="app-version-badge">v8.7.0</span></div><div class="userline">${demoRoleLabel()} · sample data only</div></div><div class="top-actions">${demoSafetyLink()}<button class="btn secondary" id="demoRoleBtn">${S.demoRole==='admin'?'Switch to User':'Switch to Admin'}</button><button class="btn secondary" id="exitDemoBtn">Exit demo</button></div></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker <span class="app-version-badge">v${APP_VERSION}</span></div><div class="userline">${demoRoleLabel()} · sample data only</div></div><div class="top-actions">${demoSafetyLink()}<button class="btn secondary" id="demoRoleBtn">${S.demoRole==='admin'?'Switch to User':'Switch to Admin'}</button><button class="btn secondary" id="exitDemoBtn">Exit demo</button></div></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-demo-page="${p}" class="${S.demoPage===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content"><div class="notice"><strong>Demo mode.</strong> Everything below is fictional sample data. You can click around and try actions; nothing is written to the live inventory.</div>${demoNoticeHtml()}${content}</main>
     </div>`;
@@ -780,7 +781,7 @@
     if (canAdmin()) nav.push(['stocktake','Stocktake Admin'],['users','Users'],['binsetup','Bin Setup'],['safetybridge','Safety Bridge'],['legacy','Legacy'],['backup','Backup']);
     const modeLabel=isAdminUserMode()?'User mode':'Admin';
     return `<div class="shell">
-      <div class="topbar"><div><div class="brand">Inventory Tracker <span class="app-version-badge">v8.7.0</span></div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(actualCanAdmin()?modeLabel:roleLabel(effectiveRole()))}</div></div><div class="top-actions">${actualCanAdmin()?`<button class="btn secondary" id="viewModeBtn">${isAdminUserMode()?'Return to Admin':'Switch to User'}</button>`:''}<button class="btn secondary" id="logoutBtn">Sign out</button></div></div>
+      <div class="topbar"><div><div class="brand">Inventory Tracker <span class="app-version-badge">v${APP_VERSION}</span></div><div class="userline">${esc(S.profile?.display_name || S.session.user.email)} · ${esc(actualCanAdmin()?modeLabel:roleLabel(effectiveRole()))}</div></div><div class="top-actions">${actualCanAdmin()?`<button class="btn secondary" id="viewModeBtn">${isAdminUserMode()?'Return to Admin':'Switch to User'}</button>`:''}<button class="btn secondary" id="logoutBtn">Sign out</button></div></div>
       <div class="nav">${nav.map(([p,t])=>`<button data-page="${p}" class="${S.page===p?'active':''}">${t}</button>`).join('')}</div>
       <main class="content">${noticeHtml()}${offlineStatusHtml()}${content}</main>
     </div>`;
@@ -2092,7 +2093,7 @@
       backup_format:'inventory-tracker-backup-v1',
       created_at:new Date().toISOString(),
       created_by:{id:S.profile?.id||null,name:S.profile?.display_name||null,role:S.profile?.role||null},
-      app_version:'8.5.6',
+      app_version:APP_VERSION,
       project_url:cfg.supabaseUrl,
       tables:{},
       uploaded_files:{requested:!!includeFiles,downloaded:0,failed:[]}
