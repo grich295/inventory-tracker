@@ -1,6 +1,6 @@
 {
-  "version": "8.7.1",
-  "build_id": "v871-clean-integrity-20261010",
+  "version": "8.7.2",
+  "build_id": "v872-security-watchdog-push-20261010",
   "clean": true,
-  "notes": "Recommended hardening pass: day-to-day screens now load only the latest 420 days of transactions, Reports/History/Legacy load full history on demand, active stocktakes defer realtime redraws, and stocktake completion is atomic/server-side with conflict detection so concurrent stock movements cannot be overwritten. Repository cleanup also removes obsolete inactive builds."
+  "notes": "Security and reliability hardening: site-safe RLS replaces permissive cross-site policies, Inventory SECURITY DEFINER RPCs were reviewed/hardened, missing Inventory indexes were added, an hourly integrity watchdog reports impossible stock/site/order/stocktake states, and opt-in Web Push phone alerts now work while the PWA is closed for low stock, overdue orders, overdue stocktakes, watchdog issues and sync failures."
 }
