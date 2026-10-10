@@ -1,6 +1,6 @@
 # Inventory Tracker
 
-Current production build: **v8.7.1 CLEAN**
+Current production build: **v8.7.2 CLEAN**
 
 ## Active runtime
 
@@ -29,7 +29,13 @@ Current production build: **v8.7.1 CLEAN**
 
 ## Database migration
 
-The v8.7.1 database migrations are stored under `supabase/migrations/` and are already applied to the live project. They cover stocktake integrity/history indexes and removal of a duplicate supplier index.
+Database migrations under `supabase/migrations/` are already applied to the live project. v8.7.2 adds site-safe RLS, SECURITY DEFINER hardening, Inventory indexes, an hourly integrity watchdog, and Web Push infrastructure.
+
+The deployed alert function source is stored at:
+
+`supabase/functions/inventory-alerts/index.ts`
+
+Phone alerts are opt-in per device from Help. The server checks hourly and can notify while the PWA is closed for low stock, overdue orders, overdue stocktakes, watchdog issues and sync failures.
 
 ## Source layout
 
@@ -37,7 +43,7 @@ The current invite/admin user-management function source is stored at:
 
 supabase/functions/invite-user/index.ts
 
-Old versioned loaders, disabled frontend decorators and unrelated historical files were removed from the current branch during the v8.7.1 cleanup. Git history remains the archive.
+Old versioned loaders, disabled frontend decorators and unrelated historical files were removed from the current branch during the cleanup. Git history remains the archive.
 
 ## PWA cache rule
 
