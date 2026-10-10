@@ -38,6 +38,9 @@
     locations: [],
     balances: [],
     transactions: [],
+    fullTransactions: null,
+    fullTransactionsLoading: false,
+    fullTransactionsError: '',
     categories: [],
     itemSuppliers: [],
     purchaseOrders: [],
@@ -444,6 +447,46 @@
     return out;
   }
 
+  const recentTransactionCutoff=()=>{
+    const d=new Date();
+    d.setDate(d.getDate()-420);
+    return d.toISOString();
+  };
+  async function fetchRecentTransactions(){
+    let out=[],from=0;
+    const cutoff=recentTransactionCutoff();
+    while(true){
+      const {data,error}=await sb.from('transactions').select('*')
+        .gte('occurred_at',cutoff)
+        .order('occurred_at',{ascending:false})
+        .range(from,from+999);
+      if(error)throw error;
+      out.push(...(data||[]));
+      if(!data||data.length<1000)break;
+      from+=1000;
+    }
+    return out;
+  }
+  function historyLoadingHtml(title='History'){
+    if(S.offline)return `<div class="card"><h2>${esc(title)}</h2><div class="notice warn"><strong>Full history needs a connection.</strong> Day-to-day stock remains available from the saved recent data on this device.</div></div>`;
+    if(S.fullTransactionsError)return `<div class="card"><h2>${esc(title)}</h2><div class="notice error">Could not load the complete transaction history: ${esc(S.fullTransactionsError)}</div><div class="actions"><button class="btn" id="retryFullHistory">Try again</button></div></div>`;
+    return `<div class="card"><h2>${esc(title)}</h2><p class="muted">Loading complete transaction history… Day-to-day screens use only the latest 420 days so the tracker stays fast as the audit log grows.</p></div>`;
+  }
+  async function ensureFullTransactions(){
+    if(S.fullTransactions||S.fullTransactionsLoading||S.offline||!navigator.onLine)return;
+    S.fullTransactionsLoading=true;
+    S.fullTransactionsError='';
+    if(['reports','history','legacy'].includes(S.page))render();
+    try{
+      S.fullTransactions=await fetchAll('transactions','*','occurred_at',false);
+    }catch(e){
+      S.fullTransactionsError=parseError(e);
+    }finally{
+      S.fullTransactionsLoading=false;
+      if(['reports','history','legacy'].includes(S.page))render();
+    }
+  }
+
   async function loadData({transactions=true}={}) {
     const [profiles,items,locations,balances,itemSuppliers,purchaseOrders,categories,userPrefs,stocktakeSettingsRows,stocktakeTasks,stocktakeItems,safetyBridgeSettingsRows,safetyBridgeLinks,safetyBridgeFeedback] = await Promise.all([
       fetchAll('profiles','*','display_name',true),
@@ -468,7 +511,11 @@
     S.safetyBridgeSettings=safetyBridgeSettingsRows[0]||{enabled:false,safety_tracker_url:'https://grich295.github.io/Safety-tracker/'}; S.safetyBridgeLinks=safetyBridgeLinks||[]; S.safetyBridgeFeedback=safetyBridgeFeedback||[];
     S.profile=byId(S.profiles,S.session?.user?.id)||S.profile;
     ensureUiMode();
-    if(transactions) S.transactions=await fetchAll('transactions','*','occurred_at',false);
+    if(transactions){
+      S.transactions=await fetchRecentTransactions();
+      S.fullTransactions=null;
+      S.fullTransactionsError='';
+    }
     S.offline=false; S.offlineSyncError=null; S.liveRefreshPending=false; saveOfflineSnapshot();
   }
 
@@ -693,7 +740,7 @@
       }
     } else {
       stopRealtime();
-      S.profile = null; S.uiMode=null; S.uiModeUserId=null; S.profiles=[]; S.items=[]; S.locations=[]; S.balances=[]; S.transactions=[];
+      S.profile = null; S.uiMode=null; S.uiModeUserId=null; S.profiles=[]; S.items=[]; S.locations=[]; S.balances=[]; S.transactions=[]; S.fullTransactions=null; S.fullTransactionsLoading=false; S.fullTransactionsError='';
     }
     ensureNavigationHistory();
     render();
@@ -1411,7 +1458,7 @@
 
   function reportTransactions() {
     const r=S.report;
-    let list=S.transactions.filter(countsAsUsage);
+    let list=(S.fullTransactions||S.transactions).filter(countsAsUsage);
     if(r.period==='month') { const from=new Date(monthStartISO()+'T00:00:00'); list=list.filter(t=>new Date(t.occurred_at)>=from); }
     if(r.period==='custom') {
       if(r.from) { const from=new Date(r.from+'T00:00:00'); list=list.filter(t=>new Date(t.occurred_at)>=from); }
@@ -1426,7 +1473,7 @@
 
   function activityTransactions() {
     const r=S.report;
-    let list=[...S.transactions];
+    let list=[...(S.fullTransactions||S.transactions)];
     if(r.period==='month') { const from=new Date(monthStartISO()+'T00:00:00'); list=list.filter(t=>new Date(t.occurred_at)>=from); }
     if(r.period==='custom') {
       if(r.from) { const from=new Date(r.from+'T00:00:00'); list=list.filter(t=>new Date(t.occurred_at)>=from); }
@@ -1440,6 +1487,7 @@
   }
 
   function reportsHtml() {
+    if(!S.fullTransactions)return historyLoadingHtml('Usage & activity reports');
     const list=reportTransactions();
     const activity=activityTransactions();
     const totals=new Map();
@@ -1515,7 +1563,8 @@
   }
 
   function historyHtml() {
-    return `${stocktakeHistoryHtml()}<div class="card" style="margin-top:1rem"><h2>Full audit history</h2><p class="muted">Adds, uses, moves and adjustments are all recorded with the user and location. Stocktake corrections below also show the expected, counted and difference values.</p>${transactionTable(S.transactions)}</div>`;
+    if(!S.fullTransactions)return historyLoadingHtml('Full audit history');
+    return `${stocktakeHistoryHtml()}<div class="card" style="margin-top:1rem"><h2>Full audit history</h2><p class="muted">Adds, uses, moves and adjustments are all recorded with the user and location. Stocktake corrections below also show the expected, counted and difference values.</p>${transactionTable(S.fullTransactions)}</div>`;
   }
 
   function transactionTable(list) {
@@ -1922,7 +1971,7 @@
   }
 
   function legacyFilteredRows() {
-    let rows=S.transactions.filter(t=>t.legacy_import);
+    let rows=(S.fullTransactions||S.transactions).filter(t=>t.legacy_import);
     if(S.legacyItemFilter)rows=rows.filter(t=>t.item_id===S.legacyItemFilter);
     if(S.legacyFrom)rows=rows.filter(t=>new Date(t.occurred_at)>=new Date(S.legacyFrom+'T00:00:00'));
     if(S.legacyTo)rows=rows.filter(t=>new Date(t.occurred_at)<=new Date(S.legacyTo+'T23:59:59'));
@@ -1998,6 +2047,7 @@
 
   function legacyReviewHtml() {
     if(!canAdmin())return '<div class="notice error">Admin access required.</div>';
+    if(!S.fullTransactions)return historyLoadingHtml('Legacy Review');
     const rows=legacyFilteredRows();
     const included=rows.filter(countsAsUsage).reduce((a,t)=>a+num(t.quantity),0);
     return `<div class="card"><h2>Legacy Review</h2><p class="muted">Reclassify old InStock decreases without changing the historic stock balances. Only records classified as <strong>Use</strong> count toward usage trends and Suggested Orders.</p><div class="form-grid"><div><label>Item</label><select id="legacyItem"><option value="">All legacy items</option>${S.items.map(i=>`<option value="${i.id}" ${S.legacyItemFilter===i.id?'selected':''}>${esc(i.name)}</option>`).join('')}</select></div><div><label>From</label><input id="legacyFrom" type="date" value="${esc(S.legacyFrom)}"></div><div><label>To</label><input id="legacyTo" type="date" value="${esc(S.legacyTo)}"></div></div><div class="notice">Filtered records: ${rows.length} · Currently counted as usage: ${qty(included)}</div><div class="toolbar"><select id="legacyClassification"><option value="USE">Use / consumption</option><option value="ADJUSTMENT">Stock adjustment</option><option value="DAMAGE_LOSS">Damage / loss</option><option value="TRANSFER">Transfer / move</option><option value="EXCLUDE">Exclude from usage</option></select><button class="btn" id="applyLegacyReview">Apply to selected</button></div></div><div class="card" style="margin-top:1rem"><div class="table-wrap"><table><thead><tr><th><input id="legacySelectAll" type="checkbox"></th><th>Date</th><th>Item</th><th>Qty</th><th>Current treatment</th><th>Reviewed by</th></tr></thead><tbody>${rows.slice(0,300).map(t=>`<tr><td><input type="checkbox" data-legacy-row="${t.id}"></td><td>${fmtDate(t.occurred_at)}</td><td>${esc(itemName(t.item_id))}</td><td>${qty(t.quantity)}</td><td>${esc(t.legacy_classification||'Use (unreviewed)')}${t.exclude_from_usage?' · Excluded':''}</td><td>${t.legacy_reviewed_by?esc(userName(t.legacy_reviewed_by)):'—'}</td></tr>`).join('')||'<tr><td colspan="6">No matching legacy records.</td></tr>'}</tbody></table></div>${rows.length>300?'<p class="muted">Showing newest 300 filtered records. Narrow the filters to review older records.</p>':''}</div>`;
@@ -2204,6 +2254,13 @@ Keep this file somewhere secure.
   function bindPage() {
     document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>{if(b.dataset.orderTabGo)S.orderTab=b.dataset.orderTabGo;navigatePage(b.dataset.go);});
     document.querySelectorAll('[data-item]').forEach(el=>el.onclick=()=>openItem(el.dataset.item));
+    if(['reports','history','legacy'].includes(S.page)&&!S.fullTransactions){
+      const retry=document.getElementById('retryFullHistory');
+      if(retry)retry.onclick=()=>{S.fullTransactionsError='';ensureFullTransactions();};
+      if(!S.fullTransactionsLoading&&!S.fullTransactionsError&&!S.offline)void ensureFullTransactions();
+      hydrateItemThumbnails(document);
+      return;
+    }
     if(S.page==='dashboard') {
       const b=document.getElementById('dashAddItem'); if(b) b.onclick=openAddItem;
       const d=document.getElementById('dashReceiveDeliveries'); if(d) d.onclick=openUserDeliveries;
