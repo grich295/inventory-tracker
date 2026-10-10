@@ -11,8 +11,9 @@
   window.__INVENTORY_SAFE_BOOT_V863 = true;
 
   function markVersion(){
+    const version=window.INVENTORY_BUILD_VERSION||'8.7.0';
     document.querySelectorAll('.app-version-badge').forEach(el=>{
-      if(el.textContent !== 'v8.7.0') el.textContent = 'v8.7.0';
+      if(el.textContent !== 'v'+version) el.textContent = 'v'+version;
     });
   }
 
