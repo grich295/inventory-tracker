@@ -967,6 +967,55 @@
   }
 
 
+  function pushAlertsHelpCardHtml(){
+    const manager=canManage();
+    return `<div class="card help-card">
+      <h3>Phone alerts</h3>
+      <p class="muted">Optional Web Push alerts can arrive even when Inventory Tracker is closed, once this device has been enabled.</p>
+      <ul>
+        ${manager?'<li>Low stock and overdue purchase orders.</li><li>Inventory watchdog/integrity warnings.</li>':''}
+        <li>Overdue stocktakes assigned to you.</li>
+        <li>Offline sync failures that need attention.</li>
+      </ul>
+      <div id="pushAlertStatus" class="muted">Checking this device…</div>
+      <div class="actions"><button class="btn secondary" id="pushAlertsBtn" type="button">Phone alerts</button></div>
+      <div class="muted">Android supports this directly. On iPhone/iPad, the web app must be added to the Home Screen and notifications allowed.</div>
+    </div>`;
+  }
+
+  function bindHelp(){
+    const btn=document.getElementById('pushAlertsBtn');
+    const status=document.getElementById('pushAlertStatus');
+    if(!btn||!status)return;
+    const paint=()=>{
+      const s=S.pushStatus;
+      if(s==='enabled'){status.textContent='Phone alerts are enabled on this device.';btn.textContent='Turn phone alerts off';btn.className='btn danger';btn.disabled=false;}
+      else if(s==='blocked'){status.textContent='Notifications are blocked in browser/device settings.';btn.textContent='Phone alerts blocked';btn.className='btn secondary';btn.disabled=true;}
+      else if(s==='unsupported'){status.textContent='This browser/device does not support Web Push for this app.';btn.textContent='Not supported';btn.className='btn secondary';btn.disabled=true;}
+      else {status.textContent='Phone alerts are off on this device.';btn.textContent='Enable phone alerts';btn.className='btn good';btn.disabled=!!S.pushBusy;}
+    };
+    paint();
+    refreshPushStatus().then(()=>{if(S.page==='help')paint();}).catch(()=>{});
+    btn.onclick=async()=>{
+      if(S.pushBusy)return;
+      S.pushBusy=true;btn.disabled=true;
+      try{
+        if(S.pushStatus==='enabled'){
+          await disableInventoryPush();
+          setNotice('Phone alerts turned off on this device.');
+        }else{
+          await enableInventoryPush();
+          setNotice('Phone alerts enabled on this device.');
+        }
+      }catch(e){
+        setNotice(parseError(e),'error');
+      }finally{
+        S.pushBusy=false;
+        if(S.page==='help')render();
+      }
+    };
+  }
+
   function helpHtml() {
     const role=String(effectiveRole()||'staff');
     const roleName=esc(roleLabel(role));
@@ -1032,6 +1081,7 @@
           </ul>
           <div class="help-tip">Stock shown offline may be older than the live database until the device reconnects and syncs.</div>
         </div>
+        ${pushAlertsHelpCardHtml()}
 
         <div class="card help-card">
           <h3>Stocktake</h3>
@@ -1220,6 +1270,7 @@
       </div>
       <div class="toolbar" style="margin-top:1rem"><button class="btn good" data-go="scan">Scan Stock QR</button><button class="btn" data-go="items">Manual search</button>${canManage()?'<button class="btn secondary" id="dashAddItem">Add new item</button>':''}</div>
       ${S.offline?`<div class="notice warn"><strong>Offline stock mode:</strong> QR/manual search and stock Add, Use, Move and Adjust are available. Orders, user/admin changes, stocktake submission and other database changes need a connection. Any queued stock changes are checked against the live database when syncing.</div>`:''}
+      ${!userView&&S.watchdogIssues?.length?`<div class="notice ${watchdogSeverity()==='CRITICAL'?'error':'warn'}" style="margin-top:1rem"><strong>System health: ${watchdogSeverity()==='CRITICAL'?'critical issue':'check required'}.</strong> ${S.watchdogIssues.length} open integrity issue${S.watchdogIssues.length===1?'':'s'} detected by the automatic watchdog. <button class="btn ghost small" id="watchdogDetailsBtn" type="button">Details</button></div>`:''}
       ${dashboardPersonalHtml()}
       ${canAdmin()&&backupDue()?`<div class="notice warn" style="margin-top:1rem"><strong>Admin backup due.</strong> ${lastBackupAt()?`Last backup: ${esc(fmtDate(lastBackupAt()))}.`:'No app backup has been recorded on this device yet.'} <button class="btn ghost" data-go="backup">Open Backup</button></div>`:''}
       ${!userView&&low.length?`<div class="card"><h3>Low stock</h3><div class="item-list">${low.slice(0,8).map(itemRowHtml).join('')}</div></div>`:''}
@@ -2376,6 +2427,7 @@ Keep this file somewhere secure.
     if(S.page==='dashboard') {
       const b=document.getElementById('dashAddItem'); if(b) b.onclick=openAddItem;
       const d=document.getElementById('dashReceiveDeliveries'); if(d) d.onclick=openUserDeliveries;
+      const w=document.getElementById('watchdogDetailsBtn'); if(w) w.onclick=showWatchdogDetails;
     }
     if(S.page==='scan') bindScan();
     if(S.page==='items') bindItems();
@@ -2383,6 +2435,7 @@ Keep this file somewhere secure.
     if(S.page==='orders') bindOrders();
     if(S.page==='stocktake') bindStocktake();
     if(S.page==='reports') bindReports();
+    if(S.page==='help') bindHelp();
     if(S.page==='users') bindUsers();
     if(S.page==='binsetup') bindBinSetup();
     if(S.page==='safetybridge') bindSafetyBridge();
