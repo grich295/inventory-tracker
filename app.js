@@ -132,6 +132,20 @@
     }
     history.replaceState({...state,...current,modal:!!state.modal,guard:false},'',location.href);
   }
+  function applyLaunchPageFromUrl(){
+    if(!S.session||S.passwordMode)return;
+    const requested=new URL(location.href).searchParams.get('page');
+    if(!requested)return;
+    const allowed=new Set(['dashboard','scan','items','locations','orders','stocktake','reports','history','help','users','binsetup','safetybridge','legacy','backup']);
+    if(!allowed.has(requested))return;
+    let page=requested;
+    if(effectiveRole()==='staff'){
+      const blocked=['locations','orders','reports','history','users','binsetup','safetybridge','legacy','backup'];
+      if(blocked.includes(page)||(page==='stocktake'&&!assignedOpenStocktake()))page='dashboard';
+    }
+    S.page=page;
+    try{history.replaceState(history.state||{},'',location.pathname);}catch(_){}
+  }
   function navigatePage(page,{replace=false}={}) {
     if(!page) return;
     const previousPage=S.page;
@@ -827,6 +841,7 @@
         }else setNotice(navigator.onLine?parseError(e):'No connection and no saved offline inventory is available on this device.','error');
       }
     }
+    applyLaunchPageFromUrl();
     ensureNavigationHistory();
     render();
   }
@@ -849,6 +864,7 @@
       stopRealtime();
       S.profile = null; S.uiMode=null; S.uiModeUserId=null; S.profiles=[]; S.items=[]; S.locations=[]; S.balances=[]; S.transactions=[]; S.fullTransactions=null; S.fullTransactionsLoading=false; S.fullTransactionsError='';
     }
+    applyLaunchPageFromUrl();
     ensureNavigationHistory();
     render();
   });
