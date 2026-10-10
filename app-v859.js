@@ -1,11 +1,11 @@
-/* Inventory Tracker v8.6.9 CLEAN
+/* Inventory Tracker v8.7.0 CLEAN
    Paint tin sizes + half-tin stock tracking + true linked size variants.
    Patch over v8.5.7 base app.js. Variants keep separate stock/QR/orders while inheriting Safety Bridge links.
 */
 (() => {
   'use strict';
 
-  const VERSION='8.6.9';
+  const VERSION='8.7.0';
   const PAINT_SIZE_OPTIONS=[0.25,0.5,0.75,1,2.5,5,7.5,10,12,15,20];
   let paintClient=null;
   let currentItemId=null;
@@ -275,14 +275,20 @@
   // --- v8.5.9 true item variants --------------------------------------------
   let variantItemsCache859=[];
   let variantItemsCacheAt859=0;
+  let variantItemsPromise859=null;
 
   async function variantItems859(force=false){
     const now=Date.now();
     if(!force&&variantItemsCache859.length&&now-variantItemsCacheAt859<5000)return variantItemsCache859;
+    if(!force&&variantItemsPromise859)return variantItemsPromise859;
     const sb=getClient();if(!sb)return [];
-    const {data,error}=await sb.from('items').select('id,parent_item_id,variant_label,item_code,qr_value,name,category,container_size_litres,unit_cost,reorder_level,default_location_id,primary_photo_path,is_chemical,risk_rating,acknowledgement_required,active,created_by').order('name');
-    if(error){console.warn('Variant item lookup failed',error);return variantItemsCache859}
-    variantItemsCache859=data||[];variantItemsCacheAt859=now;return variantItemsCache859;
+    const run=(async()=>{
+      const {data,error}=await sb.from('items').select('id,parent_item_id,variant_label,item_code,qr_value,name,category,container_size_litres,unit_cost,reorder_level,default_location_id,primary_photo_path,is_chemical,risk_rating,acknowledgement_required,active,created_by').order('name');
+      if(error){console.warn('Variant item lookup failed',error);return variantItemsCache859}
+      variantItemsCache859=data||[];variantItemsCacheAt859=Date.now();return variantItemsCache859;
+    })();
+    if(!force)variantItemsPromise859=run;
+    try{return await run}finally{if(variantItemsPromise859===run)variantItemsPromise859=null}
   }
   const sameId=(a,b)=>String(a||'')===String(b||'');
   function variantRoot859(item,items){if(!item)return null;return item.parent_item_id?(items.find(x=>sameId(x.id,item.parent_item_id))||item):item}
@@ -455,7 +461,19 @@
 
   addStyles();
   loadBase().then(()=>{
+    let enhanceQueued=false;
+    const queueEnhance=(mutations=[])=>{
+      // Scanner status/video/canvas changes are frequent. They do not require
+      // paint/variant decoration and should never wake database-backed helpers.
+      if(mutations.length&&mutations.every(m=>{
+        const el=m.target instanceof Element?m.target:null;
+        return !!el?.closest?.('#reader,#scanStatus,#qrVideo,#qrCanvas,.scanner,.live-scanner');
+      }))return;
+      if(enhanceQueued)return;
+      enhanceQueued=true;
+      requestAnimationFrame(()=>{enhanceQueued=false;enhance()});
+    };
     enhance();
-    new MutationObserver(enhance).observe(document.body,{childList:true,subtree:true});
+    new MutationObserver(queueEnhance).observe(document.body,{childList:true,subtree:true});
   }).catch(err=>{console.error(err);const app=document.getElementById('app');if(app)app.innerHTML='<div class="card notice error">Inventory Tracker could not load. Refresh and try again.</div>';});
 })();
