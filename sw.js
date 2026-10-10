@@ -1,13 +1,15 @@
-const CACHE='inventory-tracker-v8-6-9-iphone-scanner';
+const CACHE='inventory-tracker-v8-7-0-audit-performance';
 const CORE=[
   './',
   './index.html',
   './app.js',
   './app-v859.js',
   './hotfix-v863-safe-boot.js',
+  './hotfix-v865-master-login.js',
   './styles.css',
   './config.js',
-  './manifest.webmanifest'
+  './manifest.webmanifest',
+  './version.json'
 ];
 
 self.addEventListener('install',event=>{
