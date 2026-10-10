@@ -1,6 +1,6 @@
 {
-  "version": "8.7.0",
-  "build_id": "v870-audit-performance-20261010",
+  "version": "8.7.1",
+  "build_id": "v871-clean-integrity-20261010",
   "clean": true,
-  "notes": "Audit/performance pass: reduces iPhone scan lag by deferring realtime multi-table refreshes while the scanner or stock-action modal is active, debounces the paint/variant DOM observer, deduplicates concurrent variant item queries, aligns version labels, parallelises script downloads, and precaches the active login hotfix."
+  "notes": "Recommended hardening pass: day-to-day screens now load only the latest 420 days of transactions, Reports/History/Legacy load full history on demand, active stocktakes defer realtime redraws, and stocktake completion is atomic/server-side with conflict detection so concurrent stock movements cannot be overwritten. Repository cleanup also removes obsolete inactive builds."
 }
