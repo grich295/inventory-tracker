@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.1 CLEAN - scaled history + atomic stocktake integrity. */
+/* Inventory Tracker v8.7.2 CLEAN - security, watchdog and phone alerts. */
 (() => {
   'use strict';
 
@@ -7,7 +7,7 @@
   const LIVE_APP_URL = 'https://grich295.github.io/inventory-tracker/';
   const configured = cfg.supabaseUrl && cfg.anonKey && !cfg.supabaseUrl.includes('YOUR_PROJECT') && !cfg.anonKey.includes('YOUR_SUPABASE');
   const IOS_SCANNER = /iP(?:hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
-  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.1';
+  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.2';
 
   if (!configured || !window.supabase) {
     app.innerHTML = `
