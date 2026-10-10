@@ -1,6 +1,6 @@
 /* Inventory Tracker v8.7.1 CLEAN
-   Paint tin sizes + half-tin stock tracking + true linked size variants.
-   Patch over v8.5.7 base app.js. Variants keep separate stock/QR/orders while inheriting Safety Bridge links.
+   Runtime loader/enhancements: paint tin sizes, half-tin tracking and linked size variants.
+   Loads the current app.js core. Variants keep separate stock/QR/orders while inheriting Safety Bridge links.
 */
 (() => {
   'use strict';
