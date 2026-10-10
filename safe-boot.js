@@ -1,9 +1,6 @@
 /* Inventory Tracker v8.7.1 SAFE BOOT
-   Emergency recovery layer.
-   The v8.6.0 People/Access and v8.6.2 Multi-site frontend decorators are
-   deliberately NOT loaded by index.html in this build.
-   Their database schema/data changes remain in place.
-   This file is passive: no MutationObserver, no auth interception, no reload loop.
+   Passive recovery/version layer: no MutationObserver, auth interception or reload loop.
+   Older frontend decorators were removed from the current branch; database migrations remain.
 */
 (() => {
   'use strict';
