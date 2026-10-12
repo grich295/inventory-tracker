@@ -1,6 +1,6 @@
 # Inventory Tracker
 
-Current production build: **v8.7.5 CLEAN**
+Current production build: **v8.7.6 CLEAN**
 
 ## Active runtime
 
@@ -66,3 +66,12 @@ Validation: database-role tests for Admin, Manager, User and simulated Viewer; u
 Low-stock candidate state stores the sorted item-ID list, including an empty list after all items recover. The alert worker notifies only when a current ID was absent from the previously observed list. Restocking updates the observed state silently, allowing later re-entry to alert. Quantity/threshold changes while an item remains low and elapsed time do not notify. Each new notification includes the current low-stock names. Existing subscriptions were baselined without resending. Other alert categories retain their existing rules.
 
 Validated unchanged lists, additions, removals, empty lists, re-entry, legacy-hash conversion and the live subscription baseline.
+
+
+## v8.7.6 — Find item by photo
+
+Home and Items offer Find item by photo. Take/select an image, crop around the object, then view up to six closest photo suggestions with their current stock locations. Tap a suggestion to open the normal item record. Only active, accessible items with saved photos participate. Items without stock remain searchable and show no stock location where appropriate.
+
+Matching uses deterministic colour histograms, contrast layouts (including quarter-turn rotations) and edge directions. No trained model or AI service. It is an approximate shortlist, especially weak for plain parts, different viewpoints/backgrounds and similar packaging; it does not read labels or identify models. The query image is processed in memory, never uploaded. Existing private reference photos download on first search; descriptors are reused only in the signed-in session. Cancellation/account changes discard stale work. No stock quantities or locations are written by matching.
+
+Validation: JavaScript syntax checks and node tests/photo-match.test.cjs covering ranking, uniform-image numeric stability, active/photo eligibility, session cache and account-change cancellation. Physical iPhone/Android camera/crop and representative real-stock matching remain acceptance checks. No database migration required.

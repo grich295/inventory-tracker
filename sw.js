@@ -1,8 +1,9 @@
-const CACHE='inventory-tracker-v8-7-5-new-low-stock';
+const CACHE='inventory-tracker-v8-7-6-photo-search';
 const CORE=[
   './',
   './index.html',
   './app.js',
+  './photo-match.js',
   './app-loader.js',
   './safe-boot.js',
   './master-login.js',
@@ -128,3 +129,4 @@ self.addEventListener('notificationclick',event=>{
     if(self.clients.openWindow)await self.clients.openWindow(target);
   })());
 });
+

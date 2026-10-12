@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.5 CLEAN - security, watchdog and phone alerts. */
+/* Inventory Tracker v8.7.6 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -7,7 +7,7 @@
   const LIVE_APP_URL = 'https://grich295.github.io/inventory-tracker/';
   const configured = cfg.supabaseUrl && cfg.anonKey && !cfg.supabaseUrl.includes('YOUR_PROJECT') && !cfg.anonKey.includes('YOUR_SUPABASE');
   const IOS_SCANNER = /iP(?:hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
-  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.5';
+  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.6';
 
   if (!configured || !window.supabase) {
     app.innerHTML = `
@@ -806,7 +806,7 @@
   }
 
   function bindShell() {
-    document.getElementById('logoutBtn').onclick = () => sb.auth.signOut();
+    document.getElementById('logoutBtn').onclick = () => {photoSearchCache.clear();photoSearchOwner='';sb.auth.signOut();};
     const modeBtn=document.getElementById('viewModeBtn');if(modeBtn)modeBtn.onclick=toggleAdminUserMode;
     document.querySelectorAll('[data-page]').forEach(b => b.onclick = () => navigatePage(b.dataset.page));
     const sync=document.getElementById('syncOfflineBtn');if(sync)sync.onclick=()=>syncOfflineQueue();
@@ -1132,7 +1132,7 @@
         <div class="card"><div class="muted">Units in stock</div><div class="stat">${qty(totalUnits)}</div></div>
         ${userView?`<div class="card"><div class="muted">Used this month</div><div class="stat">${qty(usedMonth)}</div></div>`:`<div class="card" data-go="orders" data-order-tab-go="suggested" title="Open Suggested Orders"><div class="muted">Low-stock items</div><div class="stat">${low.length}</div></div><div class="card" data-go="orders" data-order-tab-go="open" title="Open On Order"><div class="muted">Units on order</div><div class="stat">${qty(onOrderUnits)}</div></div><div class="card"><div class="muted">Used this month</div><div class="stat">${qty(usedMonth)}</div></div>`}
       </div>
-      <div class="toolbar" style="margin-top:1rem"><button class="btn good" data-go="scan">Scan Stock QR</button><button class="btn" data-go="items">Manual search</button>${canManage()?'<button class="btn secondary" id="dashAddItem">Add new item</button>':''}</div>
+      <div class="toolbar" style="margin-top:1rem"><button class="btn good" data-go="scan">Scan Stock QR</button><button class="btn" data-go="items">Manual search</button><button class="btn secondary" data-photo-search>Find item by photo</button>${canManage()?'<button class="btn secondary" id="dashAddItem">Add new item</button>':''}</div>
       ${S.offline?`<div class="notice warn"><strong>Offline stock mode:</strong> QR/manual search and stock Add, Use, Move and Adjust are available. Orders, user/admin changes, stocktake submission and other database changes need a connection. Any queued stock changes are checked against the live database when syncing.</div>`:''}
       ${!userView&&S.watchdogIssues?.length?`<div class="notice ${watchdogSeverity()==='CRITICAL'?'error':'warn'}" style="margin-top:1rem"><strong>System health: ${watchdogSeverity()==='CRITICAL'?'critical issue':'check required'}.</strong> ${S.watchdogIssues.length} open integrity issue${S.watchdogIssues.length===1?'':'s'} detected by the automatic watchdog. <button class="btn ghost small" id="watchdogDetailsBtn" type="button">Details</button></div>`:''}
       ${dashboardPersonalHtml()}
@@ -1343,7 +1343,7 @@
   function itemsHtml() {
     const filtered=filteredItems();
     const reviewCount=canManage()?categoryReviewRows().length:0;
-    return `<div class="toolbar"><input id="itemSearch" value="${esc(S.search)}" placeholder="Search item, code, location or bin"><select id="categoryFilter"><option value="">All categories</option>${categoryNames().map(c=>`<option value="${esc(c)}" ${S.categoryFilter===c?'selected':''}>${esc(c)}</option>`).join('')}</select>${canManage()?`<button class="btn" id="addItemBtn">Add new item</button><button class="btn ${reviewCount?'warn':'ghost'}" id="categoryReviewBtn">Category Review${reviewCount?` (${reviewCount})`:' ✓'}</button>`:''}${canAdmin()?`<button class="btn ghost" id="toggleArchivedBtn">${S.showArchived?'Active items':'Archived items'}</button><button class="btn ghost" id="manageCategoriesBtn">Categories</button>`:''}</div>
+    return `<div class="toolbar"><button class="btn secondary" data-photo-search>Find item by photo</button><input id="itemSearch" value="${esc(S.search)}" placeholder="Search item, code, location or bin"><select id="categoryFilter"><option value="">All categories</option>${categoryNames().map(c=>`<option value="${esc(c)}" ${S.categoryFilter===c?'selected':''}>${esc(c)}</option>`).join('')}</select>${canManage()?`<button class="btn" id="addItemBtn">Add new item</button><button class="btn ${reviewCount?'warn':'ghost'}" id="categoryReviewBtn">Category Review${reviewCount?` (${reviewCount})`:' ✓'}</button>`:''}${canAdmin()?`<button class="btn ghost" id="toggleArchivedBtn">${S.showArchived?'Active items':'Archived items'}</button><button class="btn ghost" id="manageCategoriesBtn">Categories</button>`:''}</div>
       <div id="itemCount" class="muted" style="margin-bottom:.6rem">${filtered.length} item${filtered.length===1?'':'s'}</div>
       <div id="itemList" class="item-list">${filtered.map(itemRowHtml).join('') || '<div class="card">No matching items.</div>'}</div>`;
   }
@@ -2279,6 +2279,7 @@ Keep this file somewhere secure.
   }
 
   function bindPage() {
+    document.querySelectorAll('[data-photo-search]').forEach(b=>b.onclick=openPhotoSearch);
     document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>{if(b.dataset.orderTabGo)S.orderTab=b.dataset.orderTabGo;navigatePage(b.dataset.go);});
     document.querySelectorAll('[data-item]').forEach(el=>el.onclick=()=>openItem(el.dataset.item));
     if(['reports','history','legacy'].includes(S.page)&&!S.fullTransactions){
@@ -3165,6 +3166,48 @@ Keep this file somewhere secure.
   }
 
 
+
+  let photoSearchCache=new Map(),photoSearchOwner='';
+  async function openPhotoSearch(){
+    if(!S.session||S.offline){setNotice('Connect to search inventory photos.','warn');return;}
+    await stopScanner();
+    const owner=S.session.user.id;
+    if(photoSearchOwner!==owner){photoSearchCache.clear();photoSearchOwner=owner;}
+    showModal(`<header><h2>Find item by photo</h2><button class="close" data-close>×</button></header><p>Take a close-up, then crop around the item. We’ll suggest items with similar saved photos and show their stock locations.</p><p class="muted">Suggestions only — check the item before choosing. Your search photo is processed on this device and is not uploaded. The first search downloads the saved item photos.</p><input id="findItemPhoto" type="file" accept="image/*" capture="environment"><p id="photoSearchStatus" role="status" aria-live="polite"></p><div id="photoSearchResults" class="item-list"></div>`);
+    const input=document.getElementById('findItemPhoto'),status=document.getElementById('photoSearchStatus'),results=document.getElementById('photoSearchResults');
+    let seq=0;
+    const current=n=>n===seq&&S.session?.user?.id===owner&&status.isConnected;
+    input.onchange=async()=>{
+      const file=input.files?.[0];if(!file)return;
+      const n=++seq;input.disabled=true;results.innerHTML='';status.textContent='Crop around the item…';
+      try{
+        const cropped=await editItemPhoto(file);if(!current(n))return;
+        if(!cropped){status.textContent='Photo cancelled. Choose another photo.';return;}
+        const query=await window.InventoryPhotoMatch.fromBlob(cropped);if(!current(n))return;
+        const items=S.items.filter(i=>i.active&&i.primary_photo_path),matches=[];
+        let done=0,failed=0;
+        for(const item of items){
+          if(!current(n))return;
+          status.textContent=`Comparing photos ${++done} of ${items.length}…`;
+          const key=owner+':'+item.id+':'+item.primary_photo_path+':'+(item.updated_at||'');
+          try{
+            let descriptor=photoSearchCache.get(key);
+            if(!descriptor){const r=await sb.storage.from('item-photos').download(item.primary_photo_path);if(r.error||!r.data)throw Error('Photo unavailable');if(!current(n))return;descriptor=await window.InventoryPhotoMatch.fromBlob(r.data);if(!current(n))return;photoSearchCache.set(key,descriptor);}
+            matches.push({item,score:window.InventoryPhotoMatch.similarity(query,descriptor)});
+          }catch(_){failed++;}
+          if(!current(n))return;
+          await new Promise(resolve=>setTimeout(resolve,0));
+        }
+        if(!current(n))return;
+        matches.sort((a,b)=>b.score-a.score);
+        status.textContent=matches.length?`Closest photo suggestions · ${matches.length} photos compared${failed?' · '+failed+' unavailable':''}. Check the picture and item details; these may be unrelated.`:'No searchable photos available. Add item photos or use manual search.';
+        results.innerHTML=matches.slice(0,6).map(({item})=>itemRowHtml(item)).join('');
+        results.querySelectorAll('[data-item]').forEach(b=>b.onclick=()=>{if(S.session?.user?.id===owner)openItem(b.dataset.item)});
+        await hydrateItemThumbnails(results);
+      }catch(e){if(current(n))status.textContent='Could not compare photos. Try another clear close-up or use manual search.';}
+      finally{if(current(n)){input.disabled=false;input.value='';}}
+    };
+  }
 
   async function openItem(id) {
     const i=byId(S.items,id); if(!i) return;

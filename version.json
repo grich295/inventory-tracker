@@ -1,6 +1,6 @@
 {
-  "version": "8.7.5",
-  "build_id": "v875-new-low-stock-alerts-only-20261010",
+  "version": "8.7.6",
+  "build_id": "v876-photo-search-20261012",
   "clean": true,
-  "notes": "Low-stock alerts only when a product newly joins the low list; includes all current low products. No quantity-change or daily reminders. Restocked items can alert if they later go low again."
+  "notes": "Find item by photo: local, non-AI similarity suggestions with stock locations. Manual selection only. Existing low-stock alert rules retained."
 }
