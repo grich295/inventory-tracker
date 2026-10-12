@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.6 CLEAN - local photo search suggestions. */
+/* Inventory Tracker v8.7.7 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -2444,7 +2444,7 @@ Keep this file somewhere secure.
     const caps=S.cameraCaps?.zoom;
     if(caps&&typeof caps.min==='number'&&typeof caps.max==='number') {
       const target=S.smallQrMode
-        ? clamp(Math.max(2.5,caps.min+(caps.max-caps.min)*0.24),caps.min,caps.max)
+        ? clamp(Math.max(S.cameraBaseZoom??caps.min,Math.min(2.5,(S.cameraBaseZoom??caps.min)*2)),caps.min,caps.max)
         : clamp(S.cameraBaseZoom??caps.min,caps.min,caps.max);
       await setCameraZoom(target);
     }
@@ -2510,7 +2510,7 @@ Keep this file somewhere secure.
     const vw=video.videoWidth,vh=video.videoHeight;
     ctx.imageSmoothingEnabled=false;
     if(region==='full') {
-      const maxDim=IOS_SCANNER?960:1500,ratio=Math.min(1,maxDim/Math.max(vw,vh));
+      const maxDim=IOS_SCANNER?1280:2560,ratio=Math.min(1,maxDim/Math.max(vw,vh));
       const outW=Math.max(1,Math.round(vw*ratio)),outH=Math.max(1,Math.round(vh*ratio));
       canvas.width=outW;canvas.height=outH;ctx.imageSmoothingEnabled=false;
       ctx.drawImage(video,0,0,vw,vh,0,0,outW,outH);return;
@@ -2518,7 +2518,7 @@ Keep this file somewhere secure.
     const scale=Number(region)||0.7;
     const crop=Math.max(160,Math.floor(Math.min(vw,vh)*scale));
     const sx=Math.floor((vw-crop)/2),sy=Math.floor((vh-crop)/2);
-    const outCap=IOS_SCANNER?900:1700;
+    const outCap=IOS_SCANNER?1280:2560;
     const minOut=IOS_SCANNER?(S.smallQrMode?700:520):(S.smallQrMode?900:crop);
     const out=Math.min(outCap,Math.max(crop,minOut));
     canvas.width=out;canvas.height=out;ctx.imageSmoothingEnabled=false;
@@ -2653,7 +2653,7 @@ Keep this file somewhere secure.
           if(!decoded && window.jsQR && generation===S.scanGeneration) {
             const regions=S.smallQrMode
               ? (IOS_SCANNER?[0.48,0.36,0.62,'full']:[0.58,0.44,0.32,0.72,'full'])
-              : (IOS_SCANNER?[0.72,0.56,0.42,'full']:['full',0.84,0.66,0.50]);
+              : (IOS_SCANNER?[0.72,0.56,0.42,'full']:['full',0.66,0.42,0.28]);
             const attempts=IOS_SCANNER?1:(S.smallQrMode?2:1);
             for(let n=0;n<attempts&&!decoded;n++){
               const region=regions[regionIndex%regions.length];regionIndex++;
@@ -4003,3 +4003,4 @@ Keep this file somewhere secure.
 
   bootstrap();
 })();
+
