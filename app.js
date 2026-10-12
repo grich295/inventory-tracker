@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.9 CLEAN - local photo search suggestions. */
+/* Inventory Tracker v8.7.10 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -1151,7 +1151,7 @@
           <div id="scanModeBadge" class="scan-mode-badge">Normal scan</div>
         </div>
         <div id="scanStatus" class="notice">Starting rear camera…</div>
-        <div class="camera-tools">
+        <div id="scanCameraWrap" class="hidden"><label for="scanCameraSelect">Camera / lens</label><select id="scanCameraSelect"></select><p class="muted">If the label looks blurred, try another rear camera.</p></div><div id="scanFocusWrap" class="hidden"><label for="scanFocusSlider">Manual focus</label><input id="scanFocusSlider" type="range"><p class="muted">Move slowly until the QR edges are sharp. Refocus returns to autofocus.</p></div><div class="camera-tools">
           <button class="btn ghost" id="smallQrBtn" type="button" aria-pressed="false">Small QR Auto</button>
           <button class="btn ghost hidden" id="refocusBtn" type="button">Refocus</button>
           <button class="btn ghost hidden" id="torchBtn" type="button" aria-pressed="false">Torch</button>
@@ -2315,6 +2315,19 @@ Keep this file somewhere secure.
     document.getElementById('scanText').onkeydown=e=>{if(e.key==='Enter') find();};
     document.getElementById('stopScan').onclick=stopScanner;
 
+    const cameraSelect=document.getElementById('scanCameraSelect');
+    if(cameraSelect)cameraSelect.onchange=async()=>{
+      const id=cameraSelect.value;cameraSelect.disabled=true;
+      try{localStorage.setItem('inventory-qr-camera',id);}catch(_){}
+      await stopScanner();if(S.page==='scan')await startQrScanner();
+      cameraSelect.disabled=false;
+    };
+    const focusSlider=document.getElementById('scanFocusSlider');
+    if(focusSlider)focusSlider.onchange=async()=>{
+      const track=S.cameraTrack,caps=S.cameraCaps?.focusDistance;
+      if(!track||!caps)return;
+      try{await track.applyConstraints({advanced:[{focusMode:'manual',focusDistance:clamp(Number(focusSlider.value),caps.min,caps.max)}]});}catch(_){}
+    };
     const smallBtn=document.getElementById('smallQrBtn');
     if(smallBtn) smallBtn.onclick=toggleSmallQrMode;
     const torchBtn=document.getElementById('torchBtn');
@@ -2412,6 +2425,18 @@ Keep this file somewhere secure.
     }
   }
 
+  async function updateScannerCameraChoices(track,generation) {
+    try{
+      const devices=(await navigator.mediaDevices.enumerateDevices()).filter(x=>x.kind==='videoinput');
+      if(generation!==S.scanGeneration)return;
+      const select=document.getElementById('scanCameraSelect'),wrap=document.getElementById('scanCameraWrap');
+      if(!select)return;
+      select.innerHTML=devices.map((d,i)=>`<option value="${esc(d.deviceId)}">${esc(d.label||`Camera ${i+1}`)}</option>`).join('');
+      select.value=track?.getSettings?.().deviceId||'';
+      wrap?.classList.toggle('hidden',devices.length<2);
+    }catch(_){}
+  }
+
   async function configureCameraTrack(track) {
     S.cameraTrack=track;
     S.cameraCaps=track?.getCapabilities ? track.getCapabilities() : {};
@@ -2424,6 +2449,11 @@ Keep this file somewhere secure.
         await track.applyConstraints({advanced:[{focusMode:'continuous'}]});
       }
     } catch(_) {}
+    const distance=S.cameraCaps?.focusDistance,modes=S.cameraCaps?.focusMode;
+    const manual=Array.isArray(modes)&&modes.includes('manual')&&distance&&distance.max>distance.min;
+    document.getElementById('scanFocusWrap')?.classList.toggle('hidden',!manual);
+    const slider=document.getElementById('scanFocusSlider');
+    if(manual&&slider){slider.min=distance.min;slider.max=distance.max;slider.step=distance.step||((distance.max-distance.min)/100);slider.value=settings.focusDistance??distance.min;}
     updateCameraControls();
   }
 
@@ -2463,11 +2493,11 @@ Keep this file somewhere secure.
     if(!track||!Array.isArray(modes))return;
     const status=document.getElementById('scanStatus');
     try{
-      if(modes.includes('single-shot')) {
+      if(modes.includes('continuous')) {
+        await track.applyConstraints({advanced:[{focusMode:'continuous'}]});
+      } else if(modes.includes('single-shot')) {
         await track.applyConstraints({advanced:[{focusMode:'single-shot'}]});
         setTimeout(()=>{try{if(S.cameraTrack&&modes.includes('continuous'))S.cameraTrack.applyConstraints({advanced:[{focusMode:'continuous'}]});}catch(_){}},700);
-      } else if(modes.includes('continuous')) {
-        await track.applyConstraints({advanced:[{focusMode:'continuous'}]});
       }
       if(status){status.className='notice';status.textContent='Refocusing camera — hold the QR still for a moment.';}
     }catch(_){if(status){status.className='notice warn';status.textContent='Manual refocus is not available on this camera.';}}
@@ -2587,15 +2617,23 @@ Keep this file somewhere secure.
       S.smallQrMode=false;
       S.torchOn=false;
       S.cameraCaps=null;
-      const stream=await navigator.mediaDevices.getUserMedia({
+      let preferredCamera='';try{preferredCamera=localStorage.getItem('inventory-qr-camera')||'';}catch(_){}
+      const cameraRequest={
         audio:false,
         video:{
-          facingMode:{ideal:'environment'},
+          ...(preferredCamera?{deviceId:{exact:preferredCamera}}:{facingMode:{ideal:'environment'}}),
           width:{ideal:IOS_SCANNER?1280:2560},
           height:{ideal:IOS_SCANNER?720:1440},
           frameRate:{ideal:IOS_SCANNER?24:30,max:IOS_SCANNER?30:60}
         }
-      });
+      };
+      let stream;
+      try{stream=await navigator.mediaDevices.getUserMedia(cameraRequest);}catch(e){
+        if(!preferredCamera||!['OverconstrainedError','NotFoundError'].includes(e.name))throw e;
+        delete cameraRequest.video.deviceId;cameraRequest.video.facingMode={ideal:'environment'};
+        try{localStorage.removeItem('inventory-qr-camera');}catch(_){}
+        stream=await navigator.mediaDevices.getUserMedia(cameraRequest);
+      }
 
       if(generation!==S.scanGeneration || S.page!=='scan' || document.hidden){
         try{stream.getTracks().forEach(t=>t.stop())}catch(_){}
@@ -2605,6 +2643,7 @@ Keep this file somewhere secure.
       S.cameraStream=stream;
       const track=stream.getVideoTracks()[0] || null;
       await configureCameraTrack(track);
+      await updateScannerCameraChoices(track,generation);
       if(generation!==S.scanGeneration){try{stream.getTracks().forEach(t=>t.stop())}catch(_){};return}
       video.srcObject=stream;
       await video.play();

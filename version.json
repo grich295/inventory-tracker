@@ -1,6 +1,6 @@
 {
-  "version": "8.7.9",
-  "build_id": "v879-photo-references-20261012",
+  "version": "8.7.10",
+  "build_id": "v8710-camera-controls-20261012",
   "clean": true,
   "notes": "Optional confirmed reference photos improve future non-AI photo searches. Compressed extra references preserve the main photo; manager/admin saving uses existing private storage permissions."
 }
