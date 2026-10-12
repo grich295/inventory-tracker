@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.7 CLEAN - local photo search suggestions. */
+/* Inventory Tracker v8.7.8 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -3167,13 +3167,20 @@ Keep this file somewhere secure.
 
 
 
+  function photoMatchConfidence(score) {
+    const value=Number.isFinite(score)?Math.max(0,Math.min(1,score)):0;
+    return value>=0.85?{label:'High',colour:'#166534',background:'#dcfce7'}:
+      value>=0.65?{label:'Medium',colour:'#92400e',background:'#fef3c7'}:
+      {label:'Low',colour:'#475569',background:'#f1f5f9'};
+  }
+
   let photoSearchCache=new Map(),photoSearchOwner='';
   async function openPhotoSearch(){
     if(!S.session||S.offline){setNotice('Connect to search inventory photos.','warn');return;}
     await stopScanner();
     const owner=S.session.user.id;
     if(photoSearchOwner!==owner){photoSearchCache.clear();photoSearchOwner=owner;}
-    showModal(`<header><h2>Find item by photo</h2><button class="close" data-close>×</button></header><p>Take a close-up, then crop around the item. We’ll suggest items with similar saved photos and show their stock locations.</p><p class="muted">Suggestions only — check the item before choosing. Your search photo is processed on this device and is not uploaded. The first search downloads the saved item photos.</p><input id="findItemPhoto" type="file" accept="image/*" capture="environment"><p id="photoSearchStatus" role="status" aria-live="polite"></p><div id="photoSearchResults" class="item-list"></div>`);
+    showModal(`<header><h2>Find item by photo</h2><button class="close" data-close>×</button></header><p>Take a close-up, then crop around the item. We’ll suggest items with similar saved photos and show their stock locations.</p><p class="muted">Suggestions only — check the item before choosing. Your search photo is processed on this device and is not uploaded. The first search downloads the saved item photos. Match confidence is an estimated photo similarity level, not the probability that an item is correct.</p><input id="findItemPhoto" type="file" accept="image/*" capture="environment"><p id="photoSearchStatus" role="status" aria-live="polite"></p><div id="photoSearchResults" class="item-list"></div>`);
     const input=document.getElementById('findItemPhoto'),status=document.getElementById('photoSearchStatus'),results=document.getElementById('photoSearchResults');
     let seq=0;
     const current=n=>n===seq&&S.session?.user?.id===owner&&status.isConnected;
@@ -3201,7 +3208,7 @@ Keep this file somewhere secure.
         if(!current(n))return;
         matches.sort((a,b)=>b.score-a.score);
         status.textContent=matches.length?`Closest photo suggestions · ${matches.length} photos compared${failed?' · '+failed+' unavailable':''}. Check the picture and item details; these may be unrelated.`:'No searchable photos available. Add item photos or use manual search.';
-        results.innerHTML=matches.slice(0,6).map(({item})=>itemRowHtml(item)).join('');
+        results.innerHTML=matches.slice(0,6).map(({item,score})=>{const c=photoMatchConfidence(score);return `<div><div style="margin:.4rem 0"><span style="display:inline-block;padding:.25rem .55rem;border-radius:999px;font-weight:700;color:${c.colour};background:${c.background}">${c.label} match confidence</span></div>${itemRowHtml(item)}</div>`}).join('');
         results.querySelectorAll('[data-item]').forEach(b=>b.onclick=()=>{if(S.session?.user?.id===owner)openItem(b.dataset.item)});
         await hydrateItemThumbnails(results);
       }catch(e){if(current(n))status.textContent='Could not compare photos. Try another clear close-up or use manual search.';}
