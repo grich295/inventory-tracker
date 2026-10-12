@@ -1,4 +1,4 @@
-const CACHE='inventory-tracker-v8-7-8-photo-confidence';
+const CACHE='inventory-tracker-v8-7-9-photo-references';
 const CORE=[
   './',
   './index.html',

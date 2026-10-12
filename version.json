@@ -1,6 +1,6 @@
 {
-  "version": "8.7.8",
-  "build_id": "v878-photo-confidence-20261012",
+  "version": "8.7.9",
+  "build_id": "v879-photo-references-20261012",
   "clean": true,
-  "notes": "Find item by photo: local, non-AI similarity suggestions with stock locations. Manual selection only. Existing low-stock alert rules retained."
+  "notes": "Optional confirmed reference photos improve future non-AI photo searches. Compressed extra references preserve the main photo; manager/admin saving uses existing private storage permissions."
 }

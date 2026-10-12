@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.8 CLEAN - local photo search suggestions. */
+/* Inventory Tracker v8.7.9 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -3174,13 +3174,37 @@ Keep this file somewhere secure.
       {label:'Low',colour:'#475569',background:'#f1f5f9'};
   }
 
+  async function photoReferencePaths(item) {
+    const folder=`${item.id}/references`;
+    const {data,error}=await sb.storage.from('item-photos').list(folder,{limit:8,sortBy:{column:'name',order:'asc'}});
+    if(error)throw error;
+    return [item.primary_photo_path,...(data||[]).filter(x=>x.id&&/\.jpg$/i.test(x.name)).map(x=>`${folder}/${x.name}`)].filter(Boolean);
+  }
+
+  async function savePhotoReference(item,file,owner) {
+    if(!canManage()||S.session?.user?.id!==owner||S.offline)throw Error('Photo saving requires a manager account and a connection.');
+    const upload=await compressImage(file);
+    if(!upload?.type?.startsWith('image/')||upload.size>360000)throw Error('Photo could not be compressed. Please try another photo.');
+    const bytes=await upload.arrayBuffer();
+    const digest=await crypto.subtle.digest('SHA-256',bytes);
+    const hash=Array.from(new Uint8Array(digest),x=>x.toString(16).padStart(2,'0')).join('');
+    const path=`${item.id}/references/${hash}.jpg`;
+    const paths=await photoReferencePaths(item);
+    if(paths.includes(path))return;
+    if(paths.length>=9)throw Error('This item already has eight extra reference photos.');
+    if(!canManage()||S.session?.user?.id!==owner)throw Error('Account changed. Search again.');
+    const {error}=await sb.storage.from('item-photos').upload(path,upload,{upsert:false,contentType:upload.type});
+    if(error)throw error;
+    photoSearchCache.clear();
+  }
+
   let photoSearchCache=new Map(),photoSearchOwner='';
   async function openPhotoSearch(){
     if(!S.session||S.offline){setNotice('Connect to search inventory photos.','warn');return;}
     await stopScanner();
     const owner=S.session.user.id;
     if(photoSearchOwner!==owner){photoSearchCache.clear();photoSearchOwner=owner;}
-    showModal(`<header><h2>Find item by photo</h2><button class="close" data-close>×</button></header><p>Take a close-up, then crop around the item. We’ll suggest items with similar saved photos and show their stock locations.</p><p class="muted">Suggestions only — check the item before choosing. Your search photo is processed on this device and is not uploaded. The first search downloads the saved item photos. Match confidence is an estimated photo similarity level, not the probability that an item is correct.</p><input id="findItemPhoto" type="file" accept="image/*" capture="environment"><p id="photoSearchStatus" role="status" aria-live="polite"></p><div id="photoSearchResults" class="item-list"></div>`);
+    showModal(`<header><h2>Find item by photo</h2><button class="close" data-close>×</button></header><p>Take a close-up, then crop around the item. We’ll suggest items with similar saved photos and show their stock locations.</p><p class="muted">Suggestions only — check the item before choosing. Your search photo stays on this device unless you choose to save it as a reference. The first search downloads the saved item photos. Match confidence is an estimated photo similarity level, not the probability that an item is correct.</p><input id="findItemPhoto" type="file" accept="image/*" capture="environment"><p id="photoSearchStatus" role="status" aria-live="polite"></p>${canManage()?'<label style="display:block;margin:.75rem 0"><input id="saveMatchReference" type="checkbox"> Save this photo to improve future matches when I select the correct item</label><p class="muted">Adds a compressed reference photo shared with authorised users. The main item picture stays the same.</p>':''}<div id="photoSearchResults" class="item-list"></div>`);
     const input=document.getElementById('findItemPhoto'),status=document.getElementById('photoSearchStatus'),results=document.getElementById('photoSearchResults');
     let seq=0;
     const current=n=>n===seq&&S.session?.user?.id===owner&&status.isConnected;
@@ -3196,11 +3220,17 @@ Keep this file somewhere secure.
         for(const item of items){
           if(!current(n))return;
           status.textContent=`Comparing photos ${++done} of ${items.length}…`;
-          const key=owner+':'+item.id+':'+item.primary_photo_path+':'+(item.updated_at||'');
           try{
-            let descriptor=photoSearchCache.get(key);
-            if(!descriptor){const r=await sb.storage.from('item-photos').download(item.primary_photo_path);if(r.error||!r.data)throw Error('Photo unavailable');if(!current(n))return;descriptor=await window.InventoryPhotoMatch.fromBlob(r.data);if(!current(n))return;photoSearchCache.set(key,descriptor);}
-            matches.push({item,score:window.InventoryPhotoMatch.similarity(query,descriptor)});
+            let best=-1;
+            const paths=await photoReferencePaths(item);
+            for(const path of paths){
+              if(!current(n))return;
+              const key=owner+':'+item.id+':'+path+':'+(item.updated_at||'');
+              let descriptor=photoSearchCache.get(key);
+              if(!descriptor){const r=await sb.storage.from('item-photos').download(path);if(r.error||!r.data)continue;if(!current(n))return;descriptor=await window.InventoryPhotoMatch.fromBlob(r.data);if(!current(n))return;photoSearchCache.set(key,descriptor);}
+              best=Math.max(best,window.InventoryPhotoMatch.similarity(query,descriptor));
+            }
+            if(best>=0)matches.push({item,score:best});else failed++;
           }catch(_){failed++;}
           if(!current(n))return;
           await new Promise(resolve=>setTimeout(resolve,0));
@@ -3209,7 +3239,20 @@ Keep this file somewhere secure.
         matches.sort((a,b)=>b.score-a.score);
         status.textContent=matches.length?`Closest photo suggestions · ${matches.length} photos compared${failed?' · '+failed+' unavailable':''}. Check the picture and item details; these may be unrelated.`:'No searchable photos available. Add item photos or use manual search.';
         results.innerHTML=matches.slice(0,6).map(({item,score})=>{const c=photoMatchConfidence(score);return `<div><div style="margin:.4rem 0"><span style="display:inline-block;padding:.25rem .55rem;border-radius:999px;font-weight:700;color:${c.colour};background:${c.background}">${c.label} match confidence</span></div>${itemRowHtml(item)}</div>`}).join('');
-        results.querySelectorAll('[data-item]').forEach(b=>b.onclick=()=>{if(S.session?.user?.id===owner)openItem(b.dataset.item)});
+        let selecting=false;
+        results.querySelectorAll('[data-item]').forEach(b=>b.onclick=async()=>{
+          if(selecting||!current(n))return;
+          const item=items.find(i=>String(i.id)===String(b.dataset.item));if(!item)return;
+          selecting=true;
+          try{
+            if(document.getElementById('saveMatchReference')?.checked){
+              status.textContent='Saving confirmed reference photo…';
+              await savePhotoReference(item,cropped,owner);
+            }
+            if(current(n))await openItem(item.id);
+          }catch(e){if(current(n))status.textContent=`Reference photo was not saved: ${e.message} Untick save to open the item without saving.`;}
+          finally{selecting=false;}
+        });
         await hydrateItemThumbnails(results);
       }catch(e){if(current(n))status.textContent='Could not compare photos. Try another clear close-up or use manual search.';}
       finally{if(current(n)){input.disabled=false;input.value='';}}
