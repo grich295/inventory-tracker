@@ -5,5 +5,7 @@ vm.createContext(ctx);vm.runInContext(code.slice(code.indexOf('  async function 
 (async()=>{const item={id:'item',primary_photo_path:'item/main.jpg'};await ctx.save(item,{},'owner');assert.equal(uploads.length,1);assert.match(uploads[0].path,/^item\/references\/[a-f0-9]{64}\.jpg$/);assert.equal(uploads[0].opts.upsert,false);assert.equal(item.primary_photo_path,'item/main.jpg');assert.equal(ctx.photoSearchCache.size,0);
 files=[{id:'saved',name:uploads[0].path.split('/').pop()}];await ctx.save(item,{},'owner');assert.equal(uploads.length,1,'duplicate not uploaded');assert.equal((await ctx.paths(item)).length,2);
 manager=false;await assert.rejects(ctx.save(item,{},'owner'),/manager/);manager=true;await assert.rejects(ctx.save(item,{},'other'),/manager/);
-files=Array.from({length:8},(_,i)=>({id:String(i),name:i+'.jpg'}));await assert.rejects(ctx.save(item,{},'owner'),/eight/);assert.equal(uploads.length,1);
+files=Array.from({length:2},(_,i)=>({id:String(i),name:i+'.jpg'}));await assert.rejects(ctx.save(item,{},'owner'),/two/);assert.equal(uploads.length,1);
+files=[];await ctx.save(item,{},'owner',.85);assert.equal(uploads.length,1,'high confidence never uploads');
 console.log('Confirmed photo compression, extra paths, duplicate protection, account/role guard and reference limit passed');})().catch(e=>{console.error(e);process.exitCode=1});
+

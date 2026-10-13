@@ -1,6 +1,6 @@
 {
-  "version": "8.7.11",
-  "build_id": "v8711-photo-speed-20261012",
+  "version": "8.7.12",
+  "build_id": "v8712-reference-limits-20261012",
   "clean": true,
-  "notes": "Optional confirmed reference photos improve future non-AI photo searches. Compressed extra references preserve the main photo; manager/admin saving uses existing private storage permissions."
+  "notes": "Maximum two extra reference photos per item; High-confidence selections do not save additional photos. Manager/admin item controls preview and delete extras while preserving the main picture."
 }

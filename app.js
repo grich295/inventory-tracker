@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.11 CLEAN - local photo search suggestions. */
+/* Inventory Tracker v8.7.12 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -3244,13 +3244,14 @@ Keep this file somewhere secure.
 
   async function photoReferencePaths(item) {
     const folder=`${item.id}/references`;
-    const {data,error}=await sb.storage.from('item-photos').list(folder,{limit:8,sortBy:{column:'name',order:'asc'}});
+    const {data,error}=await sb.storage.from('item-photos').list(folder,{limit:100,sortBy:{column:'name',order:'asc'}});
     if(error)throw error;
     return [item.primary_photo_path,...(data||[]).filter(x=>x.id&&/\.jpg$/i.test(x.name)).map(x=>`${folder}/${x.name}`)].filter(Boolean);
   }
 
-  async function savePhotoReference(item,file,owner) {
+  async function savePhotoReference(item,file,owner,score=0) {
     if(!canManage()||S.session?.user?.id!==owner||S.offline)throw Error('Photo saving requires a manager account and a connection.');
+    if(Number.isFinite(score)&&score>=0.85)return false;
     const upload=await compressImage(file);
     if(!upload?.type?.startsWith('image/')||upload.size>360000)throw Error('Photo could not be compressed. Please try another photo.');
     const bytes=await upload.arrayBuffer();
@@ -3259,7 +3260,7 @@ Keep this file somewhere secure.
     const path=`${item.id}/references/${hash}.jpg`;
     const paths=await photoReferencePaths(item);
     if(paths.includes(path))return;
-    if(paths.length>=9)throw Error('This item already has eight extra reference photos.');
+    if(paths.filter(p=>p!==item.primary_photo_path).length>=2)throw Error('This item already has two extra reference photos. Delete an extra photo from the item before saving another.');
     if(!canManage()||S.session?.user?.id!==owner)throw Error('Account changed. Search again.');
     const {error}=await sb.storage.from('item-photos').upload(path,upload,{upsert:false,contentType:upload.type});
     if(error)throw error;
@@ -3272,7 +3273,7 @@ Keep this file somewhere secure.
     await stopScanner();
     const owner=S.session.user.id;
     if(photoSearchOwner!==owner){photoSearchCache.clear();photoSearchOwner=owner;}
-    showModal(`<header><h2>Find item by photo</h2><button class="close" data-close>×</button></header><p>Take a close-up, then crop around the item. We’ll suggest items with similar saved photos and show their stock locations.</p><p class="muted">Suggestions only — check the item before choosing. Your search photo stays on this device unless you choose to save it as a reference. The first search prepares saved photos; later searches reuse compact comparisons on this device. Match confidence is an estimated photo similarity level, not the probability that an item is correct.</p><input id="findItemPhoto" type="file" accept="image/*" capture="environment"><p id="photoSearchStatus" role="status" aria-live="polite"></p>${canManage()?'<label style="display:block;margin:.75rem 0"><input id="saveMatchReference" type="checkbox"> Save this photo to improve future matches when I select the correct item</label><p class="muted">Adds a compressed reference photo shared with authorised users. The main item picture stays the same.</p>':''}<div id="photoSearchResults" class="item-list"></div>`);
+    showModal(`<header><h2>Find item by photo</h2><button class="close" data-close>×</button></header><p>Take a close-up, then crop around the item. We’ll suggest items with similar saved photos and show their stock locations.</p><p class="muted">Suggestions only — check the item before choosing. Your search photo stays on this device unless you choose to save it as a reference. The first search prepares saved photos; later searches reuse compact comparisons on this device. Match confidence is an estimated photo similarity level, not the probability that an item is correct.</p><input id="findItemPhoto" type="file" accept="image/*" capture="environment"><p id="photoSearchStatus" role="status" aria-live="polite"></p>${canManage()?'<label style="display:block;margin:.75rem 0"><input id="saveMatchReference" type="checkbox"> Save this photo to improve future matches when I select the correct item</label><p class="muted">Adds a compressed reference photo shared with authorised users. Maximum two extras per item. High-confidence selections do not save another photo. Manage or delete extras from the item record.</p>':''}<div id="photoSearchResults" class="item-list"></div>`);
     const input=document.getElementById('findItemPhoto'),status=document.getElementById('photoSearchStatus'),results=document.getElementById('photoSearchResults');
     let seq=0;
     const current=n=>n===seq&&S.session?.user?.id===owner&&status.isConnected;
@@ -3322,7 +3323,7 @@ Keep this file somewhere secure.
         if(!current(n))return;
         matches.sort((a,b)=>b.score-a.score);
         status.textContent=matches.length?`Closest photo suggestions · ${matches.length} photos compared${failed?' · '+failed+' unavailable':''}. Check the picture and item details; these may be unrelated.`:'No searchable photos available. Add item photos or use manual search.';
-        results.innerHTML=matches.slice(0,6).map(({item,score})=>{const c=photoMatchConfidence(score);return `<div><div style="margin:.4rem 0"><span style="display:inline-block;padding:.25rem .55rem;border-radius:999px;font-weight:700;color:${c.colour};background:${c.background}">${c.label} match confidence</span></div>${itemRowHtml(item)}</div>`}).join('');
+        results.innerHTML=matches.slice(0,6).map(({item,score})=>{const c=photoMatchConfidence(score);return `<div><div style="margin:.4rem 0"><span style="display:inline-block;padding:.25rem .55rem;border-radius:999px;font-weight:700;color:${c.colour};background:${c.background}">${c.label} match confidence</span>${c.label==='High'?'<small class="muted" style="display:block">Already a strong match — no extra photo will be saved.</small>':''}</div>${itemRowHtml(item)}</div>`}).join('');
         let selecting=false;
         results.querySelectorAll('[data-item]').forEach(b=>b.onclick=async()=>{
           if(selecting||!current(n))return;
@@ -3331,7 +3332,7 @@ Keep this file somewhere secure.
           try{
             if(document.getElementById('saveMatchReference')?.checked){
               status.textContent='Saving confirmed reference photo…';
-              await savePhotoReference(item,cropped,owner);
+              await savePhotoReference(item,cropped,owner,matches.find(m=>m.item.id===item.id)?.score||0);
             }
             if(current(n))await openItem(item.id);
           }catch(e){if(current(n))status.textContent=`Reference photo was not saved: ${e.message} Untick save to open the item without saving.`;}
@@ -3341,6 +3342,35 @@ Keep this file somewhere secure.
       }catch(e){if(current(n))status.textContent='Could not compare photos. Try another clear close-up or use manual search.';}
       finally{if(current(n)){input.disabled=false;input.value='';}}
     };
+  }
+
+  async function openExtraPhotoManager(item){
+    const owner=S.session?.user?.id;
+    if(!owner||!canManage()||S.offline)return;
+    showModal(`<header><h2>Extra reference photos · ${esc(item.name)}</h2><button class="close" data-close>×</button></header><p>The main item picture is kept separately. Maximum two extras for new saves; high-confidence matches do not save more.</p><div id="extraPhotoList">Loading photos…</div><div class="actions"><button class="btn ghost" id="extraPhotosBack" type="button">Back to item</button></div>`);
+    const list=document.getElementById('extraPhotoList');
+    const current=()=>list.isConnected&&S.session?.user?.id===owner&&canManage();
+    document.getElementById('extraPhotosBack').onclick=()=>{if(current())openItem(item.id)};
+    try{
+      const paths=(await photoReferencePaths(item)).filter(p=>p!==item.primary_photo_path);if(!current())return;
+      const signed=paths.length?await sb.storage.from('item-photos').createSignedUrls(paths,300):{data:[]};if(!current())return;
+      list.innerHTML=paths.length?`<p>${paths.length} extra photo${paths.length===1?'':'s'} saved${paths.length>2?' — remove extras to get down to two':''}.</p><div class="item-list">${paths.map((path,index)=>`<div class="card"><strong>Extra photo ${index+1}</strong>${signed.data?.[index]?.signedUrl?`<img src="${esc(signed.data[index].signedUrl)}" alt="Extra reference photo ${index+1}" style="display:block;max-width:180px;max-height:180px;margin:.5rem 0">`:''}<button class="btn danger" type="button" data-delete-extra-photo="${index}">Delete this extra photo</button></div>`).join('')}</div><button class="btn danger" id="clearExtraPhotos" type="button">Clear all extra photos</button>`:'<p>No extra reference photos saved for this item.</p>';
+      let deleting=false;
+      const remove=async selected=>{
+        if(deleting||!current())return;
+        if(!confirm(`Delete ${selected.length===1?'this extra reference photo':'all '+selected.length+' extra reference photos'}? The main item picture will be kept.`))return;
+        deleting=true;
+        try{
+          if(!current())return;
+          const result=await sb.storage.from('item-photos').remove(selected);if(result.error)throw result.error;
+          photoSearchCache.clear();photoReferenceCache.clear();
+          if(current())await openExtraPhotoManager(item);
+        }catch(e){if(current())list.insertAdjacentHTML('afterbegin',`<p class="notice error">Could not delete: ${esc(e.message||'Please try again.')}</p>`);}
+        finally{deleting=false;}
+      };
+      list.querySelectorAll('[data-delete-extra-photo]').forEach(b=>b.onclick=()=>remove([paths[Number(b.dataset.deleteExtraPhoto)]]));
+      const clear=document.getElementById('clearExtraPhotos');if(clear)clear.onclick=()=>remove(paths);
+    }catch(e){if(current())list.textContent='Could not load extra photos. Please try again.';}
   }
 
   async function openItem(id) {
@@ -3363,7 +3393,7 @@ Keep this file somewhere secure.
       </div><div>
         <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div>${itemCategoryReview?`<div class="category-suggestion item-detail-suggestion"><div><strong>Suggested category: ${esc(itemCategoryReview.suggestion.category)}</strong><span>${esc(itemCategoryReview.suggestion.confidence)} confidence · ${itemCategoryReview.suggestion.percent}%${itemCategoryReview.suggestion.evidence.length?` · ${esc(itemCategoryReview.suggestion.evidence[0])}`:''}</span></div><button class="btn small" id="approveItemCategorySuggestion" type="button">Approve suggestion</button></div>`:''}<div><strong>Default storage</strong><br>${esc(itemDefaultLabel(i))}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div>${onOrder>0?`<div style="margin-top:.7rem"><span class="badge order">ON ORDER ${qty(onOrder)}</span></div>`:''}</div>
         ${i.active?`<div class="actions quick-actions"><button class="btn good" data-stock-action="ADD">+ Add stock</button><button class="btn warn" data-stock-action="USE">− Use stock</button><button class="btn secondary" data-stock-action="ADJUST">Adjust count</button><button class="btn ghost" data-stock-action="MOVE">Move stock</button></div>`:'<div class="notice">This item is archived. Restore it before recording new stock actions.</div>'}
-        <div class="actions"><button class="btn ${pref?.favourite?'warn':'ghost'}" id="favouriteBtn">${pref?.favourite?'★ Favourite':'☆ Add favourite'}</button><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()&&i.active?'<button class="btn ghost" id="editItemBtn">Edit item</button><button class="btn ghost" id="suppliersBtn">Suppliers 1–3</button><button class="btn" id="orderItemBtn">Order item</button>':''}${canAdmin()?i.active?'<button class="btn danger" id="archiveItemBtn">Archive item</button>':'<button class="btn good" id="restoreItemBtn">Restore item</button>':''}</div>
+        <div class="actions"><button class="btn ${pref?.favourite?'warn':'ghost'}" id="favouriteBtn">${pref?.favourite?'★ Favourite':'☆ Add favourite'}</button><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()&&i.active?'<button class="btn ghost" id="editItemBtn">Edit item</button><button class="btn ghost" id="suppliersBtn">Suppliers 1–3</button><button class="btn" id="orderItemBtn">Order item</button>':''}${canManage()?'<button class="btn ghost" id="extraItemPhotosBtn" type="button">Extra reference photos</button>':''}${canAdmin()?i.active?'<button class="btn danger" id="archiveItemBtn">Archive item</button>':'<button class="btn good" id="restoreItemBtn">Restore item</button>':''}</div>
       </div></div>
       <div class="card" style="margin-top:1rem"><h3>Suppliers & orders</h3>
         ${suppliers.length?suppliers.map(s=>`<div class="supplier-line"><strong>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</strong>${s.preferred?' <span class="badge">Preferred</span>':''}<div class="muted">Ref ${esc(s.supplier_ref||'—')} · Pack ${qty(s.pack_size||1)} · Lead ${s.lead_time_days==null?'—':esc(s.lead_time_days)+' days'} · ${s.unit_price==null?'Price —':money(s.unit_price)}</div></div>`).join(''):'<p class="muted">No suppliers saved yet.</p>'}
@@ -3379,6 +3409,7 @@ Keep this file somewhere secure.
       catch(err){setNotice(parseError(err),'error');}
     };
     const photo=document.getElementById('itemPhoto'); if(photo) photo.onclick=()=>photo.classList.toggle('photo-large');
+    const extraPhotos=document.getElementById('extraItemPhotosBtn');if(extraPhotos)extraPhotos.onclick=()=>openExtraPhotoManager(i);
     const edit=document.getElementById('editItemBtn'); if(edit) edit.onclick=()=>openEditItem(i);
     const suppliersBtn=document.getElementById('suppliersBtn'); if(suppliersBtn) suppliersBtn.onclick=()=>openSupplierEditor(i);
     const orderItemBtn=document.getElementById('orderItemBtn'); if(orderItemBtn) orderItemBtn.onclick=()=>openCreateOrder(i.id);
@@ -4137,4 +4168,5 @@ Keep this file somewhere secure.
 
   bootstrap();
 })();
+
 

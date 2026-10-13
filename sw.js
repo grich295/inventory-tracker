@@ -1,4 +1,4 @@
-const CACHE='inventory-tracker-v8-7-11-photo-speed';
+const CACHE='inventory-tracker-v8-7-12-reference-limits';
 const CORE=[
   './',
   './index.html',
@@ -129,4 +129,5 @@ self.addEventListener('notificationclick',event=>{
     if(self.clients.openWindow)await self.clients.openWindow(target);
   })());
 });
+
 
