@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.10 CLEAN - local photo search suggestions. */
+/* Inventory Tracker v8.7.11 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -3213,6 +3213,35 @@ Keep this file somewhere secure.
       {label:'Low',colour:'#475569',background:'#f1f5f9'};
   }
 
+  const photoReferenceCache=new Map();
+  let photoDescriptorDbPromise=null;
+  function photoDescriptorDb(){
+    if(!window.indexedDB)return Promise.resolve(null);
+    if(!photoDescriptorDbPromise)photoDescriptorDbPromise=new Promise(resolve=>{
+      let finished=false;
+      const finish=db=>{if(finished){db?.close?.();return;}finished=true;resolve(db);};
+      const timer=setTimeout(()=>finish(null),1200);
+      try{
+        const request=window.indexedDB.open('inventory-photo-descriptors-v1',1);
+        request.onupgradeneeded=()=>request.result.createObjectStore('descriptors');
+        request.onsuccess=()=>{clearTimeout(timer);finish(request.result);};
+        request.onerror=request.onblocked=()=>{clearTimeout(timer);finish(null);};
+      }catch(_){clearTimeout(timer);finish(null);}
+    });
+    return photoDescriptorDbPromise;
+  }
+  async function photoDescriptorStored(key,value){
+    const db=await photoDescriptorDb();if(!db)return null;
+    return new Promise(resolve=>{
+      try{
+        const tx=db.transaction('descriptors',value?'readwrite':'readonly'),store=tx.objectStore('descriptors');
+        const request=value?store.put(value,key):store.get(key);
+        request.onsuccess=()=>resolve(value||request.result||null);
+        request.onerror=tx.onabort=()=>resolve(null);
+      }catch(_){resolve(null);}
+    });
+  }
+
   async function photoReferencePaths(item) {
     const folder=`${item.id}/references`;
     const {data,error}=await sb.storage.from('item-photos').list(folder,{limit:8,sortBy:{column:'name',order:'asc'}});
@@ -3234,7 +3263,7 @@ Keep this file somewhere secure.
     if(!canManage()||S.session?.user?.id!==owner)throw Error('Account changed. Search again.');
     const {error}=await sb.storage.from('item-photos').upload(path,upload,{upsert:false,contentType:upload.type});
     if(error)throw error;
-    photoSearchCache.clear();
+    photoSearchCache.clear();photoReferenceCache.clear();
   }
 
   let photoSearchCache=new Map(),photoSearchOwner='';
@@ -3243,7 +3272,7 @@ Keep this file somewhere secure.
     await stopScanner();
     const owner=S.session.user.id;
     if(photoSearchOwner!==owner){photoSearchCache.clear();photoSearchOwner=owner;}
-    showModal(`<header><h2>Find item by photo</h2><button class="close" data-close>×</button></header><p>Take a close-up, then crop around the item. We’ll suggest items with similar saved photos and show their stock locations.</p><p class="muted">Suggestions only — check the item before choosing. Your search photo stays on this device unless you choose to save it as a reference. The first search downloads the saved item photos. Match confidence is an estimated photo similarity level, not the probability that an item is correct.</p><input id="findItemPhoto" type="file" accept="image/*" capture="environment"><p id="photoSearchStatus" role="status" aria-live="polite"></p>${canManage()?'<label style="display:block;margin:.75rem 0"><input id="saveMatchReference" type="checkbox"> Save this photo to improve future matches when I select the correct item</label><p class="muted">Adds a compressed reference photo shared with authorised users. The main item picture stays the same.</p>':''}<div id="photoSearchResults" class="item-list"></div>`);
+    showModal(`<header><h2>Find item by photo</h2><button class="close" data-close>×</button></header><p>Take a close-up, then crop around the item. We’ll suggest items with similar saved photos and show their stock locations.</p><p class="muted">Suggestions only — check the item before choosing. Your search photo stays on this device unless you choose to save it as a reference. The first search prepares saved photos; later searches reuse compact comparisons on this device. Match confidence is an estimated photo similarity level, not the probability that an item is correct.</p><input id="findItemPhoto" type="file" accept="image/*" capture="environment"><p id="photoSearchStatus" role="status" aria-live="polite"></p>${canManage()?'<label style="display:block;margin:.75rem 0"><input id="saveMatchReference" type="checkbox"> Save this photo to improve future matches when I select the correct item</label><p class="muted">Adds a compressed reference photo shared with authorised users. The main item picture stays the same.</p>':''}<div id="photoSearchResults" class="item-list"></div>`);
     const input=document.getElementById('findItemPhoto'),status=document.getElementById('photoSearchStatus'),results=document.getElementById('photoSearchResults');
     let seq=0;
     const current=n=>n===seq&&S.session?.user?.id===owner&&status.isConnected;
@@ -3255,25 +3284,41 @@ Keep this file somewhere secure.
         if(!cropped){status.textContent='Photo cancelled. Choose another photo.';return;}
         const query=await window.InventoryPhotoMatch.fromBlob(cropped);if(!current(n))return;
         const items=S.items.filter(i=>i.active&&i.primary_photo_path),matches=[];
-        let done=0,failed=0;
-        for(const item of items){
-          if(!current(n))return;
-          status.textContent=`Comparing photos ${++done} of ${items.length}…`;
-          try{
-            let best=-1;
-            const paths=await photoReferencePaths(item);
-            for(const path of paths){
-              if(!current(n))return;
-              const key=owner+':'+item.id+':'+path+':'+(item.updated_at||'');
-              let descriptor=photoSearchCache.get(key);
-              if(!descriptor){const r=await sb.storage.from('item-photos').download(path);if(r.error||!r.data)continue;if(!current(n))return;descriptor=await window.InventoryPhotoMatch.fromBlob(r.data);if(!current(n))return;photoSearchCache.set(key,descriptor);}
-              best=Math.max(best,window.InventoryPhotoMatch.similarity(query,descriptor));
-            }
-            if(best>=0)matches.push({item,score:best});else failed++;
-          }catch(_){failed++;}
-          if(!current(n))return;
-          await new Promise(resolve=>setTimeout(resolve,0));
-        }
+        let done=0,failed=0,nextItem=0;
+        const compareNext=async()=>{
+          while(current(n)&&nextItem<items.length){
+            const item=items[nextItem++];
+            try{
+              let best=-1;
+              const refKey=owner+':'+item.id+':'+(item.updated_at||'');
+              let refs=photoReferenceCache.get(refKey);
+              if(!refs||Date.now()-refs.at>300000){
+                const paths=await photoReferencePaths(item);if(!current(n))return;
+                refs={paths,at:Date.now()};photoReferenceCache.set(refKey,refs);
+              }
+              for(const path of refs.paths){
+                if(!current(n))return;
+                const key='v1:'+owner+':'+item.id+':'+path+':'+(item.updated_at||'');
+                let descriptor=photoSearchCache.get(key)||await photoDescriptorStored(key);
+                if(!current(n))return;
+                if(!descriptor){
+                  const r=await sb.storage.from('item-photos').download(path);if(r.error||!r.data)continue;
+                  if(!current(n))return;
+                  descriptor=await window.InventoryPhotoMatch.fromBlob(r.data);if(!current(n))return;
+                  await photoDescriptorStored(key,descriptor);
+                }
+                if(!current(n))return;
+                photoSearchCache.set(key,descriptor);
+                best=Math.max(best,window.InventoryPhotoMatch.similarity(query,descriptor));
+              }
+              if(best>=0)matches.push({item,score:best});else failed++;
+            }catch(_){failed++;}
+            if(!current(n))return;
+            status.textContent=`Comparing photos ${++done} of ${items.length}…`;
+            await new Promise(resolve=>setTimeout(resolve,0));
+          }
+        };
+        await Promise.all(Array.from({length:Math.min(4,items.length)},()=>compareNext()));
         if(!current(n))return;
         matches.sort((a,b)=>b.score-a.score);
         status.textContent=matches.length?`Closest photo suggestions · ${matches.length} photos compared${failed?' · '+failed+' unavailable':''}. Check the picture and item details; these may be unrelated.`:'No searchable photos available. Add item photos or use manual search.';
