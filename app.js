@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.13 CLEAN - local photo search suggestions. */
+/* Inventory Tracker v8.7.14 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -248,7 +248,8 @@
   const stripPresetMarker = note => {
     const n=String(note||'').trim();
     if(isLegacyControlledBinNote(n)) return '';
-    return n.replaceAll(BIN_PRESET_MARKER,'').replace(/\s{2,}/g,' ').trim();
+    const stripped=n.replaceAll(BIN_PRESET_MARKER,'').replace(/\s{2,}/g,' ').trim();
+    return isLegacyControlledBinNote(stripped)?'':stripped;
   };
   const naturalBinSort = (a,b) => String(a).localeCompare(String(b),undefined,{numeric:true,sensitivity:'base'});
   const itemDefaultPosition = item => {
@@ -919,7 +920,7 @@
           <h3>Locations and bins</h3>
           <ul>
             <li>Select the main <strong>Location</strong>, then the Bin Ref.</li>
-            <li>Select a location in Items to search its stock, or use Locations → View stock. Locations can use an Admin-managed <strong>controlled bin dropdown</strong> or manual Bin Ref entry.</li>
+            <li>Admin Bin Setup offers Rename and Remove. Rename keeps stock and default assignments; Remove removes a dropdown choice and retains occupied bins. Select a location in Items to search its stock, or use Locations → View stock. Locations can use an Admin-managed <strong>controlled bin dropdown</strong> or manual Bin Ref entry.</li>
             <li>Controlled bin lists are shared with every user/device.</li>
             <li>Admins can add ranges (for example Bin 1–50), individual bins, or convert existing bins to controlled choices.</li>
             <li><strong>No bin / Unallocated</strong> is available where appropriate.</li>
@@ -1641,8 +1642,10 @@
     // Preserve a live/default position. It leaves the controlled preset list,
     // but remains available as an existing bin until the stock/default is moved.
     const keepActive=stock>0||defaultItems.length>0;
-    const {error}=await sb.from('stock_locations').update({active:keepActive,notes}).eq('id',row.id);
+    const {data,error}=await sb.from('stock_locations').update({active:keepActive,notes}).eq('id',row.id).select('id,active,notes').single();
     if(error)throw error;
+    if(!data||isBinPresetRow({...row,...data}))throw new Error('Bin removal was not saved. Check your admin access and retry.');
+    Object.assign(row,data);
     return {kept:keepActive,stock,defaults:defaultItems.length};
   }
 
@@ -1672,7 +1675,7 @@
         use.stock>0?`${qty(use.stock)} in stock`:'',
         use.defaultItems.length?`default for ${use.defaultItems.length} item${use.defaultItems.length===1?'':'s'}`:''
       ].filter(Boolean).join(' · ');
-      return `<div class="bin-chip"><span><strong>${esc(ref)}</strong>${detail?`<small>${esc(detail)}</small>`:''}</span><button class="btn ghost small" data-remove-preset="${row.id}">Remove</button></div>`;
+      return `<div class="bin-chip"><span><strong>${esc(ref)}</strong>${detail?`<small>${esc(detail)}</small>`:''}</span><span class="actions"><button type="button" class="btn ghost small" data-rename-bin="${row.id}">Rename</button><button type="button" class="btn ghost small" data-remove-preset="${row.id}">Remove</button></span></div>`;
     }).join('');
 
     return `
@@ -1787,6 +1790,27 @@
         render();
       }catch(err){setNotice(parseError(err),'error');render();}
     };
+
+    document.querySelectorAll('[data-rename-bin]').forEach(btn=>btn.onclick=async()=>{
+      if(disabled){setNotice('Reconnect before renaming bins.','error');render();return;}
+      const row=byId(S.locations,btn.dataset.renameBin),owner=S.session?.user?.id;
+      if(!row)return;
+      const value=prompt('New bin name',effectiveBinCode(row));
+      if(value===null)return;
+      const name=normalizeBin(value);
+      if(!name){setNotice('Enter a bin name.','error');render();return;}
+      if(name===effectiveBinCode(row))return;
+      if(S.locations.some(x=>x.id!==row.id&&x.location_name===row.location_name&&effectiveBinCode(x).toLowerCase()===name.toLowerCase())){setNotice('That bin name already exists at this location.','error');render();return;}
+      btn.disabled=true;
+      try{
+        const result=await sb.from('stock_locations').update({bin_code:name,area_name:''}).eq('id',row.id).select('id,bin_code').single();
+        if(result.error)throw result.error;
+        if(owner!==S.session?.user?.id)return;
+        await loadData({transactions:false});
+        if(owner!==S.session?.user?.id)return;
+        setNotice('Bin renamed. Stock, item defaults and transaction references preserved.');render();
+      }catch(err){if(owner===S.session?.user?.id){setNotice(parseError(err),'error');render();}}
+    });
 
     document.querySelectorAll('[data-remove-preset]').forEach(btn=>btn.onclick=async()=>{
       if(disabled){setNotice('Reconnect to the internet before changing Bin Setup.','error');render();return;}

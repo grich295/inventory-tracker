@@ -1,11 +1,11 @@
-/* Inventory Tracker v8.7.13 CLEAN
+/* Inventory Tracker v8.7.14 CLEAN
    Runtime loader/enhancements: paint tin sizes, half-tin tracking and linked size variants.
    Loads the current app.js core. Variants keep separate stock/QR/orders while inheriting Safety Bridge links.
 */
 (() => {
   'use strict';
 
-  const VERSION='8.7.13';
+  const VERSION='8.7.14';
   window.INVENTORY_BUILD_VERSION=VERSION;
   const PAINT_SIZE_OPTIONS=[0.25,0.5,0.75,1,2.5,5,7.5,10,12,15,20];
   let paintClient=null;

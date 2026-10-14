@@ -1,0 +1,12 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const s=fs.readFileSync('inventory-tracker/app.js','utf8');
+const strip=s.slice(s.indexOf('  const stripPresetMarker'),s.indexOf('  const naturalBinSort'));
+const ctx={BIN_PRESET_MARKER:'[[BIN_PRESET]]',isLegacyControlledBinNote:n=>/^Controlled\s+.+\s+bin$/i.test(n)};
+vm.createContext(ctx);vm.runInContext(strip+";a=stripPresetMarker('Controlled Workshop main store bin [[BIN_PRESET]]');b=stripPresetMarker('Keep note [[BIN_PRESET]]');",ctx);
+assert.equal(ctx.a,'');assert.equal(ctx.b,'Keep note');
+const fn=s.slice(s.indexOf('  async function removePresetBin'),s.indexOf('  function selectedBinSetupLocation'));
+Object.assign(ctx,{binPresetUsed:()=>({stock:4,defaultItems:[{}]}),isBinPresetRow:r=>(r.notes||'').includes('[[BIN_PRESET]]'),sb:{from:()=>({update:p=>({eq:()=>({select:()=>({single:async()=>({data:{id:'1',...p}})})})})})}});
+vm.runInContext(fn,ctx);
+(async()=>{const row={id:'1',notes:'[[BIN_PRESET]]',active:true};const out=await ctx.removePresetBin(row);assert.equal(out.kept,true);assert.equal(row.notes,null);assert.equal(row.active,true);
+ctx.sb.from=()=>({update:()=>({eq:()=>({select:()=>({single:async()=>({data:null,error:new Error('No saved row')})})})})});
+await assert.rejects(ctx.removePresetBin(row),/No saved row/);console.log('Remove strips mixed legacy markers, preserves occupied bins and rejects failed writes.');})().catch(e=>{console.error(e);process.exitCode=1});

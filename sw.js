@@ -1,4 +1,4 @@
-const CACHE='inventory-tracker-v8-7-13-location-search';
+const CACHE='inventory-tracker-v8-7-14-bin-edit';
 const CORE=[
   './',
   './index.html',
