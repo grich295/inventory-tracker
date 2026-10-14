@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.12 CLEAN - local photo search suggestions. */
+/* Inventory Tracker v8.7.13 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -65,6 +65,7 @@
     page: 'dashboard',
     search: '',
     categoryFilter: '',
+    locationFilter: '',
     categoryModel: null,
     selectedItemId: null,
     showArchived: false,
@@ -918,7 +919,7 @@
           <h3>Locations and bins</h3>
           <ul>
             <li>Select the main <strong>Location</strong>, then the Bin Ref.</li>
-            <li>Locations can use an Admin-managed <strong>controlled bin dropdown</strong> or manual Bin Ref entry.</li>
+            <li>Select a location in Items to search its stock, or use Locations → View stock. Locations can use an Admin-managed <strong>controlled bin dropdown</strong> or manual Bin Ref entry.</li>
             <li>Controlled bin lists are shared with every user/device.</li>
             <li>Admins can add ranges (for example Bin 1–50), individual bins, or convert existing bins to controlled choices.</li>
             <li><strong>No bin / Unallocated</strong> is available where appropriate.</li>
@@ -1334,6 +1335,7 @@
     const q=S.search.toLowerCase().trim();
     return S.items.filter(i=>S.showArchived?!i.active:i.active).filter(i=>{
       if(S.categoryFilter && String(i.category||'')!==S.categoryFilter) return false;
+      if(S.locationFilter&&!itemPositions(i.id).some(b=>num(b.quantity)>0&&byId(S.locations,b.location_id)?.location_name===S.locationFilter))return false;
       if(!q) return true;
       const positionText=itemPositions(i.id).map(b=>locationLabel(byId(S.locations,b.location_id))).join(' ');
       return [i.name,i.item_code,i.qr_value,i.category,positionText].join(' ').toLowerCase().includes(q);
@@ -1343,7 +1345,7 @@
   function itemsHtml() {
     const filtered=filteredItems();
     const reviewCount=canManage()?categoryReviewRows().length:0;
-    return `<div class="toolbar"><button class="btn secondary" data-photo-search>Find item by photo</button><input id="itemSearch" value="${esc(S.search)}" placeholder="Search item, code, location or bin"><select id="categoryFilter"><option value="">All categories</option>${categoryNames().map(c=>`<option value="${esc(c)}" ${S.categoryFilter===c?'selected':''}>${esc(c)}</option>`).join('')}</select>${canManage()?`<button class="btn" id="addItemBtn">Add new item</button><button class="btn ${reviewCount?'warn':'ghost'}" id="categoryReviewBtn">Category Review${reviewCount?` (${reviewCount})`:' ✓'}</button>`:''}${canAdmin()?`<button class="btn ghost" id="toggleArchivedBtn">${S.showArchived?'Active items':'Archived items'}</button><button class="btn ghost" id="manageCategoriesBtn">Categories</button>`:''}</div>
+    return `<div class="toolbar"><button class="btn secondary" data-photo-search>Find item by photo</button><input id="itemSearch" value="${esc(S.search)}" placeholder="Search item, code, location or bin"><select id="itemLocationFilter" aria-label="Stock location"><option value="">All locations</option>${locationNames().map(name=>`<option value="${esc(name)}" ${S.locationFilter===name?'selected':''}>${esc(name)}</option>`).join('')}</select><select id="categoryFilter"><option value="">All categories</option>${categoryNames().map(c=>`<option value="${esc(c)}" ${S.categoryFilter===c?'selected':''}>${esc(c)}</option>`).join('')}</select>${canManage()?`<button class="btn" id="addItemBtn">Add new item</button><button class="btn ${reviewCount?'warn':'ghost'}" id="categoryReviewBtn">Category Review${reviewCount?` (${reviewCount})`:' ✓'}</button>`:''}${canAdmin()?`<button class="btn ghost" id="toggleArchivedBtn">${S.showArchived?'Active items':'Archived items'}</button><button class="btn ghost" id="manageCategoriesBtn">Categories</button>`:''}</div>
       <div id="itemCount" class="muted" style="margin-bottom:.6rem">${filtered.length} item${filtered.length===1?'':'s'}</div>
       <div id="itemList" class="item-list">${filtered.map(itemRowHtml).join('') || '<div class="card">No matching items.</div>'}</div>`;
   }
@@ -1369,7 +1371,7 @@
       const units=balances.reduce((a,b)=>a+num(b.quantity),0);
       const items=new Set(balances.map(b=>b.item_id));
       const controlled=controlledBinSummary(name);
-      return `<div class="card"><div class="muted">Location</div><div class="item-title" style="margin:.2rem 0 .45rem">${esc(name)}</div><div class="stat">${qty(units)}</div><div class="muted">${items.size} item${items.size===1?'':'s'} · total units</div>${controlled?`<div class="badge good" style="margin-top:.55rem">${esc(controlled)}</div>`:'<div class="badge muted" style="margin-top:.55rem">Manual Bin Ref</div>'}${canManage()?`<div class="actions"><button class="btn ghost" data-rename-location="${esc(name)}">Rename</button><button class="btn danger" data-delete-location="${esc(name)}">Delete</button></div>`:''}</div>`;
+      return `<div class="card"><div class="muted">Location</div><div class="item-title" style="margin:.2rem 0 .45rem">${esc(name)}</div><div class="stat">${qty(units)}</div><div class="muted">${items.size} item${items.size===1?'':'s'} · total units</div>${controlled?`<div class="badge good" style="margin-top:.55rem">${esc(controlled)}</div>`:'<div class="badge muted" style="margin-top:.55rem">Manual Bin Ref</div>'}<div class="actions"><button type="button" class="btn secondary" data-location-stock="${esc(name)}">View stock</button></div>${canManage()?`<div class="actions"><button class="btn ghost" data-rename-location="${esc(name)}">Rename</button><button class="btn danger" data-delete-location="${esc(name)}">Delete</button></div>`:''}</div>`;
     }).join('');
     return `<div class="toolbar">${canManage()?'<button class="btn" id="addLocationBtn">Add location</button>':''}${canAdmin()?'<button class="btn secondary" data-go="binsetup">Bin Setup</button>':''}</div>
       <div class="card"><h2>Locations</h2><p class="muted">Locations can use a controlled bin dropdown or a flexible manual Bin Ref. Admin can create and change controlled bin lists at any time from <strong>Bin Setup</strong>.</p></div>
@@ -2792,6 +2794,7 @@ Keep this file somewhere secure.
   function bindItems() {
     const inp=document.getElementById('itemSearch');
     inp.oninput=()=>{S.search=inp.value; clearTimeout(inp._t); inp._t=setTimeout(refreshItemSearchResults,120);};
+    const loc=document.getElementById('itemLocationFilter');if(loc)loc.onchange=()=>{S.locationFilter=loc.value;refreshItemSearchResults();};
     const cat=document.getElementById('categoryFilter'); if(cat) cat.onchange=()=>{S.categoryFilter=cat.value;refreshItemSearchResults();};
     const add=document.getElementById('addItemBtn'); if(add) add.onclick=openAddItem;
     const archived=document.getElementById('toggleArchivedBtn'); if(archived) archived.onclick=()=>{S.showArchived=!S.showArchived;S.search='';render();};
@@ -2801,6 +2804,7 @@ Keep this file somewhere secure.
   }
 
   function bindLocations() {
+    document.querySelectorAll('[data-location-stock]').forEach(b=>b.onclick=()=>{S.locationFilter=b.dataset.locationStock;S.search='';S.categoryFilter='';S.showArchived=false;navigatePage('items');});
     const b=document.getElementById('addLocationBtn'); if(b) b.onclick=openAddLocation;
     document.querySelectorAll('[data-rename-location]').forEach(btn=>btn.onclick=()=>openRenameLocation(btn.dataset.renameLocation));
     document.querySelectorAll('[data-delete-location]').forEach(btn=>btn.onclick=()=>openDeleteLocation(btn.dataset.deleteLocation));

@@ -1,4 +1,4 @@
-const CACHE='inventory-tracker-v8-7-12-reference-limits';
+const CACHE='inventory-tracker-v8-7-13-location-search';
 const CORE=[
   './',
   './index.html',
