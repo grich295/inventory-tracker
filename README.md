@@ -109,3 +109,10 @@ Help → Phone alerts includes a master device on/off control, individual catego
 - The **Save request** edit form shows validation errors and Supabase permission/data errors directly in the form instead of behind the modal. Button stays usable for retry when save fails.
 - Save confirms the updated request values returned by the database. A separate data-reload failure no longer incorrectly claims the save failed.
 - A live/synthetic save contract test was exercised for successful update, permission denial, missing row, invalid input and refresh failure; live mobile end-to-end testing remains necessary.
+
+## v8.7.20 — Backdate requests and orders
+
+- Fixed a doubled-backslash date regular expression which incorrectly rejected all dates routed through the changed-date converter.
+- Admins and managers can select an earlier **Requested date** and **Ordered date** in new/edit request forms, direct orders, and request-to-order confirmation.
+- Only malformed or impossible calendar dates are rejected. Existing request timestamps are retained when not changed.
+- The date conversion was tested with earlier days, months, years, a leap day and invalid dates. No existing order data was modified.
