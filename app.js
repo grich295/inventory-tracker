@@ -2979,62 +2979,178 @@ Keep this file somewhere secure.
   }
 
 
-  function openCreateOrder(itemId) {
-    if(!canManage()){setNotice('Admin or manager access required to create orders.','error');render();return;}
+  function openCreateOrder(itemId, mode='OPEN') {
+    if(!canManage()){setNotice('Admin or manager access required to manage ordering.','error');render();return;}
     const item=byId(S.items,itemId); if(!item)return;
+    if(requestsForItem(itemId).length){
+      S.orderTab='requested';navigatePage('orders');
+      setNotice('This item has an outstanding request. Open Requested to edit it or confirm that it has been ordered.');
+      return;
+    }
+    const isRequest=mode==='REQUESTED';
     const forecast=suggestedOrderRows().find(r=>r.item.id===itemId);
     const suppliers=suppliersForItem(itemId);
     const preferred=preferredSupplier(itemId);
-    const suggested=forecast?.suggested||1;
-    showModal(`<header><div><h2>Add to order</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header>
+    const suggested=Math.max(1,forecast?.suggested||1);
+    showModal(`<header><div><h2>${isRequest?'Request item':'Mark item as ordered'}</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header>
       <form id="createOrderForm">
         <div class="form-grid">
-          <div><label>Quantity ordered</label><input id="orderQty" type="number" inputmode="decimal" min="0.01" step="0.01" value="${esc(suggested)}" required></div>
-          <div><label>Supplier</label><select id="orderSupplier"><option value="">Manual supplier</option>${suppliers.map(s=>`<option value="${s.id}" ${preferred?.id===s.id?'selected':''}>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</option>`).join('')}</select></div>
-          <div><label>Supplier name</label><input id="orderSupplierName" list="globalSupplierNames" value="${esc(preferred?.supplier_name||'')}" required><datalist id="globalSupplierNames">${globalSupplierNames().map(n=>`<option value="${esc(n)}"></option>`).join('')}</datalist></div>
+          <div><label>${isRequest?'Quantity requested':'Quantity ordered'}</label><input id="orderQty" type="number" inputmode="decimal" min="0.01" step="0.01" value="${esc(suggested)}" required></div>
+          <div><label>Supplier ${isRequest?'(optional)':''}</label><select id="orderSupplier"><option value="">${isRequest?'Supplier not chosen':'Manual supplier'}</option>${suppliers.map(s=>`<option value="${s.id}" ${preferred?.id===s.id?'selected':''}>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</option>`).join('')}</select></div>
+          <div><label>Supplier name ${isRequest?'(optional)':''}</label><input id="orderSupplierName" list="globalSupplierNames" value="${esc(preferred?.supplier_name||'')}" ${isRequest?'':'required'}><datalist id="globalSupplierNames">${globalSupplierNames().map(n=>`<option value="${esc(n)}"></option>`).join('')}</datalist></div>
           <div><label>Supplier part ref</label><input id="orderSupplierRef" value="${esc(preferred?.supplier_ref||'')}"></div>
-          <div><label>Order / PO reference</label><input id="orderRef" placeholder="e.g. PO-1024"></div>
-          <div><label>Expected delivery date</label><input id="orderExpected" type="date"></div>
-          <div class="full"><label>Notes (optional)</label><textarea id="orderNotes" rows="2"></textarea></div>
+          ${!isRequest?`<div><label>Order / PO reference</label><input id="orderRef" placeholder="e.g. PO-1024"></div>
+          <div><label>Expected delivery date</label><input id="orderExpected" type="date"></div>`:''}
+          <div class="full"><label>Notes (optional)</label><textarea id="orderNotes" rows="2" placeholder="${isRequest?'Who requested this, or why it is needed?':'Supplier or delivery notes'}"></textarea></div>
         </div>
-        <div class="notice">Current stock: <strong>${qty(itemTotal(itemId))}</strong> · Already on order: <strong>${qty(itemOnOrder(itemId))}</strong> · Suggested now: <strong>${qty(suggested)}</strong></div>
-        <div class="actions"><button class="btn" type="submit">Mark as ordered</button></div>
+        <div class="notice">In stock: <strong>${qty(itemTotal(itemId))}</strong> · On order: <strong>${qty(itemOnOrder(itemId))}</strong> · Suggested: <strong>${qty(forecast?.suggested||0)}</strong>. ${isRequest?'This is a request only; it will not count as ordered stock.':'This confirms that the order has been placed with the supplier.'}</div>
+        <div class="actions"><button class="btn" type="submit">${isRequest?'Save as requested':'Mark as ordered'}</button></div>
       </form>`);
     const sel=document.getElementById('orderSupplier');
     const name=document.getElementById('orderSupplierName');
     const ref=document.getElementById('orderSupplierRef');
     sel.onchange=()=>{
-      const s=byId(S.itemSuppliers,sel.value);
-      name.value=s?.supplier_name||'';
-      ref.value=s?.supplier_ref||'';
+      const supplier=byId(S.itemSuppliers,sel.value);
+      name.value=supplier?.supplier_name||'';
+      ref.value=supplier?.supplier_ref||'';
       const exp=document.getElementById('orderExpected');
-      if(s?.lead_time_days!=null && !exp.value){
-        const d=new Date();d.setDate(d.getDate()+num(s.lead_time_days));exp.value=d.toISOString().slice(0,10);
+      if(exp&&supplier?.lead_time_days!=null&&!exp.value){
+        const d=new Date();d.setDate(d.getDate()+num(supplier.lead_time_days));exp.value=d.toISOString().slice(0,10);
       }
     };
-    if(preferred?.lead_time_days!=null){
+    if(!isRequest&&preferred?.lead_time_days!=null){
       const d=new Date();d.setDate(d.getDate()+num(preferred.lead_time_days));
       document.getElementById('orderExpected').value=d.toISOString().slice(0,10);
     }
     document.getElementById('createOrderForm').onsubmit=async e=>{
       e.preventDefault();
+      const quantity=num(document.getElementById('orderQty').value);
+      if(!(quantity>0)){setNotice('Enter a quantity greater than zero.','error');return;}
       const supplier=byId(S.itemSuppliers,sel.value);
+      const supplierName=name.value.trim();
+      if(!isRequest&&!supplierName){setNotice('Select or enter the supplier before confirming an order.','error');return;}
+      const btn=e.currentTarget.querySelector('button[type=submit]');btn.disabled=true;
+      const now=new Date().toISOString();
       const row={
-        item_id:itemId,
-        supplier_id:supplier?.id||null,
-        supplier_name:name.value.trim(),
+        item_id:itemId, supplier_id:supplier?.id||null,
+        supplier_name:supplierName||null,
         supplier_ref:ref.value.trim()||null,
-        quantity_ordered:num(document.getElementById('orderQty').value),
+        quantity_ordered:quantity,
         quantity_received:0,
-        order_reference:document.getElementById('orderRef').value.trim()||null,
-        expected_date:document.getElementById('orderExpected').value||null,
-        ordered_by:S.profile.id,
+        order_reference:isRequest?null:document.getElementById('orderRef').value.trim()||null,
+        expected_date:isRequest?null:document.getElementById('orderExpected').value||null,
+        requested_at:isRequest?now:null,
+        requested_by:isRequest?S.profile.id:null,
+        ordered_at:isRequest?null:now,
+        ordered_by:isRequest?null:S.profile.id,
         notes:document.getElementById('orderNotes').value.trim()||null,
-        status:'OPEN'
+        status:isRequest?'REQUESTED':'OPEN'
       };
-      const {error}=await sb.from('purchase_orders').insert(row);
-      if(error){setNotice(parseError(error),'error');return;}
-      await loadData();closeModal();S.orderTab='open';setNotice(`${item.name}: marked as on order.`);render();
+      try{
+        const {error}=await sb.from('purchase_orders').insert(row);
+        if(error)throw error;
+        await loadData();closeModal();S.orderTab=isRequest?'requested':'open';
+        setNotice(`${item.name}: ${isRequest?'request saved. Not yet ordered.':'marked as on order.'}`);render();
+      }catch(error){setNotice(parseError(error),'error');btn.disabled=false;}
+    };
+  }
+
+  function openConfirmRequest(orderId) {
+    if(!canManage())return;
+    const o=byId(S.purchaseOrders,orderId);if(!o||o.status!=='REQUESTED')return;
+    const suppliers=suppliersForItem(o.item_id);
+    const existing=suppliers.find(s=>s.id===o.supplier_id);
+    showModal(`<header><div><h2>Confirm supplier order</h2><div class="muted">${esc(itemName(o.item_id))} · requested ${fmtShortDate(o.requested_at)}</div></div><button class="close" data-close>×</button></header>
+      <form id="confirmRequestForm"><div class="form-grid">
+        <div><label>Quantity ordered</label><input id="confirmOrderQty" type="number" min="0.01" step="0.01" value="${esc(o.quantity_ordered)}" required></div>
+        <div><label>Supplier</label><select id="confirmSupplier"><option value="">Manual supplier</option>${suppliers.map(x=>`<option value="${x.id}" ${x.id===o.supplier_id?'selected':''}>${esc(x.supplier_name)}</option>`).join('')}</select></div>
+        <div><label>Supplier name</label><input id="confirmSupplierName" value="${esc(o.supplier_name||'')}" required></div>
+        <div><label>Supplier part ref</label><input id="confirmSupplierRef" value="${esc(o.supplier_ref||'')}"></div>
+        <div><label>Order / PO reference</label><input id="confirmOrderRef" placeholder="e.g. PO-1024"></div>
+        <div><label>Expected delivery</label><input id="confirmOrderExpected" type="date"></div>
+        <div class="full"><label>Notes</label><textarea id="confirmOrderNotes" rows="2">${esc(o.notes||'')}</textarea></div>
+      </div><div class="notice">This moves the request to <strong>On Order</strong>. Only then will it count as incoming stock and be available for receipt.</div>
+      <div class="actions"><button class="btn good" type="submit">Confirm ordered</button></div></form>`);
+    const select=document.getElementById('confirmSupplier');
+    select.onchange=()=>{const row=byId(suppliers,select.value);if(row){document.getElementById('confirmSupplierName').value=row.supplier_name;document.getElementById('confirmSupplierRef').value=row.supplier_ref||'';}};
+    document.getElementById('confirmRequestForm').onsubmit=async e=>{
+      e.preventDefault();
+      const amount=num(document.getElementById('confirmOrderQty').value);
+      const supplierName=document.getElementById('confirmSupplierName').value.trim();
+      if(!(amount>0)||!supplierName){setNotice('Enter a positive quantity and supplier.','error');return;}
+      const btn=e.currentTarget.querySelector('button[type=submit]');btn.disabled=true;
+      const selection=byId(suppliers,select.value);
+      const now=new Date().toISOString();
+      try{
+        const {data,error}=await sb.from('purchase_orders').update({
+          status:'OPEN',quantity_ordered:amount,ordered_at:now,ordered_by:S.profile.id,
+          supplier_id:selection?.id||null,
+          supplier_name:supplierName,
+          supplier_ref:document.getElementById('confirmSupplierRef').value.trim()||null,
+          order_reference:document.getElementById('confirmOrderRef').value.trim()||null,
+          expected_date:document.getElementById('confirmOrderExpected').value||null,
+          notes:document.getElementById('confirmOrderNotes').value.trim()||null,
+          updated_at:now
+        }).eq('id',orderId).eq('status','REQUESTED').select('id').maybeSingle();
+        if(error)throw error;
+        if(!data)throw new Error('This request has already changed. Refresh the list.');
+        await loadData();closeModal();S.orderTab='open';setNotice('Request confirmed and moved to On Order.');render();
+      }catch(error){setNotice(parseError(error),'error');btn.disabled=false;}
+    };
+  }
+
+  function openEditRequest(orderId) {
+    if(!canManage())return;
+    const o=byId(S.purchaseOrders,orderId);if(!o||o.status!=='REQUESTED')return;
+    showModal(`<header><h2>Edit request · ${esc(itemName(o.item_id))}</h2><button class="close" data-close>×</button></header>
+      <form id="editRequestForm">
+        <label>Quantity requested</label><input id="requestEditQty" type="number" step="0.01" min="0.01" value="${esc(o.quantity_ordered)}" required>
+        <label>Preferred supplier (optional)</label><input id="requestEditSupplier" value="${esc(o.supplier_name||'')}">
+        <label>Supplier part reference</label><input id="requestEditPart" value="${esc(o.supplier_ref||'')}">
+        <label>Notes</label><textarea id="requestEditNotes" rows="3">${esc(o.notes||'')}</textarea>
+        <div class="actions"><button class="btn" type="submit">Save request</button></div>
+      </form>`);
+    document.getElementById('editRequestForm').onsubmit=async e=>{
+      e.preventDefault();
+      const amount=num(document.getElementById('requestEditQty').value);
+      if(!(amount>0)){setNotice('Enter a quantity greater than zero.','error');return;}
+      const btn=e.currentTarget.querySelector('button[type=submit]');btn.disabled=true;
+      const supplierName=document.getElementById('requestEditSupplier').value.trim()||null;
+      const supplierId=o.supplier_name===supplierName?o.supplier_id:null;
+      try{
+        const {data,error}=await sb.from('purchase_orders').update({
+          quantity_ordered:amount,supplier_name:supplierName,supplier_id:supplierId,
+          supplier_ref:document.getElementById('requestEditPart').value.trim()||null,
+          notes:document.getElementById('requestEditNotes').value.trim()||null,
+          updated_at:new Date().toISOString()
+        }).eq('id',orderId).eq('status','REQUESTED').select('id').maybeSingle();
+        if(error)throw error;
+        if(!data)throw new Error('Request already changed. Refresh the list.');
+        await loadData();closeModal();S.orderTab='requested';setNotice('Request updated.');render();
+      }catch(error){setNotice(parseError(error),'error');btn.disabled=false;}
+    };
+  }
+
+  function openCancelRequest(orderId) {
+    if(!canManage())return;
+    const o=byId(S.purchaseOrders,orderId);if(!o||o.status!=='REQUESTED')return;
+    showModal(`<header><h2>Cancel request</h2><button class="close" data-close>×</button></header>
+      <p>Cancel the request for <strong>${qty(o.quantity_ordered)} × ${esc(itemName(o.item_id))}</strong>? No supplier order or stock movement will be affected.</p>
+      <label>Reason (optional)</label><textarea id="cancelRequestNotes" rows="2"></textarea>
+      <div class="actions"><button class="btn danger" id="cancelRequestConfirm">Cancel request</button><button class="btn ghost" data-close>Keep request</button></div>`);
+    document.getElementById('cancelRequestConfirm').onclick=async()=>{
+      const btn=document.getElementById('cancelRequestConfirm');btn.disabled=true;
+      const reason=document.getElementById('cancelRequestNotes').value.trim();
+      const notes=[o.notes,reason?`Request cancelled: ${reason}`:'Request cancelled'].filter(Boolean).join(' · ');
+      try{
+        const {data,error}=await sb.from('purchase_orders').update({
+          status:'CANCELLED',cancelled_at:new Date().toISOString(),
+          cancelled_by:S.profile.id,notes,updated_at:new Date().toISOString()
+        }).eq('id',orderId).eq('status','REQUESTED').select('id').maybeSingle();
+        if(error)throw error;
+        if(!data)throw new Error('Request already changed. Refresh the list.');
+        await loadData();closeModal();S.orderTab='requested';setNotice('Request cancelled.');render();
+      }catch(error){setNotice(parseError(error),'error');btn.disabled=false;}
     };
   }
 
