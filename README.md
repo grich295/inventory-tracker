@@ -116,3 +116,12 @@ Help → Phone alerts includes a master device on/off control, individual catego
 - Admins and managers can select an earlier **Requested date** and **Ordered date** in new/edit request forms, direct orders, and request-to-order confirmation.
 - Only malformed or impossible calendar dates are rejected. Existing request timestamps are retained when not changed.
 - The date conversion was tested with earlier days, months, years, a leap day and invalid dates. No existing order data was modified.
+
+## v8.7.21 — Identification photo learning and backup
+
+- Local photo recognition now compares colour layout as well as histograms/edges; high similarity is reserved for a score with a clear lead over another candidate. Scores are suggestions, not guaranteed recognition.
+- **Not shown? Find the correct item** lets users search all active inventory items (including those without main photos), not only the leading six photo matches.
+- Managers/admins selecting the correct item via manual correction save the cropped image as an additional identification reference by default, with upload/list verification and a maximum of two extra photos per item. Standard users can choose the correct item but cannot upload references.
+- Under individual items, **Extra identification photos** shows saved counts and thumbnails and has **Add extra photo**, deletion and clear-all controls.
+- A high-confidence automatic suggestion does not trigger an additional save, preserving the existing space limit; manually correcting a wrong suggestion bypasses that suppression.
+- Full ZIP backups that include uploaded files now cover the extra identification images, with counts and any failures listed in the manifest.
