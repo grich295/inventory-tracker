@@ -1,6 +1,6 @@
 {
-  "version": "8.7.17",
-  "build_id": "v8717-visible-order-dates-20261016",
+  "version": "8.7.18",
+  "build_id": "v8718-requested-status-20261016",
   "clean": true,
-  "notes": "Optional Requested and direct On Order choices remain separate. All authorised users see request/order status, quantities and dates in item lists and details. Managers can edit request, order and expected dates. Existing supplier orders preserved."
+  "notes": "Requested button now confirms that an admin/manager raised a purchase request/PO. Requested and On Order badges with quantities and dates display independently for every authorised user's item list and detail; existing order workflows unchanged."
 }
