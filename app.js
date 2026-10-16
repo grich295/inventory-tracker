@@ -3656,21 +3656,32 @@ Keep this file somewhere secure.
   }
 
   async function savePhotoReference(item,file,owner,score=0) {
-    if(!canManage()||S.session?.user?.id!==owner||S.offline)throw Error('Photo saving requires a manager account and a connection.');
-    if(Number.isFinite(score)&&score>=0.85)return false;
+    if(!canManage()||S.session?.user?.id!==owner||S.offline)throw Error('Photo saving requires a manager account and an online connection.');
+    // This cap applies to automatic photo-search additions. An admin/manager
+    // can still explicitly inspect existing references and delete them.
+    if(Number.isFinite(score)&&score>=0.85)return {status:'high-confidence'};
     const upload=await compressImage(file);
-    if(!upload?.type?.startsWith('image/')||upload.size>360000)throw Error('Photo could not be compressed. Please try another photo.');
+    if(!upload?.type?.startsWith('image/')||upload.size>360000)throw Error('Photo could not be compressed to the 360 KB limit. Please try another photo.');
     const bytes=await upload.arrayBuffer();
     const digest=await crypto.subtle.digest('SHA-256',bytes);
     const hash=Array.from(new Uint8Array(digest),x=>x.toString(16).padStart(2,'0')).join('');
     const path=`${item.id}/references/${hash}.jpg`;
     const paths=await photoReferencePaths(item);
-    if(paths.includes(path))return;
-    if(paths.filter(p=>p!==item.primary_photo_path).length>=2)throw Error('This item already has two extra reference photos. Delete an extra photo from the item before saving another.');
+    const existing=paths.filter(p=>p!==item.primary_photo_path);
+    if(existing.includes(path))return {status:'already-saved',count:existing.length};
+    if(existing.length>=2)throw Error('Two additional identification photos are already saved for this item. Delete one before adding another.');
     if(!canManage()||S.session?.user?.id!==owner)throw Error('Account changed. Search again.');
-    const {error}=await sb.storage.from('item-photos').upload(path,upload,{upsert:false,contentType:upload.type});
+    const {data,error}=await sb.storage.from('item-photos').upload(path,upload,{upsert:false,contentType:upload.type});
     if(error)throw error;
+    if(data?.path && data.path!==path)throw Error('Upload returned a different storage path. Reopen extra photos to verify the result.');
+    // Do not claim an image was saved based on a successful upload response
+    // alone. Confirm it can be listed under the selected inventory item.
+    const confirmed=await photoReferencePaths(item);
+    if(!confirmed.includes(path)){
+      throw Error('Photo uploaded, but the saved file could not be verified. Reopen Extra reference photos before trying again.');
+    }
     photoSearchCache.clear();photoReferenceCache.clear();
+    return {status:'saved',count:confirmed.filter(p=>p!==item.primary_photo_path).length};
   }
 
   let photoSearchCache=new Map(),photoSearchOwner='';
@@ -3736,13 +3747,34 @@ Keep this file somewhere secure.
           const item=items.find(i=>String(i.id)===String(b.dataset.item));if(!item)return;
           selecting=true;
           try{
-            if(document.getElementById('saveMatchReference')?.checked){
-              status.textContent='Saving confirmed reference photo…';
-              await savePhotoReference(item,cropped,owner,matches.find(m=>m.item.id===item.id)?.score||0);
+            const saveRequested=!!document.getElementById('saveMatchReference')?.checked;
+            let info='';
+            let style='good';
+            if(saveRequested){
+              status.textContent='Saving and checking additional identification photo…';
+              const score=matches.find(m=>m.item.id===item.id)?.score||0;
+              const result=await savePhotoReference(item,cropped,owner,score);
+              if(result.status==='saved')info=`Extra identification photo saved and verified (${result.count}/2).`;
+              else if(result.status==='already-saved')info=`This extra photo was already saved (${result.count}/2). No duplicate was stored.`;
+              else if(result.status==='high-confidence'){style='warn';info='Extra photo not saved: this is already a high-confidence match.';}
+            }else{
+              style='warn';
+              info='No extra photo saved. Select "Save this photo" during photo search if you want to keep a reference image.';
             }
-            if(current(n))await openItem(item.id);
-          }catch(e){if(current(n))status.textContent=`Reference photo was not saved: ${e.message} Untick save to open the item without saving.`;}
-          finally{selecting=false;}
+            if(current(n)){
+              await openItem(item.id);
+              const modal=document.querySelector('#modalBackdrop .modal');
+              if(modal&&info){
+                const message=document.createElement('div');
+                message.className=`notice ${style}`;
+                message.setAttribute('role','status');
+                message.textContent=info;
+                modal.querySelector('header')?.insertAdjacentElement('afterend',message);
+              }
+            }
+          }catch(e){
+            if(current(n))status.textContent=`Extra reference photo was not confirmed: ${parseError(e)}. Open the item's Extra reference photos to check before trying again.`;
+          }finally{selecting=false;}
         });
         await hydrateItemThumbnails(results);
       }catch(e){if(current(n))status.textContent='Could not compare photos. Try another clear close-up or use manual search.';}
