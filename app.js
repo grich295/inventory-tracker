@@ -3055,6 +3055,7 @@ Keep this file somewhere secure.
           <div class="full"><label>Notes (optional)</label><textarea id="orderNotes" rows="2" placeholder="${isRequest?'Who requested this, or why it is needed?':'Supplier or delivery notes'}"></textarea></div>
         </div>
         <div class="notice">In stock: <strong>${qty(itemTotal(itemId))}</strong> · On order: <strong>${qty(itemOnOrder(itemId))}</strong> · Suggested: <strong>${qty(forecast?.suggested||0)}</strong>. ${isRequest?'This is a request only; it will not count as ordered stock.':'This confirms that the order has been placed with the supplier.'}</div>
+        ${!isRequest&&requestsForItem(itemId).length?'<div class="notice warn"><strong>There is already a request for this item.</strong> If your supplier order fulfils that request, use Confirm ordered on the existing request instead. Continuing here creates a separate direct order and leaves the request outstanding.</div>':''}
         <div class="actions"><button class="btn" type="submit">${isRequest?'Save as requested':'Mark as ordered'}</button></div>
       </form>`);
     const sel=document.getElementById('orderSupplier');
