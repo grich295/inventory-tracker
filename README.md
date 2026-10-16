@@ -1,6 +1,6 @@
 # Inventory Tracker
 
-Current production build: **v8.7.15 CLEAN**
+Current production build: **v8.7.16 CLEAN**
 
 ## Active runtime
 
@@ -79,3 +79,12 @@ Validation: JavaScript syntax checks and node tests/photo-match.test.cjs coverin
 ## v8.7.15 — phone alert preferences
 
 Help → Phone alerts includes a master device on/off control, individual category switches and a phone-display test. Individual preferences are stored in `inventory_push_subscriptions`, authorised by the user and current Inventory site, and enforced server-side before delivery. An OFF command checks server deletion before reporting success. Low stock only notifies for newly-low products; while a category is muted, the current list is silently baselined. The test checks local phone display rather than scheduled delivery. The server-side sender is `inventory-alerts` v3.
+
+## v8.7.16 — Requests before supplier orders
+
+- Suggested Orders / individual items: **Request item** records REQUESTED, with notes, optional supplier, quantity and requester/date.
+- New **Requested** tab: edit, cancel or **Confirm ordered**. Confirm requires supplier and records the actual supplier order date, order reference, expected delivery and ordered-by user.
+- The original request date and requester remain on the record after confirming.
+- OPEN and PART_RECEIVED only count as On Order and can receive deliveries. REQUESTED stays outside delivered stock, low-stock forecast supply, and overdue order alerts.
+- Requested quantities appear separately in dashboard, individual item details, suggested-order table and CSV/Excel exports.
+- Existing historical orders are preserved; database transition checked in a rollback-only test.
