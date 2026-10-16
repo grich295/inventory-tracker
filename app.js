@@ -3804,40 +3804,83 @@ Keep this file somewhere secure.
         }).join('')||'<div class="notice warn">No sufficiently similar photo found. Use the full inventory search below.</div>';
         manualFallback.hidden=false;
         let selecting=false;
-        results.querySelectorAll('[data-item]').forEach(b=>b.onclick=async()=>{
-          if(selecting||!current(n))return;
-          const item=items.find(i=>String(i.id)===String(b.dataset.item));if(!item)return;
+        const chooseItem=async(item,manual=false)=>{
+          if(selecting||!current(n)||!item)return;
           selecting=true;
+          let info='',style='good';
           try{
-            const saveRequested=!!document.getElementById('saveMatchReference')?.checked;
-            let info='';
-            let style='good';
+            // Explicitly correcting a wrong or missing suggestion is the training
+            // signal. Admin/manager correction saves by default.
+            const saveRequested=manual?canManage():!!document.getElementById('saveMatchReference')?.checked;
             if(saveRequested){
-              status.textContent='Saving and checking additional identification photo…';
-              const score=matches.find(m=>m.item.id===item.id)?.score||0;
-              const result=await savePhotoReference(item,cropped,owner,score);
-              if(result.status==='saved')info=`Extra identification photo saved and verified (${result.count}/2).`;
-              else if(result.status==='already-saved')info=`This extra photo was already saved (${result.count}/2). No duplicate was stored.`;
-              else if(result.status==='high-confidence'){style='warn';info='Extra photo not saved: this is already a high-confidence match.';}
+              status.textContent='Saving and verifying the selected item reference…';
+              const position=matches.findIndex(m=>m.item.id===item.id);
+              const hit=position<0?null:matches[position];
+              const runnerUp=position<0?null:matches[position+1];
+              const strong=hit&&photoMatchConfidence(hit.score,hit.score-(runnerUp?.score||0)).level==='high';
+              try{
+                const outcome=await savePhotoReference(item,cropped,owner,manual?0:strong?hit.score:0);
+                if(outcome.status==='saved')info=`Identification photo saved to ${item.name} (${outcome.count}/2). Future matches can use it.`;
+                else if(outcome.status==='already-saved')info=`Identification photo already saved for ${item.name} (${outcome.count}/2).`;
+                else if(outcome.status==='high-confidence'){style='warn';info='Photo not added: this suggested item already has a strong, clear similarity match.';}
+                else{style='warn';info='No additional identification photo was stored.';}
+              }catch(error){
+                // An upload problem must not block choosing/opening the right item.
+                style='error';info=`Selected ${item.name}, but the reference was not saved: ${parseError(error)}`;
+              }
             }else{
               style='warn';
-              info='No extra photo saved. Select "Save this photo" during photo search if you want to keep a reference image.';
+              info=manual&&!canManage()?
+                'Correct item opened. Reference learning requires a manager/admin to save an additional identification photo.':
+                'Item opened without saving an additional photo. Tick Save this photo to improve future suggestions.';
             }
-            if(current(n)){
-              await openItem(item.id);
-              const modal=document.querySelector('#modalBackdrop .modal');
-              if(modal&&info){
-                const message=document.createElement('div');
-                message.className=`notice ${style}`;
-                message.setAttribute('role','status');
-                message.textContent=info;
-                modal.querySelector('header')?.insertAdjacentElement('afterend',message);
-              }
+            if(!current(n))return;
+            await openItem(item.id);
+            const modal=document.querySelector('#modalBackdrop .modal');
+            if(modal&&info){
+              const message=document.createElement('div');
+              message.className=`notice ${style}`;
+              message.setAttribute('role','status');
+              message.textContent=info;
+              modal.querySelector('header')?.insertAdjacentElement('afterend',message);
             }
-          }catch(e){
-            if(current(n))status.textContent=`Extra reference photo was not confirmed: ${parseError(e)}. Open the item's Extra reference photos to check before trying again.`;
+          }catch(error){
+            if(current(n))status.textContent=`Could not open the selected item: ${parseError(error)}`;
           }finally{selecting=false;}
+        };
+        results.querySelectorAll('[data-item]').forEach(b=>b.onclick=()=>{
+          const item=items.find(i=>String(i.id)===String(b.dataset.item));
+          void chooseItem(item,false);
         });
+        // Manual correction covers the full inventory, including products with
+        // no main photo and products whose match score was below the threshold.
+        const allItems=items.slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));
+        const showManualOptions=()=>{
+          if(!current(n)||manualPanel.hidden)return;
+          const term=manualSearch.value.trim().toLowerCase();
+          if(!term){manualList.innerHTML='<p class="muted">Type a name, item code or category to find the correct item.</p>';return;}
+          const words=term.split(/\\s+/).filter(Boolean);
+          const found=allItems.filter(item=>{
+            const text=[item.name,item.item_code,item.category,item.qr_value].map(x=>String(x||'').toLowerCase()).join(' ');
+            return words.every(word=>text.includes(word));
+          });
+          manualList.innerHTML=found.length?
+            `<p class="muted">${found.length} matching item${found.length===1?'':'s'}. Select the correct one${found.length>30?' (first 30 shown)':''}.</p>
+            ${found.slice(0,30).map(item=>`<button class="photo-manual-item" type="button" data-manual-item="${esc(item.id)}"><strong>${esc(item.name)}</strong>
+              <span class="muted">${esc(item.item_code||'No item code')}${item.category?' · '+esc(item.category):''}</span></button>`).join('')}`:
+            '<p class="notice warn">No matching inventory item. If it is a new product, add the item to Inventory first, then scan it again.</p>';
+          manualList.querySelectorAll('[data-manual-item]').forEach(btn=>btn.onclick=()=>{
+            const item=allItems.find(i=>String(i.id)===String(btn.dataset.manualItem));
+            void chooseItem(item,true);
+          });
+        };
+        manualOpen.onclick=()=>{
+          if(!current(n))return;
+          manualPanel.hidden=!manualPanel.hidden;
+          manualOpen.textContent=manualPanel.hidden?'Not shown? Find the correct item':'Hide full inventory search';
+          if(!manualPanel.hidden){showManualOptions();manualSearch.focus();}
+        };
+        manualSearch.oninput=showManualOptions;
         await hydrateItemThumbnails(results);
       }catch(e){if(current(n))status.textContent='Could not compare photos. Try another clear close-up or use manual search.';}
       finally{if(current(n)){input.disabled=false;input.value='';}}
