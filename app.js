@@ -3782,33 +3782,82 @@ Keep this file somewhere secure.
     };
   }
 
-  async function openExtraPhotoManager(item){
+  async function openExtraPhotoManager(item,feedback=''){
     const owner=S.session?.user?.id;
     if(!owner||!canManage()||S.offline)return;
-    showModal(`<header><h2>Extra reference photos · ${esc(item.name)}</h2><button class="close" data-close>×</button></header><p>The main item picture is kept separately. Maximum two extras for new saves; high-confidence matches do not save more.</p><div id="extraPhotoList">Loading photos…</div><div class="actions"><button class="btn ghost" id="extraPhotosBack" type="button">Back to item</button></div>`);
+    showModal(`<header><h2>Extra identification photos · ${esc(item.name)}</h2><button class="close" data-close>×</button></header>
+      <p>The main item photo is kept separately. You can save up to two additional identification photos per item. These are used in photo matching.</p>
+      ${feedback?`<div class="notice good" role="status">${esc(feedback)}</div>`:''}
+      <div id="extraPhotoList">Loading saved photos…</div>
+      <div id="extraPhotoFeedback" class="notice" role="status" aria-live="polite" hidden></div>
+      <div class="actions">
+        <button class="btn" id="extraPhotosAdd" type="button">Add extra photo</button>
+        <input id="extraPhotoInput" type="file" accept="image/*" capture="environment" hidden>
+        <button class="btn ghost" id="extraPhotosBack" type="button">Back to item</button>
+      </div>`);
     const list=document.getElementById('extraPhotoList');
+    const status=document.getElementById('extraPhotoFeedback');
+    const addBtn=document.getElementById('extraPhotosAdd');
+    const input=document.getElementById('extraPhotoInput');
     const current=()=>list.isConnected&&S.session?.user?.id===owner&&canManage();
+    const say=(message,error=false)=>{
+      if(!current())return;
+      status.hidden=false;
+      status.className=`notice ${error?'error':'good'}`;
+      status.textContent=message;
+    };
     document.getElementById('extraPhotosBack').onclick=()=>{if(current())openItem(item.id)};
+    let adding=false;
+    addBtn.onclick=()=>{if(!adding&&current())input.click()};
+    input.onchange=async()=>{
+      const selected=input.files?.[0];
+      if(!selected||adding||!current())return;
+      adding=true;addBtn.disabled=true;
+      try{
+        say('Preparing extra photo…');
+        const cropped=await editItemPhoto(selected);
+        if(!current())return;
+        if(!cropped){say('Photo cancelled. Nothing was saved.',true);return;}
+        say('Uploading and verifying photo…');
+        const result=await savePhotoReference(item,cropped,owner,0);
+        if(!current())return;
+        const feedback=result.status==='saved'?`Extra identification photo saved and verified (${result.count}/2).`:
+          result.status==='already-saved'?`That photo was already saved (${result.count}/2). No duplicate was added.`:
+          'No additional photo was saved.';
+        await openExtraPhotoManager(item,feedback);
+      }catch(error){if(current())say('Photo was not confirmed as saved: '+parseError(error),true);}
+      finally{
+        adding=false;
+        if(current()){input.value='';addBtn.disabled=false;}
+      }
+    };
     try{
-      const paths=(await photoReferencePaths(item)).filter(p=>p!==item.primary_photo_path);if(!current())return;
-      const signed=paths.length?await sb.storage.from('item-photos').createSignedUrls(paths,300):{data:[]};if(!current())return;
-      list.innerHTML=paths.length?`<p>${paths.length} extra photo${paths.length===1?'':'s'} saved${paths.length>2?' — remove extras to get down to two':''}.</p><div class="item-list">${paths.map((path,index)=>`<div class="card"><strong>Extra photo ${index+1}</strong>${signed.data?.[index]?.signedUrl?`<img src="${esc(signed.data[index].signedUrl)}" alt="Extra reference photo ${index+1}" style="display:block;max-width:180px;max-height:180px;margin:.5rem 0">`:''}<button class="btn danger" type="button" data-delete-extra-photo="${index}">Delete this extra photo</button></div>`).join('')}</div><button class="btn danger" id="clearExtraPhotos" type="button">Clear all extra photos</button>`:'<p>No extra reference photos saved for this item.</p>';
+      const paths=(await photoReferencePaths(item)).filter(p=>p!==item.primary_photo_path);
+      if(!current())return;
+      addBtn.disabled=paths.length>=2;
+      if(paths.length>=2)addBtn.title='Two extra photos already saved. Delete one to add another.';
+      const response=paths.length?await sb.storage.from('item-photos').createSignedUrls(paths,300):{data:[],error:null};
+      if(!current())return;
+      list.innerHTML=paths.length?`<p><strong>${paths.length} of 2</strong> extra identification photos saved${paths.length>2?' (remove extras to return to the two-photo limit)':''}.</p>
+        <div class="item-list">${paths.map((path,index)=>`<div class="card"><strong>Extra photo ${index+1}</strong>
+        ${response.data?.[index]?.signedUrl?`<img src="${esc(response.data[index].signedUrl)}" alt="Saved extra reference photo ${index+1}" style="display:block;max-width:180px;max-height:180px;margin:.5rem 0">`:'<div class="muted">Photo stored; preview currently unavailable.</div>'}
+        <button class="btn danger" type="button" data-delete-extra-photo="${index}">Delete this extra photo</button></div>`).join('')}</div>
+        <button class="btn danger" id="clearExtraPhotos" type="button">Clear all extra photos</button>`:'<p>No additional identification photos saved for this item.</p>';
       let deleting=false;
       const remove=async selected=>{
         if(deleting||!current())return;
-        if(!confirm(`Delete ${selected.length===1?'this extra reference photo':'all '+selected.length+' extra reference photos'}? The main item picture will be kept.`))return;
+        if(!confirm(`Delete ${selected.length===1?'this extra identification photo':'all '+selected.length+' extra identification photos'}? The main item picture will be kept.`))return;
         deleting=true;
         try{
-          if(!current())return;
           const result=await sb.storage.from('item-photos').remove(selected);if(result.error)throw result.error;
           photoSearchCache.clear();photoReferenceCache.clear();
-          if(current())await openExtraPhotoManager(item);
-        }catch(e){if(current())list.insertAdjacentHTML('afterbegin',`<p class="notice error">Could not delete: ${esc(e.message||'Please try again.')}</p>`);}
+          if(current())await openExtraPhotoManager(item,'Selected extra photos deleted.');
+        }catch(e){if(current())say('Could not delete: '+parseError(e),true);}
         finally{deleting=false;}
       };
       list.querySelectorAll('[data-delete-extra-photo]').forEach(b=>b.onclick=()=>remove([paths[Number(b.dataset.deleteExtraPhoto)]]));
       const clear=document.getElementById('clearExtraPhotos');if(clear)clear.onclick=()=>remove(paths);
-    }catch(e){if(current())list.textContent='Could not load extra photos. Please try again.';}
+    }catch(error){if(current())say('Could not load extra photos: '+parseError(error),true);}
   }
 
   async function openItem(id) {
