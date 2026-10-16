@@ -1,6 +1,6 @@
 # Inventory Tracker
 
-Current production build: **v8.7.16 CLEAN**
+Current production build: **v8.7.17 CLEAN**
 
 ## Active runtime
 
@@ -88,3 +88,11 @@ Help → Phone alerts includes a master device on/off control, individual catego
 - OPEN and PART_RECEIVED only count as On Order and can receive deliveries. REQUESTED stays outside delivered stock, low-stock forecast supply, and overdue order alerts.
 - Requested quantities appear separately in dashboard, individual item details, suggested-order table and CSV/Excel exports.
 - Existing historical orders are preserved; database transition checked in a rollback-only test.
+
+## v8.7.17 — optional requests and visible dates
+
+- **Mark ordered** is an independent action and never requires a request first. **Request item** is optional. An existing request does not block a separate direct order; the form warns about potential duplicates.
+- All authorised Inventory users, including staff/User view, see badges and dates for outstanding Requested and On Order statuses in item rows, search and QR-opened item records.
+- Opening an item shows quantities, supplier, requester/request date, orderer/order date, expected delivery date, PO reference and notes. Converted requests retain both request and order dates; direct orders only show the order date.
+- Managers/admins may specify or edit actual request and order dates. Date fields default to today and keep existing timestamps when untouched. Receiving deliveries still only accepts actual orders, not requests.
+- Existing RLS protects writes; ordinary users only see status/details and are not given order editing controls.
