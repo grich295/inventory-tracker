@@ -1229,6 +1229,7 @@
     const mStart = new Date(); mStart.setDate(1); mStart.setHours(0,0,0,0);
     const usedMonth = S.transactions.filter(t=>countsAsUsage(t) && new Date(t.occurred_at)>=mStart).reduce((a,t)=>a+num(t.quantity),0);
     const onOrderUnits = S.purchaseOrders.filter(o=>['OPEN','PART_RECEIVED'].includes(o.status)).reduce((a,o)=>a+orderRemaining(o),0);
+    const requestedUnits = S.purchaseOrders.filter(o=>o.status==='REQUESTED').reduce((a,o)=>a+num(o.quantity_ordered),0);
     const recent = S.transactions.slice(0,8);
     const userView=effectiveRole()==='staff';
     return `
@@ -1237,7 +1238,7 @@
       <div class="grid cards" style="margin-top:1rem">
         <div class="card"><div class="muted">Active items</div><div class="stat">${active.length}</div></div>
         <div class="card"><div class="muted">Units in stock</div><div class="stat">${qty(totalUnits)}</div></div>
-        ${userView?`<div class="card"><div class="muted">Used this month</div><div class="stat">${qty(usedMonth)}</div></div>`:`<div class="card" data-go="orders" data-order-tab-go="suggested" title="Open Suggested Orders"><div class="muted">Low-stock items</div><div class="stat">${low.length}</div></div><div class="card" data-go="orders" data-order-tab-go="open" title="Open On Order"><div class="muted">Units on order</div><div class="stat">${qty(onOrderUnits)}</div></div><div class="card"><div class="muted">Used this month</div><div class="stat">${qty(usedMonth)}</div></div>`}
+        ${userView?`<div class="card"><div class="muted">Used this month</div><div class="stat">${qty(usedMonth)}</div></div>`:`<div class="card" data-go="orders" data-order-tab-go="suggested" title="Open Suggested Orders"><div class="muted">Low-stock items</div><div class="stat">${low.length}</div></div><div class="card" data-go="orders" data-order-tab-go="requested" title="Open Requests"><div class="muted">Units requested</div><div class="stat">${qty(requestedUnits)}</div></div><div class="card" data-go="orders" data-order-tab-go="open" title="Open On Order"><div class="muted">Units on order</div><div class="stat">${qty(onOrderUnits)}</div></div><div class="card"><div class="muted">Used this month</div><div class="stat">${qty(usedMonth)}</div></div>`}
       </div>
       <div class="toolbar" style="margin-top:1rem"><button class="btn good" data-go="scan">Scan Stock QR</button><button class="btn" data-go="items">Manual search</button><button class="btn secondary" data-photo-search>Find item by photo</button>${canManage()?'<button class="btn secondary" id="dashAddItem">Add new item</button>':''}</div>
       ${S.offline?`<div class="notice warn"><strong>Offline stock mode:</strong> QR/manual search and stock Add, Use, Move and Adjust are available. Orders, user/admin changes, stocktake submission and other database changes need a connection. Any queued stock changes are checked against the live database when syncing.</div>`:''}
@@ -3326,8 +3327,8 @@ Keep this file somewhere secure.
   function orderExportRows(includeZero=false) {
     const months=completedMonthWindows(3);
     const list=suggestedOrderRows().filter(r=>includeZero||r.suggested>0);
-    const rows=[['Item','Item code',months[0].label,months[1].label,months[2].label,'3-month usage','Average monthly usage','Current overall stock','On order','Suggested order','Preferred supplier','Supplier ref']];
-    list.forEach(r=>rows.push([r.item.name,r.item.item_code,r.monthly[0],r.monthly[1],r.monthly[2],r.used3,Number(r.avg.toFixed(3)),r.current,r.onOrder,r.suggested,r.supplier?.supplier_name||'',r.supplier?.supplier_ref||'']));
+    const rows=[['Item','Item code',months[0].label,months[1].label,months[2].label,'3-month usage','Average monthly usage','Current overall stock','Requested (not ordered)','On order','Suggested order','Preferred supplier','Supplier ref']];
+    list.forEach(r=>rows.push([r.item.name,r.item.item_code,r.monthly[0],r.monthly[1],r.monthly[2],r.used3,Number(r.avg.toFixed(3)),r.current,r.requested,r.onOrder,r.suggested,r.supplier?.supplier_name||'',r.supplier?.supplier_ref||'']));
     return rows;
   }
 
@@ -3656,8 +3657,8 @@ Keep this file somewhere secure.
     S.selectedItemId=id;
     touchRecentItem(id).catch(()=>{});
     const photoUrl=await signedUrl('item-photos',i.primary_photo_path,3600);
-    const pos=itemPositions(id), total=itemTotal(id), onOrder=itemOnOrder(id);
-    const suppliers=suppliersForItem(id), itemOrders=openOrdersForItem(id), pref=itemPref(id);
+    const pos=itemPositions(id), total=itemTotal(id), onOrder=itemOnOrder(id), requestedQty=itemRequested(id);
+    const suppliers=suppliersForItem(id), itemOrders=openOrdersForItem(id), itemRequests=requestsForItem(id), pref=itemPref(id);
     const locationTotals=new Map();
     for(const b of pos){const l=byId(S.locations,b.location_id);if(!l)continue;const key=l.location_name;locationTotals.set(key,(locationTotals.get(key)||0)+num(b.quantity));}
     const recent=S.transactions.filter(t=>t.item_id===id).slice(0,25);
@@ -3665,16 +3666,17 @@ Keep this file somewhere secure.
     showModal(`<header><div><h2>${esc(i.name)}</h2><div class="muted">${esc(i.item_code)} ${i.active?'':'· Archived'}</div></div><button class="close" data-close>×</button></header>
       <div class="split"><div>
         ${photoUrl?`<img class="photo zoomable" id="itemPhoto" src="${esc(photoUrl)}" alt="${esc(i.name)}" title="Tap to enlarge">`:''}
-        <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Overall stock</div><div class="stat">${qty(total)}</div></div><div class="card"><div class="muted">On order</div><div class="stat">${qty(onOrder)}</div></div><div class="card"><div class="muted">Reorder level</div><div class="stat">${qty(i.reorder_level)}</div></div></div>
+        <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Overall stock</div><div class="stat">${qty(total)}</div></div><div class="card"><div class="muted">Requested</div><div class="stat">${qty(requestedQty)}</div></div><div class="card"><div class="muted">On order</div><div class="stat">${qty(onOrder)}</div></div><div class="card"><div class="muted">Reorder level</div><div class="stat">${qty(i.reorder_level)}</div></div></div>
         <h3>Totals by location</h3>${locationTotals.size?[...locationTotals.entries()].map(([name,q])=>`<div class="location-chip"><strong>${esc(name)}</strong> · ${qty(q)}</div>`).join(''):'<span class="muted">No stock assigned.</span>'}
         <h3>Exact stock positions</h3>${pos.length?pos.map(b=>{const l=byId(S.locations,b.location_id);return `<div class="location-chip"><strong>${esc(l?.location_name||'Unknown')}</strong> → ${esc(effectiveBinCode(l)?`Bin Ref ${effectiveBinCode(l)}`:'No bin ref')} · ${qty(b.quantity)}</div>`;}).join(''):'<div class="notice">No stock location currently has a positive quantity.</div>'}
       </div><div>
-        <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div>${itemCategoryReview?`<div class="category-suggestion item-detail-suggestion"><div><strong>Suggested category: ${esc(itemCategoryReview.suggestion.category)}</strong><span>${esc(itemCategoryReview.suggestion.confidence)} confidence · ${itemCategoryReview.suggestion.percent}%${itemCategoryReview.suggestion.evidence.length?` · ${esc(itemCategoryReview.suggestion.evidence[0])}`:''}</span></div><button class="btn small" id="approveItemCategorySuggestion" type="button">Approve suggestion</button></div>`:''}<div><strong>Default storage</strong><br>${esc(itemDefaultLabel(i))}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div>${onOrder>0?`<div style="margin-top:.7rem"><span class="badge order">ON ORDER ${qty(onOrder)}</span></div>`:''}</div>
+        <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div>${itemCategoryReview?`<div class="category-suggestion item-detail-suggestion"><div><strong>Suggested category: ${esc(itemCategoryReview.suggestion.category)}</strong><span>${esc(itemCategoryReview.suggestion.confidence)} confidence · ${itemCategoryReview.suggestion.percent}%${itemCategoryReview.suggestion.evidence.length?` · ${esc(itemCategoryReview.suggestion.evidence[0])}`:''}</span></div><button class="btn small" id="approveItemCategorySuggestion" type="button">Approve suggestion</button></div>`:''}<div><strong>Default storage</strong><br>${esc(itemDefaultLabel(i))}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div>${requestedQty>0?`<div style="margin-top:.7rem"><span class="badge warn">REQUESTED ${qty(requestedQty)}</span></div>`:''}${onOrder>0?`<div style="margin-top:.7rem"><span class="badge order">ON ORDER ${qty(onOrder)}</span></div>`:''}</div>
         ${i.active?`<div class="actions quick-actions"><button class="btn good" data-stock-action="ADD">+ Add stock</button><button class="btn warn" data-stock-action="USE">− Use stock</button><button class="btn secondary" data-stock-action="ADJUST">Adjust count</button><button class="btn ghost" data-stock-action="MOVE">Move stock</button></div>`:'<div class="notice">This item is archived. Restore it before recording new stock actions.</div>'}
-        <div class="actions"><button class="btn ${pref?.favourite?'warn':'ghost'}" id="favouriteBtn">${pref?.favourite?'★ Favourite':'☆ Add favourite'}</button><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()&&i.active?'<button class="btn ghost" id="editItemBtn">Edit item</button><button class="btn ghost" id="suppliersBtn">Suppliers 1–3</button><button class="btn" id="orderItemBtn">Order item</button>':''}${canManage()?'<button class="btn ghost" id="extraItemPhotosBtn" type="button">Extra reference photos</button>':''}${canAdmin()?i.active?'<button class="btn danger" id="archiveItemBtn">Archive item</button>':'<button class="btn good" id="restoreItemBtn">Restore item</button>':''}</div>
+        <div class="actions"><button class="btn ${pref?.favourite?'warn':'ghost'}" id="favouriteBtn">${pref?.favourite?'★ Favourite':'☆ Add favourite'}</button><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()&&i.active?'<button class="btn ghost" id="editItemBtn">Edit item</button><button class="btn ghost" id="suppliersBtn">Suppliers 1–3</button><button class="btn" id="orderItemBtn">${itemRequests.length?'View request':'Mark ordered'}</button>${!itemRequests.length?'<button class="btn secondary" id="requestItemBtn">Request item</button>':''}':''}${canManage()?'<button class="btn ghost" id="extraItemPhotosBtn" type="button">Extra reference photos</button>':''}${canAdmin()?i.active?'<button class="btn danger" id="archiveItemBtn">Archive item</button>':'<button class="btn good" id="restoreItemBtn">Restore item</button>':''}</div>
       </div></div>
       <div class="card" style="margin-top:1rem"><h3>Suppliers & orders</h3>
         ${suppliers.length?suppliers.map(s=>`<div class="supplier-line"><strong>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</strong>${s.preferred?' <span class="badge">Preferred</span>':''}<div class="muted">Ref ${esc(s.supplier_ref||'—')} · Pack ${qty(s.pack_size||1)} · Lead ${s.lead_time_days==null?'—':esc(s.lead_time_days)+' days'} · ${s.unit_price==null?'Price —':money(s.unit_price)}</div></div>`).join(''):'<p class="muted">No suppliers saved yet.</p>'}
+        ${itemRequests.length?`<div style="margin-top:.7rem"><strong>Requested — awaiting order confirmation</strong>${itemRequests.map(o=>`<div class="order-inline"><div class="muted">${qty(o.quantity_ordered)} requested · ${esc(o.supplier_name||'Supplier not set')}</div>${canManage()?`<button class="btn good small" data-item-confirm-request="${o.id}" type="button">Confirm ordered</button>`:''}</div>`).join('')}</div>`:''}
         ${itemOrders.length?`<div style="margin-top:.7rem"><strong>Currently on order</strong>${itemOrders.map(o=>`<div class="order-inline"><div class="muted">${qty(orderRemaining(o))} from ${esc(o.supplier_name)}${o.expected_date?` · expected ${fmtShortDate(o.expected_date)}`:''}</div><button class="btn good small" data-item-receive-order="${o.id}" type="button">Receive delivery</button></div>`).join('')}</div>`:''}
       </div>
       <div class="card" style="margin-top:1rem"><h3>Recent item history</h3>${transactionTable(recent)}</div>`);
@@ -3690,7 +3692,9 @@ Keep this file somewhere secure.
     const extraPhotos=document.getElementById('extraItemPhotosBtn');if(extraPhotos)extraPhotos.onclick=()=>openExtraPhotoManager(i);
     const edit=document.getElementById('editItemBtn'); if(edit) edit.onclick=()=>openEditItem(i);
     const suppliersBtn=document.getElementById('suppliersBtn'); if(suppliersBtn) suppliersBtn.onclick=()=>openSupplierEditor(i);
-    const orderItemBtn=document.getElementById('orderItemBtn'); if(orderItemBtn) orderItemBtn.onclick=()=>openCreateOrder(i.id);
+    const orderItemBtn=document.getElementById('orderItemBtn'); if(orderItemBtn) orderItemBtn.onclick=()=>itemRequests.length?(closeModal(),S.orderTab='requested',navigatePage('orders')):openCreateOrder(i.id,'OPEN');
+    const requestItemBtn=document.getElementById('requestItemBtn'); if(requestItemBtn) requestItemBtn.onclick=()=>openCreateOrder(i.id,'REQUESTED');
+    document.querySelectorAll('[data-item-confirm-request]').forEach(b=>b.onclick=()=>openConfirmRequest(b.dataset.itemConfirmRequest));
     document.querySelectorAll('[data-item-receive-order]').forEach(b=>b.onclick=()=>openReceiveOrder(b.dataset.itemReceiveOrder));
     const archive=document.getElementById('archiveItemBtn'); if(archive) archive.onclick=()=>archiveItem(i);
     const restore=document.getElementById('restoreItemBtn'); if(restore) restore.onclick=()=>restoreItem(i);
