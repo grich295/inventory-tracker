@@ -96,3 +96,10 @@ Help → Phone alerts includes a master device on/off control, individual catego
 - Opening an item shows quantities, supplier, requester/request date, orderer/order date, expected delivery date, PO reference and notes. Converted requests retain both request and order dates; direct orders only show the order date.
 - Managers/admins may specify or edit actual request and order dates. Date fields default to today and keep existing timestamps when untouched. Receiving deliveries still only accepts actual orders, not requests.
 - Existing RLS protects writes; ordinary users only see status/details and are not given order editing controls.
+
+## v8.7.18 — requested stage visibility
+
+- **Requested** is the action label for an admin/manager recording that a purchase request/PO has been raised, not a request from an ordinary user. Confirmation button reads **Confirm requested**.
+- **Requested** and **On Order** render as separate quantity/date badges on every item row (including staff-facing lists), even when an item has multiple orders. This prevents a REQUESTED row being hidden by ordered rows.
+- Opening an item continues to show the full requested/ordered dates, suppliers, names and notes. Requests count separately from actual ordered stock; no existing records are reclassified.
+- Service-worker and file-version cache values updated to reload changed screens.
