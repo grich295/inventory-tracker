@@ -103,3 +103,9 @@ Help → Phone alerts includes a master device on/off control, individual catego
 - **Requested** and **On Order** render as separate quantity/date badges on every item row (including staff-facing lists), even when an item has multiple orders. This prevents a REQUESTED row being hidden by ordered rows.
 - Opening an item continues to show the full requested/ordered dates, suppliers, names and notes. Requests count separately from actual ordered stock; no existing records are reclassified.
 - Service-worker and file-version cache values updated to reload changed screens.
+
+## v8.7.19 — Request edit/save reliability
+
+- The **Save request** edit form shows validation errors and Supabase permission/data errors directly in the form instead of behind the modal. Button stays usable for retry when save fails.
+- Save confirms the updated request values returned by the database. A separate data-reload failure no longer incorrectly claims the save failed.
+- A live/synthetic save contract test was exercised for successful update, permission denial, missing row, invalid input and refresh failure; live mobile end-to-end testing remains necessary.
