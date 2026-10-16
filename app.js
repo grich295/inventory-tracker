@@ -286,6 +286,41 @@
   const itemOnOrder = itemId => openOrdersForItem(itemId).reduce((a,o)=>a+orderRemaining(o),0);
   const requestsForItem = itemId => S.purchaseOrders.filter(o=>o.item_id===itemId && o.status==='REQUESTED');
   const itemRequested = itemId => requestsForItem(itemId).reduce((a,o)=>a+num(o.quantity_ordered),0);
+
+  // Read-only status beside every item, including User mode and QR results.
+  function itemOrderSummaryHtml(itemId) {
+    const orders=S.purchaseOrders.filter(o=>o.item_id===itemId&&['REQUESTED','OPEN','PART_RECEIVED'].includes(o.status))
+      .sort((a,b)=>new Date(b.ordered_at||b.requested_at||b.updated_at)-new Date(a.ordered_at||a.requested_at||a.updated_at));
+    if(!orders.length)return '';
+    const lines=orders.slice(0,3).map(o=>{
+      const requested=o.status==='REQUESTED';
+      const amount=requested?num(o.quantity_ordered):orderRemaining(o);
+      const dateText=requested?'Requested '+fmtShortDate(o.requested_at):'Ordered '+fmtShortDate(o.ordered_at);
+      return `<div class="item-order-preview"><span class="badge ${requested?'warn':'order'}">${requested?'Requested':o.status==='PART_RECEIVED'?'Part received':'On order'} ${qty(amount)}</span><small>${esc(dateText)}${!requested&&o.expected_date?' · Expected '+esc(fmtShortDate(o.expected_date)):''}</small></div>`;
+    }).join('');
+    return lines+(orders.length>3?`<small class="muted">+${orders.length-3} more. Open the item for dates.</small>`:'');
+  }
+
+  function itemOrderDetailHtml(itemId) {
+    const rows=S.purchaseOrders.filter(o=>o.item_id===itemId&&['REQUESTED','OPEN','PART_RECEIVED'].includes(o.status))
+      .sort((a,b)=>new Date(b.ordered_at||b.requested_at||b.updated_at)-new Date(a.ordered_at||a.requested_at||a.updated_at));
+    if(!rows.length)return '<p class="muted">No requests or outstanding supplier orders.</p>';
+    return rows.map(o=>{
+      const requested=o.status==='REQUESTED';
+      const amount=requested?num(o.quantity_ordered):orderRemaining(o);
+      return `<div class="item-order-detail">
+        <div><span class="badge ${requested?'warn':'order'}">${esc(orderStatusLabel(o.status))}</span> <strong>${qty(amount)} ${requested?'requested':'still on order'}</strong></div>
+        <div class="muted">Supplier: ${esc(o.supplier_name||'Not selected')}</div>
+        ${o.requested_at?`<div>Requested: <strong>${esc(fmtShortDate(o.requested_at))}</strong> · ${esc(userName(o.requested_by))}</div>`:''}
+        ${o.ordered_at?`<div>Ordered: <strong>${esc(fmtShortDate(o.ordered_at))}</strong> · ${esc(userName(o.ordered_by))}</div>`:''}
+        ${o.expected_date?`<div>Expected delivery: <strong>${esc(fmtShortDate(o.expected_date))}</strong></div>`:!requested?'<div class="muted">Expected delivery date not set</div>':''}
+        ${o.order_reference?`<div class="muted">PO reference: ${esc(o.order_reference)}</div>`:''}
+        ${o.notes?`<div class="muted">Notes: ${esc(o.notes)}</div>`:''}
+        ${canManage()&&requested?`<div class="actions"><button class="btn good small" data-item-confirm-request="${o.id}" type="button">Confirm ordered</button><button class="btn ghost small" data-item-edit-request="${o.id}" type="button">Edit request</button></div>`:''}
+      </div>`;
+    }).join('');
+  }
+
   const suppliersForItem = itemId => S.itemSuppliers.filter(s=>s.item_id===itemId).sort((a,b)=>num(a.supplier_slot)-num(b.supplier_slot));
   const preferredSupplier = itemId => suppliersForItem(itemId).find(s=>s.preferred) || suppliersForItem(itemId)[0] || null;
   const globalSupplierNames = () => [...new Set([...S.itemSuppliers.map(s=>s.supplier_name),...S.purchaseOrders.map(o=>o.supplier_name)].map(x=>String(x||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
@@ -1280,13 +1315,13 @@
   }
 
   function itemRowHtml(i) {
-    const total=itemTotal(i.id); const low=num(i.reorder_level)>0 && total<=num(i.reorder_level); const onOrder=itemOnOrder(i.id);
+    const total=itemTotal(i.id);
+    const low=num(i.reorder_level)>0&&total<=num(i.reorder_level);
     const pos=itemPositions(i.id).slice(0,3).map(b=>`${esc(locationLabel(byId(S.locations,b.location_id)))} (${qty(b.quantity)})`).join(' · ');
     const catReview=canManage()?categoryReviewSuggestion(i):null;
     const catBadge=catReview?`<span class="badge warn category-suggest-badge">Suggested: ${esc(catReview.suggestion.category)}</span> `:'';
-    return `<div class="item-row inventory-item-row ${i.active?'':'archived-row'}" data-item="${i.id}">${i.primary_photo_path?`<img class="item-thumb" data-photo-path="${esc(i.primary_photo_path)}" alt="">`:`<div class="item-thumb placeholder">📦</div>`}<div class="item-main"><div class="item-title">${esc(i.name)}${i.active?'':' <span class="badge muted">Archived</span>'}</div><div class="muted">${esc(i.item_code)}${i.category?' · '+esc(i.category):' · Uncategorised'}</div><div class="muted">${pos || 'No stock location set'}</div>${catBadge}${low&&i.active?'<span class="badge low">Low stock</span> ':''}${onOrder>0?`<span class="badge order">On order ${qty(onOrder)}</span>`:''}</div><div class="qty">${qty(total)}</div></div>`;
+    return `<div class="item-row inventory-item-row ${i.active?'':'archived-row'}" data-item="${i.id}">${i.primary_photo_path?`<img class="item-thumb" data-photo-path="${esc(i.primary_photo_path)}" alt="">`:`<div class="item-thumb placeholder">📦</div>`}<div class="item-main"><div class="item-title">${esc(i.name)}${i.active?'':' <span class="badge muted">Archived</span>'}</div><div class="muted">${esc(i.item_code)}${i.category?' · '+esc(i.category):' · Uncategorised'}</div><div class="muted">${pos||'No stock location set'}</div>${catBadge}${low&&i.active?'<span class="badge low">Low stock</span> ':''}${itemOrderSummaryHtml(i.id)}</div><div class="qty">${qty(total)}</div></div>`;
   }
-
 
   function categoryNames() {
     const configured=S.categories.filter(c=>c.active).map(c=>c.name);
