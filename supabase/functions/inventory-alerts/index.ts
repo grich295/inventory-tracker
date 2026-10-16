@@ -67,6 +67,16 @@ Deno.serve(async (req: Request) => {
   const candidates = (candidateRows || []) as Candidate[];
   if (!candidates.length) return json({ok:true,candidates:0,sent:0,skipped:0,failed:0});
 
+  // Preferences must be enforced server-side, including while the PWA is closed.
+  // Fail closed if preferences cannot be loaded.
+  const subscriptionIds = [...new Set(candidates.map(x => x.subscription_id))];
+  const {data: preferenceRows, error: preferenceError} = await sb
+    .from("inventory_push_subscriptions")
+    .select("id,enabled,alert_low_stock,alert_overdue_orders,alert_watchdog,alert_stocktake,alert_sync_failure")
+    .in("id", subscriptionIds);
+  if (preferenceError) return json({error:"Unable to check notification preferences"},500);
+  const preferenceById = new Map((preferenceRows || []).map((x:any) => [x.id,x]));
+
   const keys = [...new Set(candidates.map(x=>x.event_key))];
   const { data:stateRows } = await sb.from("inventory_push_event_state")
     .select("event_key,event_hash,last_sent_at")
@@ -77,6 +87,29 @@ Deno.serve(async (req: Request) => {
   const now=Date.now();
   for (const c of candidates) {
     const previous:any = state.get(c.event_key);
+    const preferences:any = preferenceById.get(c.subscription_id);
+    const category = c.event_key.split(":")[0];
+    const allowed = Boolean(preferences?.enabled) && ({
+      LOW_STOCK: preferences?.alert_low_stock,
+      OVERDUE_ORDERS: preferences?.alert_overdue_orders,
+      WATCHDOG: preferences?.alert_watchdog,
+      STOCKTAKE: preferences?.alert_stocktake,
+      CLIENT_ALERT: preferences?.alert_sync_failure
+    } as Record<string,boolean>)[category] === true;
+    if (!allowed) {
+      // While low stock is muted, remember its current list without sending:
+      // re-enabling does not flood the phone with items already low.
+      if (category === "LOW_STOCK" && preferences && previous?.event_hash !== c.event_hash) {
+        const {error} = await sb.from("inventory_push_event_state").upsert({
+          event_key:c.event_key,event_hash:c.event_hash,
+          last_sent_at:previous?.last_sent_at || new Date().toISOString(),
+          updated_at:new Date().toISOString()
+        },{onConflict:"event_key"});
+        if (error) { failed++; continue; }
+      }
+      skipped++;
+      continue;
+    }
     if (c.event_key.startsWith("LOW_STOCK:")) {
       const parseIds = (value: string): string[] | null => {
         try { const ids=JSON.parse(value); return Array.isArray(ids)&&ids.every(x=>typeof x==="string") ? ids : null; }
