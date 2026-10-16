@@ -1,6 +1,6 @@
 {
-  "version": "8.7.18",
-  "build_id": "v8718-requested-status-20261016",
+  "version": "8.7.19",
+  "build_id": "v8719-request-save-feedback-20261016",
   "clean": true,
-  "notes": "Requested button now confirms that an admin/manager raised a purchase request/PO. Requested and On Order badges with quantities and dates display independently for every authorised user's item list and detail; existing order workflows unchanged."
+  "notes": "Fix Save request: inline validation and database error messages in modal, saving status and confirmed persisted values; differentiates save errors from reload errors. Requested/on-order item visibility and previous v8.7.18 features remain."
 }
