@@ -3727,19 +3727,34 @@ Keep this file somewhere secure.
     await stopScanner();
     const owner=S.session.user.id;
     if(photoSearchOwner!==owner){photoSearchCache.clear();photoSearchOwner=owner;}
-    showModal(`<header><h2>Find item by photo</h2><button class="close" data-close>×</button></header><p>Take a close-up, then crop around the item. We’ll suggest items with similar saved photos and show their stock locations.</p><p class="muted">Suggestions only — check the item before choosing. Your search photo stays on this device unless you choose to save it as a reference. The first search prepares saved photos; later searches reuse compact comparisons on this device. Match confidence is an estimated photo similarity level, not the probability that an item is correct.</p><input id="findItemPhoto" type="file" accept="image/*" capture="environment"><p id="photoSearchStatus" role="status" aria-live="polite"></p>${canManage()?'<label style="display:block;margin:.75rem 0"><input id="saveMatchReference" type="checkbox"> Save this photo to improve future matches when I select the correct item</label><p class="muted">Adds a compressed reference photo shared with authorised users. Maximum two extras per item. High-confidence selections do not save another photo. Manage or delete extras from the item record.</p>':''}<div id="photoSearchResults" class="item-list"></div>`);
+    showModal(`<header><h2>Find item by photo</h2><button class="close" data-close>×</button></header><p>Take a close-up, then crop around the item. We’ll suggest items with similar saved photos and show their stock locations.</p><p class="muted">Suggestions only — check the item before choosing. Your search photo stays on this device unless you choose to save it as a reference. The first search prepares saved photos; later searches reuse compact comparisons on this device. Similarity is not proof of identity. Check the item, and use Find the correct item when it is missing from the suggestions.</p><input id="findItemPhoto" type="file" accept="image/*" capture="environment"><p id="photoSearchStatus" role="status" aria-live="polite"></p>${canManage()?'<label style="display:block;margin:.75rem 0"><input id="saveMatchReference" type="checkbox"> Save this photo to improve future matches when I select the correct item</label><p class="muted">Adds a compressed reference photo shared with authorised users. Maximum two extras per item. Only a clear strong match skips adding another automatic reference photo. Correcting the match manually can save a new reference. Manage or delete extras from the item record.</p>':''}<div id="photoSearchResults" class="item-list"></div>
+    <div id="photoManualFallback" class="photo-manual-fallback" hidden>
+      <button class="btn secondary" id="photoManualOpen" type="button">Not shown? Find the correct item</button>
+      <div id="photoManualPanel" class="photo-manual-panel" hidden>
+        <label for="photoManualSearch">Find the correct item from the full inventory</label>
+        <input id="photoManualSearch" type="search" autocomplete="off" placeholder="Search item name, code, category or QR">
+        <p class="muted" id="photoManualHelp">${canManage()?'Select the right item to save this photo as an additional identification reference (maximum two per item).':'Select the correct item to view it. A manager can add the photo as a reference later.'}</p>
+        <div id="photoManualList" class="item-list" role="group" aria-label="Inventory items"></div>
+      </div>
+    </div>`);
     const input=document.getElementById('findItemPhoto'),status=document.getElementById('photoSearchStatus'),results=document.getElementById('photoSearchResults');
+    const manualFallback=document.getElementById('photoManualFallback'),
+      manualOpen=document.getElementById('photoManualOpen'),
+      manualPanel=document.getElementById('photoManualPanel'),
+      manualSearch=document.getElementById('photoManualSearch'),
+      manualList=document.getElementById('photoManualList');
     let seq=0;
     const current=n=>n===seq&&S.session?.user?.id===owner&&status.isConnected;
     input.onchange=async()=>{
       const file=input.files?.[0];if(!file)return;
-      const n=++seq;input.disabled=true;results.innerHTML='';status.textContent='Crop around the item…';
+      const n=++seq;input.disabled=true;results.innerHTML='';manualFallback.hidden=true;manualPanel.hidden=true;
+      manualSearch.value='';manualList.innerHTML='';status.textContent='Crop around the item…';
       try{
         const cropped=await editItemPhoto(file);if(!current(n))return;
         if(!cropped){status.textContent='Photo cancelled. Choose another photo.';return;}
         const query=await window.InventoryPhotoMatch.fromBlob(cropped);if(!current(n))return;
-        const items=S.items.filter(i=>i.active&&i.primary_photo_path),matches=[];
-        let done=0,failed=0,nextItem=0;
+        const items=S.items.filter(i=>i.active),matches=[];
+        let done=0,failed=0,withoutPhotos=0,nextItem=0;
         const compareNext=async()=>{
           while(current(n)&&nextItem<items.length){
             const item=items[nextItem++];
@@ -3751,6 +3766,7 @@ Keep this file somewhere secure.
                 const paths=await photoReferencePaths(item);if(!current(n))return;
                 refs={paths,at:Date.now()};photoReferenceCache.set(refKey,refs);
               }
+              if(!refs.paths.length){withoutPhotos++;continue;}
               for(const path of refs.paths){
                 if(!current(n))return;
                 const key='v2:'+owner+':'+item.id+':'+path+':'+(item.updated_at||'');
@@ -3776,8 +3792,17 @@ Keep this file somewhere secure.
         await Promise.all(Array.from({length:Math.min(4,items.length)},()=>compareNext()));
         if(!current(n))return;
         matches.sort((a,b)=>b.score-a.score);
-        status.textContent=matches.length?`Closest photo suggestions · ${matches.length} photos compared${failed?' · '+failed+' unavailable':''}. Check the picture and item details; these may be unrelated.`:'No searchable photos available. Add item photos or use manual search.';
-        results.innerHTML=matches.slice(0,6).map(({item,score})=>{const c=photoMatchConfidence(score);return `<div><div style="margin:.4rem 0"><span style="display:inline-block;padding:.25rem .55rem;border-radius:999px;font-weight:700;color:${c.colour};background:${c.background}">${c.label} match confidence</span>${c.label==='High'?'<small class="muted" style="display:block">Already a strong match — no extra photo will be saved.</small>':''}</div>${itemRowHtml(item)}</div>`}).join('');
+        status.textContent=matches.length?`Compared ${matches.length} photo-equipped items${withoutPhotos?' · '+withoutPhotos+' without saved photos':''}${failed?' · '+failed+' unavailable':''}. These are suggestions, not confirmed identities.`:
+          'No reference photos matched. Find the correct item below to improve future searches.';
+        const displayMatches=matches.filter(m=>m.score>=0.61).slice(0,6);
+        results.innerHTML=displayMatches.map(({item,score})=>{
+          const next=matches[matches.findIndex(m=>m.item.id===item.id)+1];
+          const c=photoMatchConfidence(score,score-(next?.score||0));
+          return `<div class="photo-match-option"><div class="photo-match-label" style="color:${c.colour};background:${c.background}">${esc(c.label)}</div>
+            ${c.level==='high'?'<small class="muted">Strong similarity and a clear lead over alternatives.</small>':''}
+            ${itemRowHtml(item)}</div>`;
+        }).join('')||'<div class="notice warn">No sufficiently similar photo found. Use the full inventory search below.</div>';
+        manualFallback.hidden=false;
         let selecting=false;
         results.querySelectorAll('[data-item]').forEach(b=>b.onclick=async()=>{
           if(selecting||!current(n))return;
