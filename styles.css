@@ -497,3 +497,12 @@ tbody tr:last-child td{border-bottom:0}
 .phone-alert-option span{display:flex;flex-direction:column;gap:.2rem;line-height:1.35}
 .phone-alert-option small{color:#4b5563;font-size:.83rem}
 .phone-alert-option:has(input:disabled){opacity:.6;cursor:default}
+
+/* v8.7.17: visible request/order status for staff in item lists and item details */
+.item-order-preview{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:5px}
+.item-order-preview .badge{flex:0 0 auto}
+.item-order-preview small{font-size:.77rem;color:#475569;line-height:1.4}
+.item-order-detail{border:1px solid #d4dce6;border-radius:10px;padding:10px 12px;margin:10px 0;background:#f8fafc;line-height:1.6}
+.item-order-detail .muted{color:#475569}
+.item-order-detail .actions{margin-top:7px}
+@media(max-width:600px){.item-order-preview small{flex-basis:100%}.item-order-detail{padding:10px}}
