@@ -1,6 +1,6 @@
 {
-  "version": "8.7.16",
-  "build_id": "v8716-requested-orders-20261016",
+  "version": "8.7.17",
+  "build_id": "v8717-visible-order-dates-20261016",
   "clean": true,
-  "notes": "Ordering workflow adds a Requested stage before On Order; confirm, edit or cancel requests without changing existing orders. Requested units are shown separately and excluded from supplier stock on order, deliveries and overdue orders."
+  "notes": "Optional Requested and direct On Order choices remain separate. All authorised users see request/order status, quantities and dates in item lists and details. Managers can edit request, order and expected dates. Existing supplier orders preserved."
 }
