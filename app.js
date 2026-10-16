@@ -3874,6 +3874,7 @@ Keep this file somewhere secure.
     showModal(`<header><div><h2>${esc(i.name)}</h2><div class="muted">${esc(i.item_code)} ${i.active?'':'· Archived'}</div></div><button class="close" data-close>×</button></header>
       <div class="split"><div>
         ${photoUrl?`<img class="photo zoomable" id="itemPhoto" src="${esc(photoUrl)}" alt="${esc(i.name)}" title="Tap to enlarge">`:''}
+        <div id="itemAdditionalIdPhotos" class="item-additional-photos"><div class="muted">Checking saved identification photos…</div></div>
         <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Overall stock</div><div class="stat">${qty(total)}</div></div><div class="card"><div class="muted">Requested</div><div class="stat">${qty(requestedQty)}</div></div><div class="card"><div class="muted">On order</div><div class="stat">${qty(onOrder)}</div></div><div class="card"><div class="muted">Reorder level</div><div class="stat">${qty(i.reorder_level)}</div></div></div>
         <h3>Totals by location</h3>${locationTotals.size?[...locationTotals.entries()].map(([name,q])=>`<div class="location-chip"><strong>${esc(name)}</strong> · ${qty(q)}</div>`).join(''):'<span class="muted">No stock assigned.</span>'}
         <h3>Exact stock positions</h3>${pos.length?pos.map(b=>{const l=byId(S.locations,b.location_id);return `<div class="location-chip"><strong>${esc(l?.location_name||'Unknown')}</strong> → ${esc(effectiveBinCode(l)?`Bin Ref ${effectiveBinCode(l)}`:'No bin ref')} · ${qty(b.quantity)}</div>`;}).join(''):'<div class="notice">No stock location currently has a positive quantity.</div>'}
@@ -3896,6 +3897,29 @@ Keep this file somewhere secure.
       catch(err){setNotice(parseError(err),'error');}
     };
     const photo=document.getElementById('itemPhoto'); if(photo) photo.onclick=()=>photo.classList.toggle('photo-large');
+    const extraPanel=document.getElementById('itemAdditionalIdPhotos');
+    // Asynchronous read avoids making the item modal wait on storage.
+    // A saved count/thumbnail is shown to every authorised Inventory user.
+    void (async()=>{
+      if(!extraPanel||S.offline){if(extraPanel)extraPanel.innerHTML='<div class="muted">Additional photo status unavailable offline.</div>';return;}
+      try{
+        const paths=(await photoReferencePaths(i)).filter(p=>p!==i.primary_photo_path);
+        if(!extraPanel.isConnected)return;
+        const count=paths.length;
+        const manage=document.getElementById('extraItemPhotosBtn');
+        if(manage)manage.textContent=`Manage extra photos (${count}/2)`;
+        if(!count){
+          extraPanel.innerHTML='<div class="muted">Additional identification photos: none saved</div>';
+          return;
+        }
+        const {data,error}=await sb.storage.from('item-photos').createSignedUrls(paths,300);
+        if(!extraPanel.isConnected)return;
+        extraPanel.innerHTML=`<div><strong>Additional identification photos saved: ${count}/2</strong></div>
+          <div class="extra-id-photo-grid">${paths.map((path,index)=>data?.[index]?.signedUrl?
+          `<img src="${esc(data[index].signedUrl)}" alt="Additional identification photo ${index+1} of ${count}" title="Saved identification photo ${index+1}" loading="lazy">`:
+          `<span class="muted">Photo ${index+1} saved (preview unavailable)</span>`).join('')}</div>`;
+      }catch(e){if(extraPanel.isConnected)extraPanel.innerHTML=`<div class="notice warn">Could not check saved extra photos: ${esc(parseError(e))}</div>`;}
+    })();
     const extraPhotos=document.getElementById('extraItemPhotosBtn');if(extraPhotos)extraPhotos.onclick=()=>openExtraPhotoManager(i);
     const edit=document.getElementById('editItemBtn'); if(edit) edit.onclick=()=>openEditItem(i);
     const suppliersBtn=document.getElementById('suppliersBtn'); if(suppliersBtn) suppliersBtn.onclick=()=>openSupplierEditor(i);
