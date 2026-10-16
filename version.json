@@ -1,6 +1,6 @@
 {
-  "version": "8.7.19",
-  "build_id": "v8719-request-save-feedback-20261016",
+  "version": "8.7.20",
+  "build_id": "v8720-backdated-order-dates-20261016",
   "clean": true,
-  "notes": "Fix Save request: inline validation and database error messages in modal, saving status and confirmed persisted values; differentiates save errors from reload errors. Requested/on-order item visibility and previous v8.7.18 features remain."
+  "notes": "Correct request/order date validation so admins/managers can save earlier dates when adding or editing Requested and On Order records. Date validation rejects impossible calendar days; existing data unchanged."
 }
