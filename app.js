@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.18 CLEAN - local photo search suggestions. */
+/* Inventory Tracker v8.7.19 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -7,7 +7,7 @@
   const LIVE_APP_URL = 'https://grich295.github.io/inventory-tracker/';
   const configured = cfg.supabaseUrl && cfg.anonKey && !cfg.supabaseUrl.includes('YOUR_PROJECT') && !cfg.anonKey.includes('YOUR_SUPABASE');
   const IOS_SCANNER = /iP(?:hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
-  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.18';
+  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.19';
 
   if (!configured || !window.supabase) {
     app.innerHTML = `
@@ -3169,39 +3169,81 @@ Keep this file somewhere secure.
 
   function openEditRequest(orderId) {
     if(!canManage())return;
-    const o=byId(S.purchaseOrders,orderId);if(!o||o.status!=='REQUESTED')return;
+    const o=byId(S.purchaseOrders,orderId);
+    if(!o||o.status!=='REQUESTED')return;
     showModal(`<header><h2>Edit request · ${esc(itemName(o.item_id))}</h2><button class="close" data-close>×</button></header>
-      <form id="editRequestForm">
-        <label>Quantity requested</label><input id="requestEditQty" type="number" step="0.01" min="0.01" value="${esc(o.quantity_ordered)}" required>
+      <form id="editRequestForm" novalidate>
+        <label>Quantity requested</label><input id="requestEditQty" type="number" inputmode="decimal" step="0.01" min="0.01" value="${esc(o.quantity_ordered)}" required>
         <label>Requested date</label><input id="requestEditDate" type="date" value="${esc(orderLocalDate(o.requested_at))}" required>
         <label>Preferred supplier (optional)</label><input id="requestEditSupplier" value="${esc(o.supplier_name||'')}">
         <label>Supplier part reference</label><input id="requestEditPart" value="${esc(o.supplier_ref||'')}">
         <label>Notes</label><textarea id="requestEditNotes" rows="3">${esc(o.notes||'')}</textarea>
-        <div class="actions"><button class="btn" type="submit">Save request</button></div>
+        <div id="editRequestFeedback" class="notice" role="status" aria-live="polite" hidden></div>
+        <div class="actions"><button class="btn" id="saveRequestBtn" type="submit">Save request</button></div>
       </form>`);
-    document.getElementById('editRequestForm').onsubmit=async e=>{
+    const form=document.getElementById('editRequestForm');
+    const btn=document.getElementById('saveRequestBtn');
+    const feedback=document.getElementById('editRequestFeedback');
+    const showFeedback=(message,error=true)=>{
+      feedback.hidden=false;
+      feedback.className=`notice ${error?'error':'good'}`;
+      feedback.textContent=message;
+      feedback.scrollIntoView?.({block:'nearest',behavior:'smooth'});
+    };
+    let saving=false;
+    form.onsubmit=async e=>{
       e.preventDefault();
+      if(saving)return;
       const amount=num(document.getElementById('requestEditQty').value);
-      if(!(amount>0)){setNotice('Enter a quantity greater than zero.','error');return;}
-      const btn=e.currentTarget.querySelector('button[type=submit]');btn.disabled=true;
-      const supplierName=document.getElementById('requestEditSupplier').value.trim()||null;
-      const supplierId=o.supplier_name===supplierName?o.supplier_id:null;
+      if(!Number.isFinite(amount)||amount<=0){showFeedback('Enter a quantity greater than zero.');return;}
+      const requestedOn=document.getElementById('requestEditDate').value;
+      if(!requestedOn){showFeedback('Choose the date the request was raised.');return;}
       let requestDate;
       try{
-        const selected=document.getElementById('requestEditDate').value;
-        requestDate=selected===orderLocalDate(o.requested_at)?o.requested_at:orderTimestampForDay(selected);
-      }catch(error){setNotice(parseError(error),'error');btn.disabled=false;return;}
+        requestDate=requestedOn===orderLocalDate(o.requested_at)?o.requested_at:orderTimestampForDay(requestedOn);
+        if(!requestDate)throw new Error('Choose a valid request date.');
+      }catch(err){showFeedback(parseError(err));return;}
+      const supplierName=document.getElementById('requestEditSupplier').value.trim()||null;
+      const supplierRef=document.getElementById('requestEditPart').value.trim()||null;
+      const notes=document.getElementById('requestEditNotes').value.trim()||null;
+      const supplierId=o.supplier_name===supplierName?o.supplier_id:null;
+      saving=true;
+      btn.disabled=true;
+      btn.textContent='Saving…';
+      showFeedback('Saving request…',false);
+      let savedRow=null;
       try{
+        if(!navigator.onLine)throw new Error('No internet connection. Reconnect before saving a request.');
         const {data,error}=await sb.from('purchase_orders').update({
-          requested_at:requestDate,quantity_ordered:amount,supplier_name:supplierName,supplier_id:supplierId,
-          supplier_ref:document.getElementById('requestEditPart').value.trim()||null,
-          notes:document.getElementById('requestEditNotes').value.trim()||null,
+          requested_at:requestDate, quantity_ordered:amount,
+          supplier_name:supplierName, supplier_id:supplierId,
+          supplier_ref:supplierRef, notes,
           updated_at:new Date().toISOString()
-        }).eq('id',orderId).eq('status','REQUESTED').select('id').maybeSingle();
+        }).eq('id',orderId).eq('status','REQUESTED')
+          .select('id,status,quantity_ordered,requested_at,supplier_name,supplier_ref,notes,updated_at').maybeSingle();
         if(error)throw error;
-        if(!data)throw new Error('Request already changed. Refresh the list.');
-        await loadData();closeModal();S.orderTab='requested';setNotice('Request updated.');render();
-      }catch(error){setNotice(parseError(error),'error');btn.disabled=false;}
+        if(!data)throw new Error('The request was not updated. It may have changed elsewhere or your account may not have editing permission. Refresh and try again.');
+        if(data.status!=='REQUESTED'||num(data.quantity_ordered)!==amount||
+          (data.notes||null)!==notes||(data.supplier_name||null)!==supplierName||
+          (data.supplier_ref||null)!==supplierRef){
+          throw new Error('The database did not confirm the new request details. Please refresh and check.');
+        }
+        savedRow=data;
+      }catch(err){
+        showFeedback('Could not save request: '+parseError(err));
+        saving=false;btn.disabled=false;btn.textContent='Save request';
+        return;
+      }
+      // A successful database write must never be reported as failed just because
+      // refreshing another Inventory table subsequently has a connection error.
+      const idx=S.purchaseOrders.findIndex(row=>row.id===orderId);
+      if(idx!==-1)S.purchaseOrders[idx]={...S.purchaseOrders[idx],...savedRow};
+      closeModal();
+      try{await loadData({transactions:false});}
+      catch(err){setNotice('Request saved, but the list could not refresh. Reopen it or refresh the app.','error');render();return;}
+      S.orderTab='requested';
+      setNotice('Request saved successfully.');
+      render();
     };
   }
 
