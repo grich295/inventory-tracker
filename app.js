@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.17 CLEAN - local photo search suggestions. */
+/* Inventory Tracker v8.7.18 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -7,7 +7,7 @@
   const LIVE_APP_URL = 'https://grich295.github.io/inventory-tracker/';
   const configured = cfg.supabaseUrl && cfg.anonKey && !cfg.supabaseUrl.includes('YOUR_PROJECT') && !cfg.anonKey.includes('YOUR_SUPABASE');
   const IOS_SCANNER = /iP(?:hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
-  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.17';
+  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.18';
 
   if (!configured || !window.supabase) {
     app.innerHTML = `
@@ -1647,7 +1647,7 @@
       <td>${qty(r.avg)}</td><td>${qty(r.current)}</td><td>${r.requested>0?`<strong>${qty(r.requested)}</strong>`:'—'}</td><td>${r.onOrder>0?`<strong>${qty(r.onOrder)}</strong>`:'—'}</td>
       <td><strong>${r.suggested>0?qty(r.suggested):'—'}</strong></td>
       <td>${esc(r.supplier?.supplier_name||'—')}</td>
-      <td>${canManage()&&(r.requested>0||r.suggested>0)?`<div class="actions">${r.requested>0?`<button class="btn small secondary" data-order-tab="requested">View request</button>`:`<button class="btn small secondary" data-request-item="${r.item.id}">Request</button>`}<button class="btn small" data-create-order="${r.item.id}">Mark ordered</button></div>`:'—'}</td>
+      <td>${canManage()&&(r.requested>0||r.suggested>0)?`<div class="actions">${r.requested>0?`<button class="btn small secondary" data-order-tab="requested">View request</button>`:`<button class="btn small secondary" data-request-item="${r.item.id}">Requested</button>`}<button class="btn small" data-create-order="${r.item.id}">Mark ordered</button></div>`:'—'}</td>
     </tr>`).join('');
 
     return `<div class="card"><h2>Orders</h2>
@@ -3042,7 +3042,7 @@ Keep this file somewhere secure.
     const suppliers=suppliersForItem(itemId);
     const preferred=preferredSupplier(itemId);
     const suggested=Math.max(1,forecast?.suggested||1);
-    showModal(`<header><div><h2>${isRequest?'Request item':'Mark item as ordered'}</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header>
+    showModal(`<header><div><h2>${isRequest?'Confirm requested':'Mark item as ordered'}</h2><div class="muted">${esc(item.name)}</div></div><button class="close" data-close>×</button></header>
       <form id="createOrderForm">
         <div class="form-grid">
           <div><label>${isRequest?'Quantity requested':'Quantity ordered'}</label><input id="orderQty" type="number" inputmode="decimal" min="0.01" step="0.01" value="${esc(suggested)}" required></div>
@@ -3052,11 +3052,11 @@ Keep this file somewhere secure.
           <div><label>Supplier part ref</label><input id="orderSupplierRef" value="${esc(preferred?.supplier_ref||'')}"></div>
           ${!isRequest?`<div><label>Order / PO reference</label><input id="orderRef" placeholder="e.g. PO-1024"></div>
           <div><label>Expected delivery date</label><input id="orderExpected" type="date"></div>`:''}
-          <div class="full"><label>Notes (optional)</label><textarea id="orderNotes" rows="2" placeholder="${isRequest?'Who requested this, or why it is needed?':'Supplier or delivery notes'}"></textarea></div>
+          <div class="full"><label>Notes (optional)</label><textarea id="orderNotes" rows="2" placeholder="${isRequest?'Purchase request / PO raised: reason or reference':'Supplier or delivery notes'}"></textarea></div>
         </div>
-        <div class="notice">In stock: <strong>${qty(itemTotal(itemId))}</strong> · On order: <strong>${qty(itemOnOrder(itemId))}</strong> · Suggested: <strong>${qty(forecast?.suggested||0)}</strong>. ${isRequest?'This is a request only; it will not count as ordered stock.':'This confirms that the order has been placed with the supplier.'}</div>
+        <div class="notice">In stock: <strong>${qty(itemTotal(itemId))}</strong> · On order: <strong>${qty(itemOnOrder(itemId))}</strong> · Suggested: <strong>${qty(forecast?.suggested||0)}</strong>. ${isRequest?'This records that an admin/manager has raised a purchase request or PO. It stays Requested until the supplier order is confirmed; it does not count as stock on order.':'This confirms that the order has been placed with the supplier.'}</div>
         ${!isRequest&&requestsForItem(itemId).length?'<div class="notice warn"><strong>There is already a request for this item.</strong> If your supplier order fulfils that request, use Confirm ordered on the existing request instead. Continuing here creates a separate direct order and leaves the request outstanding.</div>':''}
-        <div class="actions"><button class="btn" type="submit">${isRequest?'Save as requested':'Mark as ordered'}</button></div>
+        <div class="actions"><button class="btn" type="submit">${isRequest?'Confirm requested':'Mark as ordered'}</button></div>
       </form>`);
     const sel=document.getElementById('orderSupplier');
     const name=document.getElementById('orderSupplierName');
@@ -3742,7 +3742,7 @@ Keep this file somewhere secure.
       </div><div>
         <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div>${itemCategoryReview?`<div class="category-suggestion item-detail-suggestion"><div><strong>Suggested category: ${esc(itemCategoryReview.suggestion.category)}</strong><span>${esc(itemCategoryReview.suggestion.confidence)} confidence · ${itemCategoryReview.suggestion.percent}%${itemCategoryReview.suggestion.evidence.length?` · ${esc(itemCategoryReview.suggestion.evidence[0])}`:''}</span></div><button class="btn small" id="approveItemCategorySuggestion" type="button">Approve suggestion</button></div>`:''}<div><strong>Default storage</strong><br>${esc(itemDefaultLabel(i))}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div>${requestedQty>0?`<div style="margin-top:.7rem"><span class="badge warn">REQUESTED ${qty(requestedQty)}</span></div>`:''}${onOrder>0?`<div style="margin-top:.7rem"><span class="badge order">ON ORDER ${qty(onOrder)}</span></div>`:''}</div>
         ${i.active?`<div class="actions quick-actions"><button class="btn good" data-stock-action="ADD">+ Add stock</button><button class="btn warn" data-stock-action="USE">− Use stock</button><button class="btn secondary" data-stock-action="ADJUST">Adjust count</button><button class="btn ghost" data-stock-action="MOVE">Move stock</button></div>`:'<div class="notice">This item is archived. Restore it before recording new stock actions.</div>'}
-        <div class="actions"><button class="btn ${pref?.favourite?'warn':'ghost'}" id="favouriteBtn">${pref?.favourite?'★ Favourite':'☆ Add favourite'}</button><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()&&i.active?'<button class="btn ghost" id="editItemBtn">Edit item</button><button class="btn ghost" id="suppliersBtn">Suppliers 1–3</button><button class="btn" id="orderItemBtn">'+('Mark ordered')+'</button><button class="btn secondary" id="requestItemBtn" '+(itemRequests.length?'disabled title="Already requested"':'')+'>Request item</button>':''}${canManage()?'<button class="btn ghost" id="extraItemPhotosBtn" type="button">Extra reference photos</button>':''}${canAdmin()?i.active?'<button class="btn danger" id="archiveItemBtn">Archive item</button>':'<button class="btn good" id="restoreItemBtn">Restore item</button>':''}</div>
+        <div class="actions"><button class="btn ${pref?.favourite?'warn':'ghost'}" id="favouriteBtn">${pref?.favourite?'★ Favourite':'☆ Add favourite'}</button><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()&&i.active?'<button class="btn ghost" id="editItemBtn">Edit item</button><button class="btn ghost" id="suppliersBtn">Suppliers 1–3</button><button class="btn" id="orderItemBtn">'+('Mark ordered')+'</button><button class="btn secondary" id="requestItemBtn" '+(itemRequests.length?'disabled title="Already requested"':'')+'>Requested</button>':''}${canManage()?'<button class="btn ghost" id="extraItemPhotosBtn" type="button">Extra reference photos</button>':''}${canAdmin()?i.active?'<button class="btn danger" id="archiveItemBtn">Archive item</button>':'<button class="btn good" id="restoreItemBtn">Restore item</button>':''}</div>
       </div></div>
       <div class="card" style="margin-top:1rem"><h3>Item requests and orders</h3><p class="muted">Read-only status and dates are visible to all authorised Inventory users.</p>${itemOrderDetailHtml(id)}<h3>Saved suppliers</h3>
         ${suppliers.length?suppliers.map(s=>`<div class="supplier-line"><strong>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</strong>${s.preferred?' <span class="badge">Preferred</span>':''}<div class="muted">Ref ${esc(s.supplier_ref||'—')} · Pack ${qty(s.pack_size||1)} · Lead ${s.lead_time_days==null?'—':esc(s.lead_time_days)+' days'} · ${s.unit_price==null?'Price —':money(s.unit_price)}</div></div>`).join(''):'<p class="muted">No suppliers saved yet.</p>'}
