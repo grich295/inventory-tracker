@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.15 CLEAN - local photo search suggestions. */
+/* Inventory Tracker v8.7.16 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -7,7 +7,7 @@
   const LIVE_APP_URL = 'https://grich295.github.io/inventory-tracker/';
   const configured = cfg.supabaseUrl && cfg.anonKey && !cfg.supabaseUrl.includes('YOUR_PROJECT') && !cfg.anonKey.includes('YOUR_SUPABASE');
   const IOS_SCANNER = /iP(?:hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
-  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.15';
+  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.16';
 
   if (!configured || !window.supabase) {
     app.innerHTML = `
@@ -284,6 +284,8 @@
   const orderRemaining = o => Math.max(0, num(o.quantity_ordered) - num(o.quantity_received));
   const openOrdersForItem = itemId => S.purchaseOrders.filter(o=>o.item_id===itemId && ['OPEN','PART_RECEIVED'].includes(o.status));
   const itemOnOrder = itemId => openOrdersForItem(itemId).reduce((a,o)=>a+orderRemaining(o),0);
+  const requestsForItem = itemId => S.purchaseOrders.filter(o=>o.item_id===itemId && o.status==='REQUESTED');
+  const itemRequested = itemId => requestsForItem(itemId).reduce((a,o)=>a+num(o.quantity_ordered),0);
   const suppliersForItem = itemId => S.itemSuppliers.filter(s=>s.item_id===itemId).sort((a,b)=>num(a.supplier_slot)-num(b.supplier_slot));
   const preferredSupplier = itemId => suppliersForItem(itemId).find(s=>s.preferred) || suppliersForItem(itemId)[0] || null;
   const globalSupplierNames = () => [...new Set([...S.itemSuppliers.map(s=>s.supplier_name),...S.purchaseOrders.map(o=>o.supplier_name)].map(x=>String(x||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
@@ -647,7 +649,7 @@
       fetchAll('stock_locations','*','location_name',true),
       fetchAll('stock_balances','*'),
       fetchAll('item_suppliers','*','supplier_slot',true),
-      fetchAll('purchase_orders','*','ordered_at',false),
+      fetchAll('purchase_orders','*','updated_at',false),
       fetchAll('inventory_categories','*','sort_order',true),
       fetchAll('user_item_preferences','*','last_viewed_at',false),
       fetchAll('stocktake_settings','*'),
@@ -1506,16 +1508,32 @@
       const avg=used3/3;
       const current=itemTotal(i.id);
       const onOrder=itemOnOrder(i.id);
+      const requested=itemRequested(i.id);
+      // Requested is not stock on order; it is shown separately to avoid duplicate requests.
       const suggested=Math.max(0,Math.ceil(Math.max(0,avg-current-onOrder)-1e-9));
       const coverage=avg>0?(current+onOrder)/avg:null;
-      return {item:i,monthly,used3,avg,current,onOrder,suggested,coverage,supplier:preferredSupplier(i.id)};
+      return {item:i,monthly,used3,avg,current,onOrder,requested,suggested,coverage,supplier:preferredSupplier(i.id)};
     }).sort((a,b)=>b.suggested-a.suggested||b.avg-a.avg||a.item.name.localeCompare(b.item.name));
   }
 
   function orderStatusLabel(v) {
-    return ({OPEN:'On order',PART_RECEIVED:'Part received',COMPLETED:'Completed',CANCELLED:'Cancelled'})[v] || v;
+    return ({REQUESTED:'Requested',OPEN:'On order',PART_RECEIVED:'Part received',COMPLETED:'Completed',CANCELLED:'Cancelled'})[v] || v;
   }
 
+  function requestedOrderCard(o) {
+    return `<div class="card order-card">
+      <div class="order-card-head"><div><div class="item-title">${esc(itemName(o.item_id))}</div>
+        <div class="muted">${esc(o.supplier_name||'Supplier not chosen')}${o.supplier_ref?` · Ref ${esc(o.supplier_ref)}`:''}</div></div>
+        <span class="badge warn">Requested</span></div>
+      <div class="order-metrics"><div><span>Quantity requested</span><strong>${qty(o.quantity_ordered)}</strong></div>
+        <div><span>Requested on</span><strong>${esc(fmtShortDate(o.requested_at||o.updated_at))}</strong></div></div>
+      ${o.notes?`<div class="muted" style="margin-top:.35rem">${esc(o.notes)}</div>`:''}
+      <div class="actions">
+        ${canManage()?`<button class="btn good" data-confirm-request="${o.id}">Confirm ordered</button><button class="btn ghost" data-edit-request="${o.id}">Edit request</button><button class="btn danger" data-cancel-request="${o.id}">Cancel request</button>`:''}
+        <button class="btn ghost" data-item="${o.item_id}">Open item</button>
+      </div>
+    </div>`;
+  }
   function purchaseOrderCard(o) {
     const item=byId(S.items,o.item_id);
     const remaining=orderRemaining(o);
@@ -1546,14 +1564,22 @@
     const totalSuggested=needs.reduce((a,r)=>a+r.suggested,0);
     const outstanding=S.purchaseOrders.filter(o=>['OPEN','PART_RECEIVED'].includes(o.status));
     const outstandingUnits=outstanding.reduce((a,o)=>a+orderRemaining(o),0);
+    const requested=S.purchaseOrders.filter(o=>o.status==='REQUESTED');
+    const requestedUnits=requested.reduce((a,o)=>a+num(o.quantity_ordered),0);
     const history=S.purchaseOrders.filter(o=>['COMPLETED','CANCELLED'].includes(o.status));
 
     const tabs=`<div class="order-tabs">
       <button class="${S.orderTab==='suggested'?'active':''}" data-order-tab="suggested">Suggested</button>
+      <button class="${S.orderTab==='requested'?'active':''}" data-order-tab="requested">Requested <span class="count">${requested.length}</span></button>
       <button class="${S.orderTab==='open'?'active':''}" data-order-tab="open">On Order <span class="count">${outstanding.length}</span></button>
       <button class="${S.orderTab==='history'?'active':''}" data-order-tab="history">History</button>
     </div>`;
 
+    if(S.orderTab==='requested') {
+      return `<div class="card"><h2>Requests awaiting order</h2><p class="muted">These have been requested but not yet ordered from a supplier. They do not count as On Order or deliveries.</p>${tabs}</div>
+        <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Requests awaiting confirmation</div><div class="stat">${requested.length}</div></div><div class="card"><div class="muted">Units requested</div><div class="stat">${qty(requestedUnits)}</div></div></div>
+        <div class="order-list" style="margin-top:1rem">${requested.map(requestedOrderCard).join('')||'<div class="card">No outstanding requests.</div>'}</div>`;
+    }
     if(S.orderTab==='open') {
       return `<div class="card"><h2>Orders</h2><p class="muted">Everyone can see what has been ordered. Any active user can receive a delivery; only admins/managers can create, edit or close orders.</p>${tabs}</div>
         <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Open orders</div><div class="stat">${outstanding.length}</div></div><div class="card"><div class="muted">Units still on order</div><div class="stat">${qty(outstandingUnits)}</div></div></div>
@@ -1561,27 +1587,27 @@
     }
 
     if(S.orderTab==='history') {
-      const rows=history.map(o=>`<tr><td>${fmtShortDate(o.ordered_at)}</td><td>${esc(itemName(o.item_id))}</td><td>${esc(o.supplier_name||'—')}</td><td>${qty(o.quantity_ordered)}</td><td>${qty(o.quantity_received)}</td><td>${esc(orderStatusLabel(o.status))}</td><td>${esc(o.order_reference||'—')}</td></tr>`).join('');
+      const rows=history.map(o=>`<tr><td>${fmtShortDate(o.ordered_at||o.requested_at)}</td><td>${esc(itemName(o.item_id))}</td><td>${esc(o.supplier_name||'—')}</td><td>${qty(o.quantity_ordered)}</td><td>${qty(o.quantity_received)}</td><td>${esc(o.status==='CANCELLED'&&!o.ordered_at?'Request cancelled':orderStatusLabel(o.status))}</td><td>${esc(o.order_reference||'—')}</td></tr>`).join('');
       return `<div class="card"><h2>Orders</h2>${tabs}</div>
-        <div class="card" style="margin-top:1rem"><h3>Completed / closed orders</h3><div class="table-wrap"><table><thead><tr><th>Ordered</th><th>Item</th><th>Supplier</th><th>Ordered qty</th><th>Received qty</th><th>Status</th><th>Order ref</th></tr></thead><tbody>${rows||'<tr><td colspan="7">No completed or cancelled orders yet.</td></tr>'}</tbody></table></div></div>`;
+        <div class="card" style="margin-top:1rem"><h3>Completed / closed orders</h3><div class="table-wrap"><table><thead><tr><th>Ordered / requested</th><th>Item</th><th>Supplier</th><th>Quantity</th><th>Received qty</th><th>Status</th><th>Order ref</th></tr></thead><tbody>${rows||'<tr><td colspan="7">No completed or cancelled orders yet.</td></tr>'}</tbody></table></div></div>`;
     }
 
     const rows=all.map(r=>`<tr class="${r.suggested>0?'order-needed':'order-ok'}">
       <td data-item="${r.item.id}">${esc(r.item.name)}</td>
       <td>${qty(r.monthly[0])}</td><td>${qty(r.monthly[1])}</td><td>${qty(r.monthly[2])}</td>
-      <td>${qty(r.avg)}</td><td>${qty(r.current)}</td><td>${r.onOrder>0?`<strong>${qty(r.onOrder)}</strong>`:'—'}</td>
+      <td>${qty(r.avg)}</td><td>${qty(r.current)}</td><td>${r.requested>0?`<strong>${qty(r.requested)}</strong>`:'—'}</td><td>${r.onOrder>0?`<strong>${qty(r.onOrder)}</strong>`:'—'}</td>
       <td><strong>${r.suggested>0?qty(r.suggested):'—'}</strong></td>
       <td>${esc(r.supplier?.supplier_name||'—')}</td>
-      <td>${canManage()&&r.suggested>0?`<button class="btn small" data-create-order="${r.item.id}">Add to order</button>`:'—'}</td>
+      <td>${canManage()?(r.requested>0?`<button class="btn small secondary" data-order-tab="requested">View request</button>`:r.suggested>0?`<div class="actions"><button class="btn small secondary" data-request-item="${r.item.id}">Request</button><button class="btn small" data-create-order="${r.item.id}">Mark ordered</button></div>`:'—'):'—'}</td>
     </tr>`).join('');
 
     return `<div class="card"><h2>Orders</h2>
-      <p class="muted">Suggested quantities use actual <strong>USE</strong> transactions from the previous 3 completed months. Existing stock and anything already <strong>On Order</strong> are subtracted so the same item is not ordered twice.</p>
+      <p class="muted">Suggested quantities use actual <strong>USE</strong> transactions from the previous 3 completed months. Existing stock and anything already <strong>On Order</strong> are subtracted. <strong>Requested</strong> is shown separately and does not count as a supplier order.</p>
       ${tabs}
       <div class="actions"><button class="btn secondary" id="exportOrdersCsv">Download CSV</button><button class="btn" id="exportOrdersExcel">Download Excel</button></div>
     </div>
-    <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Items needing order</div><div class="stat">${needs.length}</div></div><div class="card"><div class="muted">Suggested units</div><div class="stat">${qty(totalSuggested)}</div></div><div class="card"><div class="muted">Already on order</div><div class="stat">${qty(outstandingUnits)}</div></div><div class="card"><div class="muted">Usage period</div><div style="font-weight:800;margin-top:.45rem">${esc(months.map(m=>m.label).join(' · '))}</div></div></div>
-    <div class="card" style="margin-top:1rem"><h3>Suggested orders</h3><p class="muted">Tap an item to open it. Admins/managers can turn a suggestion into an open order.</p><div class="table-wrap"><table><thead><tr><th>Item</th><th>${esc(months[0].label)}</th><th>${esc(months[1].label)}</th><th>${esc(months[2].label)}</th><th>Avg / month</th><th>In stock</th><th>On order</th><th>Suggested</th><th>Supplier</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="10">No active items.</td></tr>'}</tbody></table></div></div>`;
+    <div class="grid cards" style="margin-top:1rem"><div class="card"><div class="muted">Items needing order</div><div class="stat">${needs.length}</div></div><div class="card"><div class="muted">Suggested units</div><div class="stat">${qty(totalSuggested)}</div></div><div class="card"><div class="muted">Requested (not ordered)</div><div class="stat">${qty(requestedUnits)}</div></div><div class="card"><div class="muted">Already on order</div><div class="stat">${qty(outstandingUnits)}</div></div><div class="card"><div class="muted">Usage period</div><div style="font-weight:800;margin-top:.45rem">${esc(months.map(m=>m.label).join(' · '))}</div></div></div>
+    <div class="card" style="margin-top:1rem"><h3>Suggested orders</h3><p class="muted">Tap an item to open it. Admins/managers can record a request first, then confirm it as ordered. Requested quantities are not included in On Order.</p><div class="table-wrap"><table><thead><tr><th>Item</th><th>${esc(months[0].label)}</th><th>${esc(months[1].label)}</th><th>${esc(months[2].label)}</th><th>Avg / month</th><th>In stock</th><th>Requested</th><th>On order</th><th>Suggested</th><th>Supplier</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="11">No active items.</td></tr>'}</tbody></table></div></div>`;
   }
 
   function reportTransactions() {
@@ -2941,7 +2967,12 @@ Keep this file somewhere secure.
     const csv=document.getElementById('exportOrdersCsv'); if(csv) csv.onclick=exportOrdersCSV;
     const xls=document.getElementById('exportOrdersExcel'); if(xls) xls.onclick=exportOrdersExcel;
     document.querySelectorAll('[data-order-tab]').forEach(b=>b.onclick=()=>{S.orderTab=b.dataset.orderTab;render();});
-    document.querySelectorAll('[data-create-order]').forEach(b=>b.onclick=e=>{e.stopPropagation();openCreateOrder(b.dataset.createOrder);});
+    document.querySelectorAll('[data-create-order]').forEach(b=>b.onclick=e=>{e.stopPropagation();openCreateOrder(b.dataset.createOrder,'OPEN');});
+    document.querySelectorAll('[data-request-item]').forEach(b=>b.onclick=e=>{e.stopPropagation();openCreateOrder(b.dataset.requestItem,'REQUESTED');});
+    document.querySelectorAll('[data-confirm-request]').forEach(b=>b.onclick=e=>{e.stopPropagation();openConfirmRequest(b.dataset.confirmRequest);});
+    document.querySelectorAll('[data-edit-request]').forEach(b=>b.onclick=e=>{e.stopPropagation();openEditRequest(b.dataset.editRequest);});
+    document.querySelectorAll('[data-cancel-request]').forEach(b=>b.onclick=e=>{e.stopPropagation();openCancelRequest(b.dataset.cancelRequest);});
+    document.querySelectorAll('[data-item]').forEach(el=>el.onclick=()=>openItem(el.dataset.item));
     document.querySelectorAll('[data-receive-order]').forEach(b=>b.onclick=e=>{e.stopPropagation();openReceiveOrder(b.dataset.receiveOrder);});
     document.querySelectorAll('[data-edit-order]').forEach(b=>b.onclick=e=>{e.stopPropagation();openEditOrder(b.dataset.editOrder);});
     document.querySelectorAll('[data-cancel-order]').forEach(b=>b.onclick=e=>{e.stopPropagation();openCancelOrder(b.dataset.cancelOrder);});
