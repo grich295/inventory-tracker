@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.19 CLEAN - local photo search suggestions. */
+/* Inventory Tracker v8.7.20 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -7,7 +7,7 @@
   const LIVE_APP_URL = 'https://grich295.github.io/inventory-tracker/';
   const configured = cfg.supabaseUrl && cfg.anonKey && !cfg.supabaseUrl.includes('YOUR_PROJECT') && !cfg.anonKey.includes('YOUR_SUPABASE');
   const IOS_SCANNER = /iP(?:hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
-  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.19';
+  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.20';
 
   if (!configured || !window.supabase) {
     app.innerHTML = `
@@ -177,10 +177,16 @@
     return [d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
   };
   const orderTimestampForDay = value => {
-    if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(String(value||'')))throw new Error('Select a valid order/request date.');
-    const day=new Date(value+'T12:00:00');
-    if(!Number.isFinite(day.getTime())||orderLocalDate(day)!==value)throw new Error('Select a valid order/request date.');
-    return value===orderLocalDate()?new Date().toISOString():day.toISOString();
+    // Date inputs emit YYYY-MM-DD. Earlier dates are allowed, including across
+    // months and years; only impossible calendar dates are rejected.
+    const input=String(value||'').trim();
+    const match=/^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(input);
+    if(!match)throw new Error('Select a valid order/request date.');
+    const day=new Date(Number(match[1]),Number(match[2])-1,Number(match[3]),12,0,0);
+    if(!Number.isFinite(day.getTime())||orderLocalDate(day)!==input){
+      throw new Error('Select a valid order/request date.');
+    }
+    return input===orderLocalDate()?new Date().toISOString():day.toISOString();
   };
   const backupStorageKey = 'inventoryTrackerLastBackupAt';
   const lastBackupAt = () => localStorage.getItem(backupStorageKey) || '';
@@ -3055,7 +3061,7 @@ Keep this file somewhere secure.
       <form id="createOrderForm">
         <div class="form-grid">
           <div><label>${isRequest?'Quantity requested':'Quantity ordered'}</label><input id="orderQty" type="number" inputmode="decimal" min="0.01" step="0.01" value="${esc(suggested)}" required></div>
-          <div><label>${isRequest?'Requested date':'Ordered date'}</label><input id="newOrderDate" type="date" value="${orderLocalDate()}" required></div>
+          <div><label>${isRequest?'Requested date (can be backdated)':'Ordered date (can be backdated)'}</label><input id="newOrderDate" type="date" value="${orderLocalDate()}" required></div>
           <div><label>Supplier ${isRequest?'(optional)':''}</label><select id="orderSupplier"><option value="">${isRequest?'Supplier not chosen':'Manual supplier'}</option>${suppliers.map(s=>`<option value="${s.id}" ${preferred?.id===s.id?'selected':''}>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</option>`).join('')}</select></div>
           <div><label>Supplier name ${isRequest?'(optional)':''}</label><input id="orderSupplierName" list="globalSupplierNames" value="${esc(preferred?.supplier_name||'')}" ${isRequest?'':'required'}><datalist id="globalSupplierNames">${globalSupplierNames().map(n=>`<option value="${esc(n)}"></option>`).join('')}</datalist></div>
           <div><label>Supplier part ref</label><input id="orderSupplierRef" value="${esc(preferred?.supplier_ref||'')}"></div>
@@ -3130,7 +3136,7 @@ Keep this file somewhere secure.
         <div><label>Supplier</label><select id="confirmSupplier"><option value="">Manual supplier</option>${suppliers.map(x=>`<option value="${x.id}" ${x.id===o.supplier_id?'selected':''}>${esc(x.supplier_name)}</option>`).join('')}</select></div>
         <div><label>Supplier name</label><input id="confirmSupplierName" value="${esc(o.supplier_name||'')}" required></div>
         <div><label>Supplier part ref</label><input id="confirmSupplierRef" value="${esc(o.supplier_ref||'')}"></div>
-        <div><label>Ordered date</label><input id="confirmOrderedOn" type="date" value="${orderLocalDate()}" required></div>
+        <div><label>Ordered date (can be backdated)</label><input id="confirmOrderedOn" type="date" value="${orderLocalDate()}" required></div>
         <div><label>Order / PO reference</label><input id="confirmOrderRef" placeholder="e.g. PO-1024"></div>
         <div><label>Expected delivery</label><input id="confirmOrderExpected" type="date"></div>
         <div class="full"><label>Notes</label><textarea id="confirmOrderNotes" rows="2">${esc(o.notes||'')}</textarea></div>
@@ -3174,7 +3180,7 @@ Keep this file somewhere secure.
     showModal(`<header><h2>Edit request · ${esc(itemName(o.item_id))}</h2><button class="close" data-close>×</button></header>
       <form id="editRequestForm" novalidate>
         <label>Quantity requested</label><input id="requestEditQty" type="number" inputmode="decimal" step="0.01" min="0.01" value="${esc(o.quantity_ordered)}" required>
-        <label>Requested date</label><input id="requestEditDate" type="date" value="${esc(orderLocalDate(o.requested_at))}" required>
+        <label>Requested date (can be backdated)</label><input id="requestEditDate" type="date" value="${esc(orderLocalDate(o.requested_at))}" required>
         <label>Preferred supplier (optional)</label><input id="requestEditSupplier" value="${esc(o.supplier_name||'')}">
         <label>Supplier part reference</label><input id="requestEditPart" value="${esc(o.supplier_ref||'')}">
         <label>Notes</label><textarea id="requestEditNotes" rows="3">${esc(o.notes||'')}</textarea>
@@ -3319,7 +3325,7 @@ Keep this file somewhere secure.
     showModal(`<header><div><h2>Edit order</h2><div class="muted">${esc(itemName(o.item_id))}</div></div><button class="close" data-close>×</button></header>
       <form id="editOrderForm">
         <label>Total ordered quantity</label><input id="editOrderQty" type="number" inputmode="decimal" min="${esc(o.quantity_received)}" step="0.01" value="${esc(o.quantity_ordered)}" required>
-        <label>Ordered date</label><input id="editOrderDate" type="date" value="${esc(orderLocalDate(o.ordered_at))}" required>
+        <label>Ordered date (can be backdated)</label><input id="editOrderDate" type="date" value="${esc(orderLocalDate(o.ordered_at))}" required>
         <label>Order / PO reference</label><input id="editOrderRef" value="${esc(o.order_reference||'')}">
         <label>Expected delivery date</label><input id="editOrderExpected" type="date" value="${esc(o.expected_date||'')}">
         <label>Notes</label><textarea id="editOrderNotes" rows="2">${esc(o.notes||'')}</textarea>
