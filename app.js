@@ -3645,11 +3645,15 @@ Keep this file somewhere secure.
 
 
 
-  function photoMatchConfidence(score) {
+  function photoMatchConfidence(score,margin=0) {
+    // These labels indicate relative photo similarity only, not probability.
+    // A high absolute score with a close runner-up is still ambiguous.
     const value=Number.isFinite(score)?Math.max(0,Math.min(1,score)):0;
-    return value>=0.85?{label:'High',colour:'#166534',background:'#dcfce7'}:
-      value>=0.65?{label:'Medium',colour:'#92400e',background:'#fef3c7'}:
-      {label:'Low',colour:'#475569',background:'#f1f5f9'};
+    const gap=Number.isFinite(margin)?Math.max(0,margin):0;
+    return value>=0.89&&gap>=0.12?{label:'High similarity',level:'high',colour:'#166534',background:'#dcfce7'}:
+      value>=0.76&&gap>=0.055?{label:'Good possibility',level:'medium',colour:'#92400e',background:'#fef3c7'}:
+      value>=0.60?{label:'Possible match',level:'possible',colour:'#475569',background:'#f1f5f9'}:
+      {label:'Weak similarity',level:'weak',colour:'#475569',background:'#f1f5f9'};
   }
 
   const photoReferenceCache=new Map();
@@ -3749,7 +3753,7 @@ Keep this file somewhere secure.
               }
               for(const path of refs.paths){
                 if(!current(n))return;
-                const key='v1:'+owner+':'+item.id+':'+path+':'+(item.updated_at||'');
+                const key='v2:'+owner+':'+item.id+':'+path+':'+(item.updated_at||'');
                 let descriptor=photoSearchCache.get(key)||await photoDescriptorStored(key);
                 if(!current(n))return;
                 if(!descriptor){
