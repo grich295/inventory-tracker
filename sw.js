@@ -1,4 +1,4 @@
-const CACHE='inventory-tracker-v8-7-18-requested-status';
+const CACHE='inventory-tracker-v8-7-19-request-save';
 const CORE=[
   './',
   './index.html',
