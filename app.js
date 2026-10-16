@@ -300,18 +300,27 @@
 
   // Read-only status beside every item, including User mode and QR results.
   function itemOrderSummaryHtml(itemId) {
-    const orders=S.purchaseOrders.filter(o=>o.item_id===itemId&&['REQUESTED','OPEN','PART_RECEIVED'].includes(o.status))
-      .sort((a,b)=>new Date(b.ordered_at||b.requested_at||b.updated_at)-new Date(a.ordered_at||a.requested_at||a.updated_at));
-    if(!orders.length)return '';
-    const lines=orders.slice(0,3).map(o=>{
-      const requested=o.status==='REQUESTED';
-      const amount=requested?num(o.quantity_ordered):orderRemaining(o);
-      const dateText=requested?'Requested '+fmtShortDate(o.requested_at):'Ordered '+fmtShortDate(o.ordered_at);
-      return `<div class="item-order-preview"><span class="badge ${requested?'warn':'order'}">${requested?'Requested':o.status==='PART_RECEIVED'?'Part received':'On order'} ${qty(amount)}</span><small>${esc(dateText)}${!requested&&o.expected_date?' · Expected '+esc(fmtShortDate(o.expected_date)):''}</small></div>`;
-    }).join('');
-    return lines+(orders.length>3?`<small class="muted">+${orders.length-3} more. Open the item for dates.</small>`:'');
+    // Show REQUESTED and ON ORDER independently. Neither stage should push the
+    // other off the item row, even if there are many supplier orders.
+    const rows=S.purchaseOrders.filter(o=>o.item_id===itemId&&['REQUESTED','OPEN','PART_RECEIVED'].includes(o.status));
+    const requested=rows.filter(o=>o.status==='REQUESTED');
+    const ordered=rows.filter(o=>['OPEN','PART_RECEIVED'].includes(o.status));
+    if(!requested.length&&!ordered.length)return '';
+    const newest=(items,field)=>items.reduce((latest,o)=>!latest||new Date(o[field]||0)>new Date(latest[field]||0)?o:latest,null);
+    const chips=[];
+    if(requested.length){
+      const latest=newest(requested,'requested_at');
+      const total=requested.reduce((sum,o)=>sum+num(o.quantity_ordered),0);
+      chips.push(`<div class="item-order-preview"><span class="badge warn">Requested ${qty(total)}</span><small>Requested ${esc(fmtShortDate(latest.requested_at))}</small></div>`);
+    }
+    if(ordered.length){
+      const latest=newest(ordered,'ordered_at');
+      const total=ordered.reduce((sum,o)=>sum+orderRemaining(o),0);
+      const expected=ordered.filter(o=>o.expected_date).sort((a,b)=>String(a.expected_date).localeCompare(String(b.expected_date)))[0];
+      chips.push(`<div class="item-order-preview"><span class="badge order">On order ${qty(total)}</span><small>Ordered ${esc(fmtShortDate(latest.ordered_at))}${expected?' · Expected '+esc(fmtShortDate(expected.expected_date)):''}</small></div>`);
+    }
+    return chips.join('');
   }
-
   function itemOrderDetailHtml(itemId) {
     const rows=S.purchaseOrders.filter(o=>o.item_id===itemId&&['REQUESTED','OPEN','PART_RECEIVED'].includes(o.status))
       .sort((a,b)=>new Date(b.ordered_at||b.requested_at||b.updated_at)-new Date(a.ordered_at||a.requested_at||a.updated_at));
