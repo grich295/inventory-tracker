@@ -1,6 +1,6 @@
 {
-  "version": "8.7.15",
-  "build_id": "v8715-phone-alert-preferences-20261016",
+  "version": "8.7.16",
+  "build_id": "v8716-requested-orders-20261016",
   "clean": true,
-  "notes": "Phone alerts: master on/off, category-level per-device preferences, quiet low-stock re-entry, local notification display test. Includes previous reference-photo and paint variants improvements."
+  "notes": "Ordering workflow adds a Requested stage before On Order; confirm, edit or cancel requests without changing existing orders. Requested units are shown separately and excluded from supplier stock on order, deliveries and overdue orders."
 }
