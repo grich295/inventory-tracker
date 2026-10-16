@@ -3797,7 +3797,7 @@ Keep this file somewhere secure.
         const displayMatches=matches.filter(m=>m.score>=0.61).slice(0,6);
         results.innerHTML=displayMatches.map(({item,score})=>{
           const next=matches[matches.findIndex(m=>m.item.id===item.id)+1];
-          const c=photoMatchConfidence(score,score-(next?.score||0));
+          const c=photoMatchConfidence(score,next?score-next.score:0);
           return `<div class="photo-match-option"><div class="photo-match-label" style="color:${c.colour};background:${c.background}">${esc(c.label)}</div>
             ${c.level==='high'?'<small class="muted">Strong similarity and a clear lead over alternatives.</small>':''}
             ${itemRowHtml(item)}</div>`;
@@ -3817,7 +3817,7 @@ Keep this file somewhere secure.
               const position=matches.findIndex(m=>m.item.id===item.id);
               const hit=position<0?null:matches[position];
               const runnerUp=position<0?null:matches[position+1];
-              const strong=hit&&photoMatchConfidence(hit.score,hit.score-(runnerUp?.score||0)).level==='high';
+              const strong=hit&&runnerUp&&photoMatchConfidence(hit.score,hit.score-runnerUp.score).level==='high';
               try{
                 const outcome=await savePhotoReference(item,cropped,owner,manual?0:strong?hit.score:0);
                 if(outcome.status==='saved')info=`Identification photo saved to ${item.name} (${outcome.count}/2). Future matches can use it.`;
