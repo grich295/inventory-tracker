@@ -1,6 +1,6 @@
 # Inventory Tracker
 
-Current production build: **v8.7.6 CLEAN**
+Current production build: **v8.7.15 CLEAN**
 
 ## Active runtime
 
@@ -75,3 +75,7 @@ Home and Items offer Find item by photo. Take/select an image, crop around the o
 Matching uses deterministic colour histograms, contrast layouts (including quarter-turn rotations) and edge directions. No trained model or AI service. It is an approximate shortlist, especially weak for plain parts, different viewpoints/backgrounds and similar packaging; it does not read labels or identify models. The query image is processed in memory, never uploaded. Existing private reference photos download on first search; descriptors are reused only in the signed-in session. Cancellation/account changes discard stale work. No stock quantities or locations are written by matching.
 
 Validation: JavaScript syntax checks and node tests/photo-match.test.cjs covering ranking, uniform-image numeric stability, active/photo eligibility, session cache and account-change cancellation. Physical iPhone/Android camera/crop and representative real-stock matching remain acceptance checks. No database migration required.
+
+## v8.7.15 — phone alert preferences
+
+Help → Phone alerts includes a master device on/off control, individual category switches and a phone-display test. Individual preferences are stored in `inventory_push_subscriptions`, authorised by the user and current Inventory site, and enforced server-side before delivery. An OFF command checks server deletion before reporting success. Low stock only notifies for newly-low products; while a category is muted, the current list is silently baselined. The test checks local phone display rather than scheduled delivery. The server-side sender is `inventory-alerts` v3.
