@@ -1,6 +1,6 @@
 {
-  "version": "8.7.12",
-  "build_id": "v8712-reference-limits-20261012",
+  "version": "8.7.15",
+  "build_id": "v8715-phone-alert-preferences-20261016",
   "clean": true,
-  "notes": "Maximum two extra reference photos per item; High-confidence selections do not save additional photos. Manager/admin item controls preview and delete extras while preserving the main picture."
+  "notes": "Phone alerts: master on/off, category-level per-device preferences, quiet low-stock re-entry, local notification display test. Includes previous reference-photo and paint variants improvements."
 }
