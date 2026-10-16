@@ -171,6 +171,17 @@
   const fmtDate = v => v ? new Date(v).toLocaleString() : '—';
   const fmtShortDate = v => v ? new Date(v).toLocaleDateString() : '—';
   const todayISO = () => new Date().toISOString().slice(0,10);
+  const orderLocalDate = v => {
+    const d=v?new Date(v):new Date();
+    if(!Number.isFinite(d.getTime()))return '';
+    return [d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
+  };
+  const orderTimestampForDay = value => {
+    if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(String(value||'')))throw new Error('Select a valid order/request date.');
+    const day=new Date(value+'T12:00:00');
+    if(!Number.isFinite(day.getTime())||orderLocalDate(day)!==value)throw new Error('Select a valid order/request date.');
+    return value===orderLocalDate()?new Date().toISOString():day.toISOString();
+  };
   const backupStorageKey = 'inventoryTrackerLastBackupAt';
   const lastBackupAt = () => localStorage.getItem(backupStorageKey) || '';
   const backupDue = () => {
@@ -1584,7 +1595,8 @@
         <div><span>Received</span><strong>${qty(received)}</strong></div>
         <div><span>Still on order</span><strong>${qty(remaining)}</strong></div>
       </div>
-      <div class="muted">Order ref: ${esc(o.order_reference||'—')} · Ordered ${fmtShortDate(o.ordered_at)} · Expected ${expected}</div>
+      <div class="muted">Order ref: ${esc(o.order_reference||'—')} · Ordered ${esc(fmtShortDate(o.ordered_at))} · Expected ${esc(expected)}</div>
+      <div class="muted">Ordered by: ${esc(userName(o.ordered_by))}${o.requested_at?' · Requested '+esc(fmtShortDate(o.requested_at))+' by '+esc(userName(o.requested_by)):''}</div>
       ${o.notes?`<div class="muted" style="margin-top:.35rem">${esc(o.notes)}</div>`:''}
       <div class="actions">
         ${['OPEN','PART_RECEIVED'].includes(o.status)?`<button class="btn good" data-receive-order="${o.id}">Receive delivery</button>`:''}
@@ -3034,6 +3046,7 @@ Keep this file somewhere secure.
       <form id="createOrderForm">
         <div class="form-grid">
           <div><label>${isRequest?'Quantity requested':'Quantity ordered'}</label><input id="orderQty" type="number" inputmode="decimal" min="0.01" step="0.01" value="${esc(suggested)}" required></div>
+          <div><label>${isRequest?'Requested date':'Ordered date'}</label><input id="newOrderDate" type="date" value="${orderLocalDate()}" required></div>
           <div><label>Supplier ${isRequest?'(optional)':''}</label><select id="orderSupplier"><option value="">${isRequest?'Supplier not chosen':'Manual supplier'}</option>${suppliers.map(s=>`<option value="${s.id}" ${preferred?.id===s.id?'selected':''}>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</option>`).join('')}</select></div>
           <div><label>Supplier name ${isRequest?'(optional)':''}</label><input id="orderSupplierName" list="globalSupplierNames" value="${esc(preferred?.supplier_name||'')}" ${isRequest?'':'required'}><datalist id="globalSupplierNames">${globalSupplierNames().map(n=>`<option value="${esc(n)}"></option>`).join('')}</datalist></div>
           <div><label>Supplier part ref</label><input id="orderSupplierRef" value="${esc(preferred?.supplier_ref||'')}"></div>
@@ -3069,6 +3082,9 @@ Keep this file somewhere secure.
       if(!isRequest&&!supplierName){setNotice('Select or enter the supplier before confirming an order.','error');return;}
       const btn=e.currentTarget.querySelector('button[type=submit]');btn.disabled=true;
       const now=new Date().toISOString();
+      let recordDate;
+      try{recordDate=orderTimestampForDay(document.getElementById('newOrderDate').value);}
+      catch(error){setNotice(parseError(error),'error');btn.disabled=false;return;}
       const row={
         item_id:itemId, supplier_id:supplier?.id||null,
         supplier_name:supplierName||null,
@@ -3077,9 +3093,9 @@ Keep this file somewhere secure.
         quantity_received:0,
         order_reference:isRequest?null:document.getElementById('orderRef').value.trim()||null,
         expected_date:isRequest?null:document.getElementById('orderExpected').value||null,
-        requested_at:isRequest?now:null,
+        requested_at:isRequest?recordDate:null,
         requested_by:isRequest?S.profile.id:null,
-        ordered_at:isRequest?null:now,
+        ordered_at:isRequest?null:recordDate,
         ordered_by:isRequest?null:S.profile.id,
         notes:document.getElementById('orderNotes').value.trim()||null,
         status:isRequest?'REQUESTED':'OPEN'
@@ -3104,6 +3120,7 @@ Keep this file somewhere secure.
         <div><label>Supplier</label><select id="confirmSupplier"><option value="">Manual supplier</option>${suppliers.map(x=>`<option value="${x.id}" ${x.id===o.supplier_id?'selected':''}>${esc(x.supplier_name)}</option>`).join('')}</select></div>
         <div><label>Supplier name</label><input id="confirmSupplierName" value="${esc(o.supplier_name||'')}" required></div>
         <div><label>Supplier part ref</label><input id="confirmSupplierRef" value="${esc(o.supplier_ref||'')}"></div>
+        <div><label>Ordered date</label><input id="confirmOrderedOn" type="date" value="${orderLocalDate()}" required></div>
         <div><label>Order / PO reference</label><input id="confirmOrderRef" placeholder="e.g. PO-1024"></div>
         <div><label>Expected delivery</label><input id="confirmOrderExpected" type="date"></div>
         <div class="full"><label>Notes</label><textarea id="confirmOrderNotes" rows="2">${esc(o.notes||'')}</textarea></div>
@@ -3119,9 +3136,12 @@ Keep this file somewhere secure.
       const btn=e.currentTarget.querySelector('button[type=submit]');btn.disabled=true;
       const selection=byId(suppliers,select.value);
       const now=new Date().toISOString();
+      let placedAt;
+      try{placedAt=orderTimestampForDay(document.getElementById('confirmOrderedOn').value);}
+      catch(error){setNotice(parseError(error),'error');btn.disabled=false;return;}
       try{
         const {data,error}=await sb.from('purchase_orders').update({
-          status:'OPEN',quantity_ordered:amount,ordered_at:now,ordered_by:S.profile.id,
+          status:'OPEN',quantity_ordered:amount,ordered_at:placedAt,ordered_by:S.profile.id,
           supplier_id:selection?.id||null,
           supplier_name:supplierName,
           supplier_ref:document.getElementById('confirmSupplierRef').value.trim()||null,
@@ -3143,6 +3163,7 @@ Keep this file somewhere secure.
     showModal(`<header><h2>Edit request · ${esc(itemName(o.item_id))}</h2><button class="close" data-close>×</button></header>
       <form id="editRequestForm">
         <label>Quantity requested</label><input id="requestEditQty" type="number" step="0.01" min="0.01" value="${esc(o.quantity_ordered)}" required>
+        <label>Requested date</label><input id="requestEditDate" type="date" value="${esc(orderLocalDate(o.requested_at))}" required>
         <label>Preferred supplier (optional)</label><input id="requestEditSupplier" value="${esc(o.supplier_name||'')}">
         <label>Supplier part reference</label><input id="requestEditPart" value="${esc(o.supplier_ref||'')}">
         <label>Notes</label><textarea id="requestEditNotes" rows="3">${esc(o.notes||'')}</textarea>
@@ -3155,9 +3176,14 @@ Keep this file somewhere secure.
       const btn=e.currentTarget.querySelector('button[type=submit]');btn.disabled=true;
       const supplierName=document.getElementById('requestEditSupplier').value.trim()||null;
       const supplierId=o.supplier_name===supplierName?o.supplier_id:null;
+      let requestDate;
+      try{
+        const selected=document.getElementById('requestEditDate').value;
+        requestDate=selected===orderLocalDate(o.requested_at)?o.requested_at:orderTimestampForDay(selected);
+      }catch(error){setNotice(parseError(error),'error');btn.disabled=false;return;}
       try{
         const {data,error}=await sb.from('purchase_orders').update({
-          quantity_ordered:amount,supplier_name:supplierName,supplier_id:supplierId,
+          requested_at:requestDate,quantity_ordered:amount,supplier_name:supplierName,supplier_id:supplierId,
           supplier_ref:document.getElementById('requestEditPart').value.trim()||null,
           notes:document.getElementById('requestEditNotes').value.trim()||null,
           updated_at:new Date().toISOString()
@@ -3241,6 +3267,7 @@ Keep this file somewhere secure.
     showModal(`<header><div><h2>Edit order</h2><div class="muted">${esc(itemName(o.item_id))}</div></div><button class="close" data-close>×</button></header>
       <form id="editOrderForm">
         <label>Total ordered quantity</label><input id="editOrderQty" type="number" inputmode="decimal" min="${esc(o.quantity_received)}" step="0.01" value="${esc(o.quantity_ordered)}" required>
+        <label>Ordered date</label><input id="editOrderDate" type="date" value="${esc(orderLocalDate(o.ordered_at))}" required>
         <label>Order / PO reference</label><input id="editOrderRef" value="${esc(o.order_reference||'')}">
         <label>Expected delivery date</label><input id="editOrderExpected" type="date" value="${esc(o.expected_date||'')}">
         <label>Notes</label><textarea id="editOrderNotes" rows="2">${esc(o.notes||'')}</textarea>
@@ -3253,8 +3280,13 @@ Keep this file somewhere secure.
       const received=num(o.quantity_received);
       if(ordered<received){setNotice('Ordered quantity cannot be lower than the amount already received.','error');return;}
       const status=ordered===received?'COMPLETED':received>0?'PART_RECEIVED':'OPEN';
+      let orderedAt;
+      try{
+        const selected=document.getElementById('editOrderDate').value;
+        orderedAt=selected===orderLocalDate(o.ordered_at)?o.ordered_at:orderTimestampForDay(selected);
+      }catch(error){setNotice(parseError(error),'error');return;}
       const {error}=await sb.from('purchase_orders').update({
-        quantity_ordered:ordered,
+        quantity_ordered:ordered,ordered_at:orderedAt,
         order_reference:document.getElementById('editOrderRef').value.trim()||null,
         expected_date:document.getElementById('editOrderExpected').value||null,
         notes:document.getElementById('editOrderNotes').value.trim()||null,
