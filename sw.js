@@ -1,4 +1,4 @@
-const CACHE='inventory-tracker-v8-7-20-backdated-orders';
+const CACHE='inventory-tracker-v8-7-21-photo-learning';
 const CORE=[
   './',
   './index.html',
