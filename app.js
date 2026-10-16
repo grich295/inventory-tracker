@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.14 CLEAN - local photo search suggestions. */
+/* Inventory Tracker v8.7.15 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -7,7 +7,7 @@
   const LIVE_APP_URL = 'https://grich295.github.io/inventory-tracker/';
   const configured = cfg.supabaseUrl && cfg.anonKey && !cfg.supabaseUrl.includes('YOUR_PROJECT') && !cfg.anonKey.includes('YOUR_SUPABASE');
   const IOS_SCANNER = /iP(?:hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
-  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.6';
+  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.15';
 
   if (!configured || !window.supabase) {
     app.innerHTML = `
@@ -98,6 +98,7 @@
     watchdogIssues: [],
     pushStatus: 'unknown',
     pushBusy: false,
+    pushPreferences: null,
     pendingSafetyGrace: null,
     report: { period: 'month', item: '', graphItem: '', user: '', location: '', bin: '', from: '', to: '' }
   };
@@ -459,6 +460,13 @@
     return e?.message || e?.error_description || String(e || 'Something went wrong');
   }
 
+  const PUSH_DEFAULTS = Object.freeze({
+    alert_low_stock:true,
+    alert_overdue_orders:true,
+    alert_watchdog:true,
+    alert_stocktake:true,
+    alert_sync_failure:true
+  });
   const pushSupported=()=>('serviceWorker' in navigator)&&('PushManager' in window)&&('Notification' in window);
   function urlBase64ToUint8Array(base64String){
     const padding='='.repeat((4-base64String.length%4)%4);
@@ -475,8 +483,15 @@
     if(!pushSupported()){S.pushStatus='unsupported';return S.pushStatus;}
     if(Notification.permission==='denied'){S.pushStatus='blocked';return S.pushStatus;}
     try{
-      S.pushStatus=(await currentPushSubscription())?'enabled':'disabled';
-    }catch(_){S.pushStatus='disabled';}
+      const sub=await currentPushSubscription();
+      if(!sub){S.pushStatus='disabled';S.pushPreferences={...PUSH_DEFAULTS};return S.pushStatus;}
+      const {data,error}=await sb.rpc('get_inventory_push_preferences_v873',{p_endpoint:sub.endpoint});
+      if(error)throw error;
+      const row=Array.isArray(data)?data[0]:data;
+      if(!row?.enabled){S.pushStatus='disabled';S.pushPreferences={...PUSH_DEFAULTS};return S.pushStatus;}
+      S.pushPreferences=Object.fromEntries(Object.keys(PUSH_DEFAULTS).map(key=>[key,row[key]===true]));
+      S.pushStatus='enabled';
+    }catch(e){S.pushStatus='error';throw e;}
     return S.pushStatus;
   }
   async function enableInventoryPush(){
@@ -502,18 +517,49 @@
       p_user_agent:navigator.userAgent||null
     });
     if(error)throw error;
-    S.pushStatus='enabled';
+    await refreshPushStatus();
+    if(S.pushStatus!=='enabled')throw new Error('Phone notifications could not be confirmed on the server.');
     return true;
   }
   async function disableInventoryPush(){
-    if(!pushSupported())return;
+    if(!pushSupported())throw new Error('Phone alerts are not supported by this browser.');
     const sub=await currentPushSubscription();
     if(sub){
-      const endpoint=sub.endpoint;
-      try{await sb.rpc('delete_inventory_push_subscription_v872',{p_endpoint:endpoint});}catch(_){}
+      // Server-side deletion must succeed before claiming notifications are off.
+      const {error}=await sb.rpc('delete_inventory_push_subscription_v872',{p_endpoint:sub.endpoint});
+      if(error)throw error;
       try{await sub.unsubscribe();}catch(_){}
     }
+    S.pushPreferences={...PUSH_DEFAULTS};
     S.pushStatus='disabled';
+  }
+  async function updateInventoryPushPreferences(next){
+    if(S.pushStatus!=='enabled')throw new Error('Enable phone alerts on this device first.');
+    const sub=await currentPushSubscription();
+    if(!sub)throw new Error('Phone notification registration is missing.');
+    const prefs={...PUSH_DEFAULTS,...S.pushPreferences,...next};
+    const {error}=await sb.rpc('set_inventory_push_preferences_v873',{
+      p_endpoint:sub.endpoint,
+      p_low_stock:prefs.alert_low_stock,
+      p_overdue_orders:prefs.alert_overdue_orders,
+      p_watchdog:prefs.alert_watchdog,
+      p_stocktake:prefs.alert_stocktake,
+      p_sync_failure:prefs.alert_sync_failure
+    });
+    if(error)throw error;
+    S.pushPreferences=prefs;
+    return true;
+  }
+  async function testInventoryPhoneDisplay(){
+    if(S.pushStatus!=='enabled'||Notification.permission!=='granted')throw new Error('Enable phone alerts before testing.');
+    const reg=await navigator.serviceWorker.ready;
+    await reg.showNotification('Inventory Tracker · test',{
+      body:'This phone can display Inventory notifications.',
+      icon:'./icon.svg',
+      badge:'./icon.svg',
+      tag:'inventory-phone-display-test',
+      data:{url:'./'}
+    });
   }
   async function recordInventoryClientAlert(type,message,details={}){
     if(!S.session||!navigator.onLine)return;
@@ -833,52 +879,109 @@
   }
 
 
+  const PHONE_ALERT_OPTIONS=[
+    ['alert_low_stock','New low-stock items','Alert only when another item becomes low, with the full outstanding list.',true],
+    ['alert_overdue_orders','Overdue purchase orders','Open orders beyond their expected date.',true],
+    ['alert_watchdog','System and stock integrity issues','Warnings from Inventory Watchdog.',true],
+    ['alert_stocktake','Overdue assigned stocktakes','Stocktake tasks assigned to you.',false],
+    ['alert_sync_failure','Failed offline synchronisation','Offline stock movements that could not be saved.',false]
+  ];
   function pushAlertsHelpCardHtml(){
     const manager=canManage();
-    return `<div class="card help-card">
-      <h3>Phone alerts</h3>
-      <p class="muted">Optional Web Push alerts can arrive even when Inventory Tracker is closed, once this device has been enabled.</p>
-      <ul>
-        ${manager?'<li>Low stock: a notification only when another product joins the low-stock list, including the other products still low. No repeated low-stock reminders.</li><li>Overdue purchase orders.</li><li>Inventory watchdog/integrity warnings.</li>':''}
-        <li>Overdue stocktakes assigned to you.</li>
-        <li>Offline sync failures that need attention.</li>
-      </ul>
-      <div id="pushAlertStatus" class="muted">Checking this device…</div>
-      <div class="actions"><button class="btn secondary" id="pushAlertsBtn" type="button">Phone alerts</button></div>
-      <div class="muted">Android supports this directly. On iPhone/iPad, the web app must be added to the Home Screen and notifications allowed.</div>
-    </div>`;
+    const options=PHONE_ALERT_OPTIONS.filter(option=>!option[3]||manager);
+    const toggles=options.map(([key,label,description])=>
+      '<label class="phone-alert-option"><input type="checkbox" data-push-pref="'+key+'" '+
+      (S.pushPreferences?.[key]!==false?'checked':'')+' disabled>'+
+      '<span><strong>'+esc(label)+'</strong><small>'+esc(description)+'</small></span></label>'
+    ).join('');
+    return '<div class="card help-card">'+
+      '<h3>Phone alerts</h3>'+
+      '<p class="muted">Your own settings for this phone. Notifications can arrive when the app is closed. Other users and phones are unaffected.</p>'+
+      '<div id="pushAlertStatus" class="muted" role="status">Checking this device…</div>'+
+      '<div class="actions"><button class="btn secondary" id="pushAlertsBtn" type="button">Phone alerts</button>'+
+      '<button class="btn secondary" id="pushTestBtn" type="button">Test on this phone</button></div>'+
+      '<div id="pushAlertPreferences" class="phone-alert-settings"><strong>Choose which alerts reach this phone</strong>'+
+      toggles+'</div>'+
+      '<p class="muted">Low-stock alerts are not repeated hourly. New alerts include the items already low. The test button checks phone display only, not scheduled server delivery.</p>'+
+      '<div class="muted">Android supports Web Push. On iPhone/iPad, add the web app to the Home Screen and allow notifications.</div>'+
+      '</div>';
   }
 
   function bindHelp(){
     const btn=document.getElementById('pushAlertsBtn');
+    const test=document.getElementById('pushTestBtn');
     const status=document.getElementById('pushAlertStatus');
     if(!btn||!status)return;
     const paint=()=>{
+      if(!btn.isConnected)return;
       const s=S.pushStatus;
-      if(s==='enabled'){status.textContent='Phone alerts are enabled on this device.';btn.textContent='Turn phone alerts off';btn.className='btn danger';btn.disabled=false;}
-      else if(s==='blocked'){status.textContent='Notifications are blocked in browser/device settings.';btn.textContent='Phone alerts blocked';btn.className='btn secondary';btn.disabled=true;}
-      else if(s==='unsupported'){status.textContent='This browser/device does not support Web Push for this app.';btn.textContent='Not supported';btn.className='btn secondary';btn.disabled=true;}
-      else {status.textContent='Phone alerts are off on this device.';btn.textContent='Enable phone alerts';btn.className='btn good';btn.disabled=!!S.pushBusy;}
+      if(s==='enabled'){
+        status.textContent='Phone alerts are ON for this device.';
+        btn.textContent='Turn all phone alerts OFF';
+        btn.className='btn danger';
+      }else if(s==='blocked'){
+        status.textContent='Notifications are blocked by your phone/browser. Enable them in device settings.';
+        btn.textContent='Phone alerts blocked';btn.className='btn secondary';
+      }else if(s==='unsupported'){
+        status.textContent='This browser does not support Web Push for Inventory Tracker.';
+        btn.textContent='Not supported';btn.className='btn secondary';
+      }else if(s==='error'){
+        status.textContent='Could not verify phone alert settings. Check your connection, then retry.';
+        btn.textContent='Retry connection';btn.className='btn secondary';
+      }else if(s==='unknown'){
+        status.textContent='Checking notification settings…';
+        btn.textContent='Checking';btn.className='btn secondary';
+      }else{
+        status.textContent='Phone alerts are OFF for this device.';
+        btn.textContent='Enable all phone alerts';btn.className='btn good';
+      }
+      btn.disabled=!!S.pushBusy||['blocked','unsupported','unknown'].includes(s);
+      if(test)test.disabled=!!S.pushBusy||s!=='enabled';
+      document.querySelectorAll('[data-push-pref]').forEach(el=>{
+        el.checked=!!S.pushPreferences?.[el.dataset.pushPref];
+        el.disabled=!!S.pushBusy||s!=='enabled';
+      });
     };
     paint();
-    refreshPushStatus().then(()=>{if(S.page==='help')paint();}).catch(()=>{});
+    refreshPushStatus().then(()=>{if(S.page==='help')paint();}).catch(()=>{if(S.page==='help')paint();});
     btn.onclick=async()=>{
       if(S.pushBusy)return;
-      S.pushBusy=true;btn.disabled=true;
+      S.pushBusy=true;paint();
       try{
         if(S.pushStatus==='enabled'){
           await disableInventoryPush();
-          setNotice('Phone alerts turned off on this device.');
+          setNotice('Phone alerts turned off for this device.');
+        }else if(S.pushStatus==='error'){
+          await refreshPushStatus();
+          setNotice('Phone alert connection checked.');
         }else{
           await enableInventoryPush();
-          setNotice('Phone alerts enabled on this device.');
+          setNotice('Phone alerts enabled. Set individual alerts below.');
         }
-      }catch(e){
-        setNotice(parseError(e),'error');
-      }finally{
-        S.pushBusy=false;
-        if(S.page==='help')render();
-      }
+      }catch(e){setNotice(parseError(e),'error');}
+      finally{S.pushBusy=false;if(S.page==='help')render();}
+    };
+    document.querySelectorAll('[data-push-pref]').forEach(el=>{
+      el.onchange=async()=>{
+        if(S.pushBusy)return;
+        const key=el.dataset.pushPref;
+        const desired=el.checked;
+        S.pushBusy=true;paint();
+        try{
+          await updateInventoryPushPreferences({[key]:desired});
+          setNotice('Phone alert preferences saved.');
+        }catch(e){
+          el.checked=!desired;
+          setNotice(parseError(e),'error');
+        }finally{S.pushBusy=false;if(S.page==='help')render();}
+      };
+    });
+    if(test)test.onclick=async()=>{
+      if(S.pushBusy)return;
+      S.pushBusy=true;paint();
+      try{await testInventoryPhoneDisplay();setNotice('Test notification requested on this phone.');}
+      catch(e){setNotice(parseError(e),'error');}
+      finally{S.pushBusy=false;if(S.page==='help')render();}
     };
   }
 
