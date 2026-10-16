@@ -3766,7 +3766,11 @@ Keep this file somewhere secure.
                 const paths=await photoReferencePaths(item);if(!current(n))return;
                 refs={paths,at:Date.now()};photoReferenceCache.set(refKey,refs);
               }
-              if(!refs.paths.length){withoutPhotos++;continue;}
+              if(!refs.paths.length){
+                withoutPhotos++;
+                status.textContent=`Checking item photos ${++done} of ${items.length}…`;
+                continue;
+              }
               for(const path of refs.paths){
                 if(!current(n))return;
                 const key='v2:'+owner+':'+item.id+':'+path+':'+(item.updated_at||'');
