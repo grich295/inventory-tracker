@@ -489,3 +489,11 @@ tbody tr:last-child td{border-bottom:0}
   .stocktake-history-table td:nth-child(7)::before{content:'Counted by'}
   .stocktake-history-table td::before{flex:0 0 88px;color:var(--muted,#6b7280);font-size:.72rem;font-weight:800;text-transform:uppercase}
 }
+
+/* v8.7.15 — compact, finger-friendly phone-alert preference controls */
+.phone-alert-settings{margin-top:1rem;display:flex;flex-direction:column;gap:.65rem}
+.phone-alert-option{display:flex;align-items:flex-start;gap:.8rem;padding:.75rem;border:1px solid #d6dce6;border-radius:10px;background:#f8fafc;cursor:pointer}
+.phone-alert-option input{width:22px;height:22px;min-width:22px;margin:2px 0 0;accent-color:#2563eb}
+.phone-alert-option span{display:flex;flex-direction:column;gap:.2rem;line-height:1.35}
+.phone-alert-option small{color:#4b5563;font-size:.83rem}
+.phone-alert-option:has(input:disabled){opacity:.6;cursor:default}
