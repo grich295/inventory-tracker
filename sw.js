@@ -1,4 +1,4 @@
-const CACHE='inventory-tracker-v8-7-14-bin-edit';
+const CACHE='inventory-tracker-v8-7-15-phone-alert-preferences';
 const CORE=[
   './',
   './index.html',
