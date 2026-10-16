@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.16 CLEAN - local photo search suggestions. */
+/* Inventory Tracker v8.7.17 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -7,7 +7,7 @@
   const LIVE_APP_URL = 'https://grich295.github.io/inventory-tracker/';
   const configured = cfg.supabaseUrl && cfg.anonKey && !cfg.supabaseUrl.includes('YOUR_PROJECT') && !cfg.anonKey.includes('YOUR_SUPABASE');
   const IOS_SCANNER = /iP(?:hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
-  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.16';
+  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.17';
 
   if (!configured || !window.supabase) {
     app.innerHTML = `
@@ -1600,7 +1600,7 @@
       <td>${qty(r.avg)}</td><td>${qty(r.current)}</td><td>${r.requested>0?`<strong>${qty(r.requested)}</strong>`:'—'}</td><td>${r.onOrder>0?`<strong>${qty(r.onOrder)}</strong>`:'—'}</td>
       <td><strong>${r.suggested>0?qty(r.suggested):'—'}</strong></td>
       <td>${esc(r.supplier?.supplier_name||'—')}</td>
-      <td>${canManage()?(r.requested>0?`<button class="btn small secondary" data-order-tab="requested">View request</button>`:r.suggested>0?`<div class="actions"><button class="btn small secondary" data-request-item="${r.item.id}">Request</button><button class="btn small" data-create-order="${r.item.id}">Mark ordered</button></div>`:'—'):'—'}</td>
+      <td>${canManage()&&(r.requested>0||r.suggested>0)?`<div class="actions">${r.requested>0?`<button class="btn small secondary" data-order-tab="requested">View request</button>`:`<button class="btn small secondary" data-request-item="${r.item.id}">Request</button>`}<button class="btn small" data-create-order="${r.item.id}">Mark ordered</button></div>`:'—'}</td>
     </tr>`).join('');
 
     return `<div class="card"><h2>Orders</h2>
@@ -2984,12 +2984,13 @@ Keep this file somewhere secure.
   function openCreateOrder(itemId, mode='OPEN') {
     if(!canManage()){setNotice('Admin or manager access required to manage ordering.','error');render();return;}
     const item=byId(S.items,itemId); if(!item)return;
-    if(requestsForItem(itemId).length){
+    const isRequest=mode==='REQUESTED';
+    // Requests and direct supplier orders are independent choices.
+    if(isRequest&&requestsForItem(itemId).length){
       S.orderTab='requested';navigatePage('orders');
-      setNotice('This item has an outstanding request. Open Requested to edit it or confirm that it has been ordered.');
+      setNotice('This item already has a request; edit or confirm it instead of duplicating it.');
       return;
     }
-    const isRequest=mode==='REQUESTED';
     const forecast=suggestedOrderRows().find(r=>r.item.id===itemId);
     const suppliers=suppliersForItem(itemId);
     const preferred=preferredSupplier(itemId);
@@ -3673,7 +3674,7 @@ Keep this file somewhere secure.
       </div><div>
         <div class="card"><div><strong>QR value</strong><br>${esc(i.qr_value)}</div><div><strong>Category</strong><br>${esc(i.category||'—')}</div>${itemCategoryReview?`<div class="category-suggestion item-detail-suggestion"><div><strong>Suggested category: ${esc(itemCategoryReview.suggestion.category)}</strong><span>${esc(itemCategoryReview.suggestion.confidence)} confidence · ${itemCategoryReview.suggestion.percent}%${itemCategoryReview.suggestion.evidence.length?` · ${esc(itemCategoryReview.suggestion.evidence[0])}`:''}</span></div><button class="btn small" id="approveItemCategorySuggestion" type="button">Approve suggestion</button></div>`:''}<div><strong>Default storage</strong><br>${esc(itemDefaultLabel(i))}</div><div><strong>Unit cost</strong><br>${money(i.unit_cost)}</div>${requestedQty>0?`<div style="margin-top:.7rem"><span class="badge warn">REQUESTED ${qty(requestedQty)}</span></div>`:''}${onOrder>0?`<div style="margin-top:.7rem"><span class="badge order">ON ORDER ${qty(onOrder)}</span></div>`:''}</div>
         ${i.active?`<div class="actions quick-actions"><button class="btn good" data-stock-action="ADD">+ Add stock</button><button class="btn warn" data-stock-action="USE">− Use stock</button><button class="btn secondary" data-stock-action="ADJUST">Adjust count</button><button class="btn ghost" data-stock-action="MOVE">Move stock</button></div>`:'<div class="notice">This item is archived. Restore it before recording new stock actions.</div>'}
-        <div class="actions"><button class="btn ${pref?.favourite?'warn':'ghost'}" id="favouriteBtn">${pref?.favourite?'★ Favourite':'☆ Add favourite'}</button><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()&&i.active?'<button class="btn ghost" id="editItemBtn">Edit item</button><button class="btn ghost" id="suppliersBtn">Suppliers 1–3</button><button class="btn" id="orderItemBtn">'+(itemRequests.length?'View request':'Mark ordered')+'</button><button class="btn secondary" id="requestItemBtn" '+(itemRequests.length?'disabled title="Already requested"':'')+'>Request item</button>':''}${canManage()?'<button class="btn ghost" id="extraItemPhotosBtn" type="button">Extra reference photos</button>':''}${canAdmin()?i.active?'<button class="btn danger" id="archiveItemBtn">Archive item</button>':'<button class="btn good" id="restoreItemBtn">Restore item</button>':''}</div>
+        <div class="actions"><button class="btn ${pref?.favourite?'warn':'ghost'}" id="favouriteBtn">${pref?.favourite?'★ Favourite':'☆ Add favourite'}</button><button class="btn ghost" id="printQrBtn">Print QR</button>${canManage()&&i.active?'<button class="btn ghost" id="editItemBtn">Edit item</button><button class="btn ghost" id="suppliersBtn">Suppliers 1–3</button><button class="btn" id="orderItemBtn">'+('Mark ordered')+'</button><button class="btn secondary" id="requestItemBtn" '+(itemRequests.length?'disabled title="Already requested"':'')+'>Request item</button>':''}${canManage()?'<button class="btn ghost" id="extraItemPhotosBtn" type="button">Extra reference photos</button>':''}${canAdmin()?i.active?'<button class="btn danger" id="archiveItemBtn">Archive item</button>':'<button class="btn good" id="restoreItemBtn">Restore item</button>':''}</div>
       </div></div>
       <div class="card" style="margin-top:1rem"><h3>Suppliers & orders</h3>
         ${suppliers.length?suppliers.map(s=>`<div class="supplier-line"><strong>Supplier ${s.supplier_slot}: ${esc(s.supplier_name)}</strong>${s.preferred?' <span class="badge">Preferred</span>':''}<div class="muted">Ref ${esc(s.supplier_ref||'—')} · Pack ${qty(s.pack_size||1)} · Lead ${s.lead_time_days==null?'—':esc(s.lead_time_days)+' days'} · ${s.unit_price==null?'Price —':money(s.unit_price)}</div></div>`).join(''):'<p class="muted">No suppliers saved yet.</p>'}
@@ -3693,7 +3694,7 @@ Keep this file somewhere secure.
     const extraPhotos=document.getElementById('extraItemPhotosBtn');if(extraPhotos)extraPhotos.onclick=()=>openExtraPhotoManager(i);
     const edit=document.getElementById('editItemBtn'); if(edit) edit.onclick=()=>openEditItem(i);
     const suppliersBtn=document.getElementById('suppliersBtn'); if(suppliersBtn) suppliersBtn.onclick=()=>openSupplierEditor(i);
-    const orderItemBtn=document.getElementById('orderItemBtn'); if(orderItemBtn) orderItemBtn.onclick=()=>itemRequests.length?(closeModal(),S.orderTab='requested',navigatePage('orders')):openCreateOrder(i.id,'OPEN');
+    const orderItemBtn=document.getElementById('orderItemBtn'); if(orderItemBtn) orderItemBtn.onclick=()=>openCreateOrder(i.id,'OPEN');
     const requestItemBtn=document.getElementById('requestItemBtn'); if(requestItemBtn) requestItemBtn.onclick=()=>openCreateOrder(i.id,'REQUESTED');
     document.querySelectorAll('[data-item-confirm-request]').forEach(b=>b.onclick=()=>openConfirmRequest(b.dataset.itemConfirmRequest));
     document.querySelectorAll('[data-item-receive-order]').forEach(b=>b.onclick=()=>openReceiveOrder(b.dataset.itemReceiveOrder));
