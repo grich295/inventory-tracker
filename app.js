@@ -1,4 +1,4 @@
-/* Inventory Tracker v8.7.20 CLEAN - local photo search suggestions. */
+/* Inventory Tracker v8.7.21 CLEAN - local photo search suggestions. */
 (() => {
   'use strict';
 
@@ -7,7 +7,7 @@
   const LIVE_APP_URL = 'https://grich295.github.io/inventory-tracker/';
   const configured = cfg.supabaseUrl && cfg.anonKey && !cfg.supabaseUrl.includes('YOUR_PROJECT') && !cfg.anonKey.includes('YOUR_SUPABASE');
   const IOS_SCANNER = /iP(?:hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
-  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.20';
+  const APP_VERSION = window.INVENTORY_BUILD_VERSION || '8.7.21';
 
   if (!configured || !window.supabase) {
     app.innerHTML = `
@@ -2392,7 +2392,7 @@
       app_version:APP_VERSION,
       project_url:cfg.supabaseUrl,
       tables:{},
-      uploaded_files:{requested:!!includeFiles,downloaded:0,failed:[]}
+      uploaded_files:{requested:!!includeFiles,downloaded:0,extra_references_found:0,extra_references_downloaded:0,failed:[]}
     };
 
     for(let i=0;i<backupTables.length;i++){
@@ -2419,6 +2419,36 @@
         }
       }
 
+      // Extra identification photos live in item-scoped Storage folders rather
+      // than columns on items, so include them explicitly in a full ZIP backup.
+      S.backupStatus='Finding additional item identification photos…';
+      render();
+      let nextRefIndex=0;
+      const listNext=async()=>{
+        while(nextRefIndex<items.length){
+          const item=items[nextRefIndex++];
+          const folder=`${item.id}/references`;
+          try{
+            const {data,error}=await sb.storage.from('item-photos').list(folder,{limit:100,sortBy:{column:'name',order:'asc'}});
+            if(error)throw error;
+            for(const entry of data||[]){
+              if(!entry.id||!/\\.jpg$/i.test(entry.name))continue;
+              const path=`${folder}/${entry.name}`;
+              const key=`item-photos:${path}`;
+              if(seen.has(key))continue;
+              seen.add(key);
+              targets.push({bucket:'item-photos',path,folder:'item-photos',extra:true});
+              manifest.uploaded_files.extra_references_found++;
+            }
+          }catch(e){
+            manifest.uploaded_files.failed.push({
+              bucket:'item-photos',path:folder,
+              error:'Could not list additional identification photos: '+parseError(e)
+            });
+          }
+        }
+      };
+      await Promise.all(Array.from({length:Math.min(6,items.length)},()=>listNext()));
       for(let i=0;i<targets.length;i++){
         const t=targets[i];
         S.backupStatus=`Downloading uploaded files ${i+1}/${targets.length}`;
@@ -2427,6 +2457,7 @@
           const blob=await downloadStorageFile(t.bucket,t.path);
           fileFolder.folder(t.folder).file(t.path,blob);
           manifest.uploaded_files.downloaded++;
+          if(t.extra)manifest.uploaded_files.extra_references_downloaded++;
         }catch(e){
           manifest.uploaded_files.failed.push({
             bucket:t.bucket,
@@ -2445,7 +2476,9 @@ Created: ${manifest.created_at}
 Created by: ${manifest.created_by.name||'Unknown admin'}
 
 This ZIP contains database exports in both JSON and CSV format.
-Uploaded item photos are included when requested and accessible.
+Uploaded main item photos and additional identification photos are included when requested and accessible.
+Extra identification photos are stored under files/item-photos/[item-id]/references/.
+Check manifest.json uploaded_files.failed for any images or folders that could not be downloaded.
 
 This backup does NOT contain passwords, Supabase secret keys, or database credentials.
 
